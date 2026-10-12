@@ -207,6 +207,48 @@ pub fn sys_close(fd: u64) -> i64 {
     }
 }
 
+pub fn sys_stat(path_ptr: u64, path_len_arg: u64) -> i64 {
+    if path_ptr == 0 {
+        return EFAULT;
+    }
+
+    let path_len = if path_len_arg > 0 && path_len_arg <= 4096 {
+        let max_len = path_len_arg as usize;
+        let s = unsafe { slice::from_raw_parts(path_ptr as *const u8, max_len) };
+        s.iter().position(|&b| b == 0).unwrap_or(max_len)
+    } else {
+        let mut len = 0;
+        unsafe {
+            let ptr = path_ptr as *const u8;
+            while *ptr.add(len) != 0 && len < 4096 {
+                len += 1;
+            }
+        }
+        len
+    };
+
+    let path_str = match core::str::from_utf8(unsafe {
+        slice::from_raw_parts(path_ptr as *const u8, path_len)
+    }) {
+        Ok(s) => s,
+        Err(_) => return EINVAL,
+    };
+
+    let vfs_guard = VFS.lock();
+    let vfs = match vfs_guard.as_ref() {
+        Some(v) => v,
+        None => return EIO,
+    };
+
+    match vfs.lookup(path_str) {
+        Ok(inode) => match inode.kind {
+            InodeKind::Directory => 1,
+            InodeKind::File | InodeKind::CharDevice => 0,
+        },
+        Err(_) => ENOENT,
+    }
+}
+
 pub fn sys_socket(domain: u64, sock_type: u64, _protocol: u64) -> i64 {
     with_net_stack(|net| match net.create_socket(domain, sock_type) {
         Ok(fd) => fd as i64,

@@ -20,6 +20,7 @@ pub fn dispatch_syscall(
         SyscallNo::Write => sys_write(arg1, arg2, arg3),
         SyscallNo::Open => sys_open(arg1, arg2, arg3),
         SyscallNo::Close => sys_close(arg1),
+        SyscallNo::Stat => sys_stat(arg1, arg2),
         SyscallNo::Yield => sys_yield(),
         SyscallNo::Getpid => sys_getpid(),
         SyscallNo::Socket => sys_socket(arg1, arg2, arg3),

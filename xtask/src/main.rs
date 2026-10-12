@@ -412,7 +412,11 @@ fn run_qemu(release: bool) -> Result<()> {
 
 fn run_e2e_tests(kernel_image: &Path, _overall_timeout: Duration) -> Result<()> {
     let workspace_root = get_workspace_root()?;
-    let cobalt_image = get_cobaltfs_image_path(&workspace_root, false);
+    let cobalt_image = workspace_root
+        .join("target")
+        .join("aarch64-unknown-none")
+        .join("debug")
+        .join("cobaltfs-e2e.img");
     ensure_cobaltfs_image(&cobalt_image)?;
 
     println!(
@@ -492,12 +496,28 @@ fn run_e2e_tests(kernel_image: &Path, _overall_timeout: Duration) -> Result<()> 
         .context("e2e_uname machine failed")?;
     println!("[xtask] [PASS] e2e_uname");
 
-    println!("[xtask] [TEST 5/10] e2e_ls_root...");
+    println!("[xtask] [TEST 5/10] e2e_ls_and_cd...");
     harness.send_command("ls /");
     harness
         .expect_output("dev/\nproc/", Duration::from_secs(5))
         .context("e2e_ls_root failed")?;
-    println!("[xtask] [PASS] e2e_ls_root");
+    harness.send_command("ls /etc");
+    harness
+        .expect_output("motd", Duration::from_secs(5))
+        .context("e2e_ls_etc failed")?;
+    harness.send_command("ls etc/*");
+    harness
+        .expect_output("etc/motd", Duration::from_secs(5))
+        .context("e2e_ls_etc_glob failed")?;
+    harness.send_command("cd /dev");
+    harness
+        .expect_output("metalos:/dev$", Duration::from_secs(5))
+        .context("e2e_cd_dev_prompt failed")?;
+    harness.send_command("pwd && cd ..");
+    harness
+        .expect_output("/dev\nmetalos:/$", Duration::from_secs(5))
+        .context("e2e_pwd_and_cd_parent failed")?;
+    println!("[xtask] [PASS] e2e_ls_and_cd");
 
     println!("[xtask] [TEST 6/10] e2e_echo_redirect_cat...");
     harness.send_command("echo e2e_file_payload > /f && cat /f");

@@ -25,6 +25,17 @@ pub fn close(fd: u32) -> i64 {
     }
 }
 
+/// Stat a path. Returns `1` for directory, `0` for regular file/device, or `< 0` (`ENOENT`) if not found.
+pub fn stat(path: &str) -> i64 {
+    unsafe {
+        crate::syscall::syscall2(
+            SyscallNo::Stat.as_u64(),
+            path.as_ptr() as u64,
+            path.len() as u64,
+        )
+    }
+}
+
 /// Open, read up to 4096 bytes from, and close a file at `path`.
 pub fn read_file(path: &str) -> Result<[u8; 4096], i64> {
     let fd = open(path, O_RDONLY);

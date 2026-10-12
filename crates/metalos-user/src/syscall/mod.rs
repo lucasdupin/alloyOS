@@ -63,6 +63,41 @@ fn dispatch_mock(num: u64, a1: u64, a2: u64, a3: u64) -> i64 {
         1 => a3 as i64,  // Write: return requested length
         2 => 3,          // Open: return fd 3
         3 => 0,          // Close
+        4 => {
+            // Stat: return 1 for known directories, 0 for known files, -2 (ENOENT) otherwise
+            if a1 != 0 && a2 > 0 && a2 <= 4096 {
+                let s = unsafe { core::slice::from_raw_parts(a1 as *const u8, a2 as usize) };
+                if let Ok(path) = core::str::from_utf8(s) {
+                    if matches!(
+                        path,
+                        "/" | "/bin" | "/dev" | "/proc" | "/etc" | "/tmp" | "/scripts" | "/apps"
+                    ) {
+                        return 1;
+                    }
+                    if matches!(
+                        path,
+                        "/etc/motd"
+                            | "/etc/ai.conf"
+                            | "/etc/schedules.conf"
+                            | "/bin/sh"
+                            | "/scripts/heartbeat.js"
+                            | "/proc/meminfo"
+                            | "/proc/uptime"
+                            | "/proc/cpuinfo"
+                            | "/proc/version"
+                            | "/dev/tty"
+                            | "/dev/null"
+                            | "/dev/zero"
+                            | "/dev/serial"
+                            | "/dev/urandom"
+                    ) {
+                        return 0;
+                    }
+                    return -2;
+                }
+            }
+            0
+        }
         24 => 0,         // Yield
         39 => 1,         // Getpid: return PID 1
         60 => 0,         // Exit

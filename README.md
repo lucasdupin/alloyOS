@@ -24,10 +24,12 @@ See **[ROADMAP.md](ROADMAP.md)** for the full architecture and milestone plan.
 
 ## Filesystem
 
+See **[FILESYSTEM.md](FILESYSTEM.md)** for the full directory hierarchy, seeded configuration files, and VFS interface details.
+
 metalOS uses a Virtual Filesystem Switch ([`vfs.rs`](crates/metalos-kernel/src/fs/vfs.rs)) supporting:
 - **[CobaltFS](crates/metalos-kernel/src/fs/cobaltfs/README.md)** — Persistent on-disk filesystem based on the ext2 specification, implemented from scratch in Rust and backed by VirtIO-Blk.
 - **RamFS** — In-memory filesystem for transient storage.
-- **DevFS** — Device nodes (`/dev/null`, `/dev/zero`, `/dev/serial`, `/dev/urandom`).
+- **DevFS** — Device nodes (`/dev/tty`, `/dev/null`, `/dev/zero`, `/dev/serial`, `/dev/urandom`).
 
 ## Building & Running
 

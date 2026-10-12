@@ -105,7 +105,7 @@ impl NativeToolRegistry {
         let mut vfs_files = BTreeMap::new();
         vfs_files.insert(
             "/etc/ai.conf".to_string(),
-            "provider=gemini\nmodel=gemini-2.5-pro\nshell_access=disabled\n".to_string(),
+            "provider=gemini\nmodel=gemini-2.5-pro\n".to_string(),
         );
         vfs_files.insert(
             "/etc/schedules.conf".to_string(),

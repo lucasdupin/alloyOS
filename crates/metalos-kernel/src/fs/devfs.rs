@@ -28,7 +28,7 @@ impl FileSystem for DevFS {
                 kind: InodeKind::CharDevice,
                 size: 0,
             }),
-            "/dev/serial" => Ok(Inode {
+            "/dev/serial" | "/dev/tty" => Ok(Inode {
                 ino: INO_DEV_SERIAL,
                 kind: InodeKind::CharDevice,
                 size: 0,
@@ -86,6 +86,7 @@ impl FileSystem for DevFS {
 
     fn readdir(&self, _ino: u64) -> Result<Vec<String>, FsError> {
         let mut list = Vec::new();
+        list.push(String::from("tty"));
         list.push(String::from("null"));
         list.push(String::from("zero"));
         list.push(String::from("serial"));

@@ -567,6 +567,359 @@ pub fn line_from_buf(buf: &[u8; MAX_LINE_LEN]) -> &str {
     core::str::from_utf8(&buf[..nul_pos]).unwrap_or("")
 }
 
+static mut SHELL_CWD: [u8; MAX_LINE_LEN] = {
+    let mut b = [0u8; MAX_LINE_LEN];
+    b[0] = b'/';
+    b
+};
+static mut SHELL_CWD_LEN: usize = 1;
+
+static mut SHELL_OLDPWD: [u8; MAX_LINE_LEN] = {
+    let mut b = [0u8; MAX_LINE_LEN];
+    b[0] = b'/';
+    b
+};
+static mut SHELL_OLDPWD_LEN: usize = 1;
+
+/// Return the shell's current working directory (defaults to `"/"`).
+pub fn current_dir() -> TextBuffer {
+    unsafe {
+        let len = SHELL_CWD_LEN.min(MAX_LINE_LEN);
+        let s = core::str::from_utf8(&SHELL_CWD[..len]).unwrap_or("/");
+        TextBuffer::new(if s.is_empty() { "/" } else { s })
+    }
+}
+
+/// Return the shell's previous working directory (`OLDPWD`).
+pub fn old_dir() -> TextBuffer {
+    unsafe {
+        let len = SHELL_OLDPWD_LEN.min(MAX_LINE_LEN);
+        let s = core::str::from_utf8(&SHELL_OLDPWD[..len]).unwrap_or("/");
+        TextBuffer::new(if s.is_empty() { "/" } else { s })
+    }
+}
+
+fn set_working_dir(new_cwd: &str) {
+    let cur = current_dir();
+    unsafe {
+        let old_bytes = cur.as_str().as_bytes();
+        let old_len = old_bytes.len().min(MAX_LINE_LEN);
+        SHELL_OLDPWD = [0u8; MAX_LINE_LEN];
+        SHELL_OLDPWD[..old_len].copy_from_slice(&old_bytes[..old_len]);
+        SHELL_OLDPWD_LEN = old_len;
+
+        let new_bytes = new_cwd.as_bytes();
+        let new_len = new_bytes.len().min(MAX_LINE_LEN);
+        SHELL_CWD = [0u8; MAX_LINE_LEN];
+        SHELL_CWD[..new_len].copy_from_slice(&new_bytes[..new_len]);
+        SHELL_CWD_LEN = new_len;
+    }
+}
+
+/// Normalize and resolve `input_path` against `cwd` (`/` root, `.`, `..`, `~`, relative paths).
+pub fn resolve_path(cwd: &str, input_path: &str) -> TextBuffer {
+    let trimmed = input_path.trim();
+    if trimmed.is_empty() || trimmed == "~" {
+        return TextBuffer::new("/");
+    }
+
+    let mut segments: [&str; 32] = [""; 32];
+    let mut seg_count: usize = 0;
+
+    let is_abs = trimmed.starts_with('/') || trimmed.starts_with("~/");
+    if !is_abs {
+        for part in cwd.split('/') {
+            if !part.is_empty() && part != "." && seg_count < 32 {
+                segments[seg_count] = part;
+                seg_count += 1;
+            }
+        }
+    }
+
+    let effective = if let Some(rest) = trimmed.strip_prefix("~/") {
+        rest
+    } else {
+        trimmed
+    };
+
+    for part in effective.split('/') {
+        if part.is_empty() || part == "." {
+            continue;
+        } else if part == ".." {
+            if seg_count > 0 {
+                seg_count -= 1;
+            }
+        } else if seg_count < 32 {
+            segments[seg_count] = part;
+            seg_count += 1;
+        }
+    }
+
+    if seg_count == 0 {
+        return TextBuffer::new("/");
+    }
+
+    let mut out = TextBuffer::empty();
+    let mut pos = 0usize;
+    for &seg in &segments[..seg_count] {
+        if pos < 511 {
+            out.buf[pos] = b'/';
+            pos += 1;
+        }
+        let bytes = seg.as_bytes();
+        let copy_len = bytes.len().min(511 - pos);
+        out.buf[pos..pos + copy_len].copy_from_slice(&bytes[..copy_len]);
+        pos += copy_len;
+    }
+    out.len = pos;
+    out
+}
+
+/// Check whether `path` is a valid existing directory.
+pub fn is_valid_directory(path: &str) -> bool {
+    if matches!(
+        path,
+        "/" | "/bin" | "/dev" | "/proc" | "/etc" | "/tmp" | "/scripts" | "/apps"
+    ) {
+        return true;
+    }
+
+    #[cfg(all(not(test), target_arch = "aarch64", target_os = "none"))]
+    unsafe {
+        let rc = crate::syscall::syscall2(
+            metalos_proto::SyscallNo::Stat.as_u64(),
+            path.as_ptr() as u64,
+            path.len() as u64,
+        );
+        return rc == 1;
+    }
+
+    #[cfg(not(all(not(test), target_arch = "aarch64", target_os = "none")))]
+    {
+        false
+    }
+}
+
+/// Builtin `pwd` command returning the current working directory followed by a newline.
+pub fn builtin_pwd() -> TextBuffer {
+    let cwd = current_dir();
+    let mut tb = TextBuffer::empty();
+    let bytes = cwd.as_str().as_bytes();
+    let clen = bytes.len().min(511);
+    tb.buf[..clen].copy_from_slice(&bytes[..clen]);
+    tb.buf[clen] = b'\n';
+    tb.len = clen + 1;
+    tb
+}
+
+/// Builtin `cd` command changing the shell's working directory.
+///
+/// Supports:
+/// - `cd` or `cd ~` -> changes to `/`
+/// - `cd -` -> switches to `OLDPWD` and returns `Ok(Some("<new_cwd>\n"))`
+/// - `cd <dir>` -> resolves `<dir>` relative to `current_dir()`, validates directory existence,
+///   and updates `current_dir()`
+pub fn builtin_cd(args: &[&str]) -> Result<Option<TextBuffer>, TextBuffer> {
+    if args.len() > 1 {
+        return Err(TextBuffer::new("cd: too many arguments\n"));
+    }
+
+    let arg = if args.is_empty() { "~" } else { args[0] };
+    if arg == "-" {
+        let target = old_dir();
+        set_working_dir(target.as_str());
+        return Ok(Some(builtin_pwd()));
+    }
+
+    let cwd = current_dir();
+    let resolved = resolve_path(cwd.as_str(), arg);
+    if is_valid_directory(resolved.as_str()) {
+        set_working_dir(resolved.as_str());
+        Ok(None)
+    } else {
+        let mut err = TextBuffer::empty();
+        let mut cursor = 0usize;
+        let append = |tb: &mut TextBuffer, cur: &mut usize, s: &str| {
+            let b = s.as_bytes();
+            let clen = b.len().min(511 - *cur);
+            tb.buf[*cur..*cur + clen].copy_from_slice(&b[..clen]);
+            *cur += clen;
+        };
+        append(&mut err, &mut cursor, "cd: ");
+        append(&mut err, &mut cursor, arg);
+        append(&mut err, &mut cursor, ": No such file or directory\n");
+        err.len = cursor;
+        Err(err)
+    }
+}
+
+/// Match `text` against a shell glob `pattern` supporting `*` and `?`.
+pub fn wildcard_match(pattern: &str, text: &str) -> bool {
+    let p = pattern.as_bytes();
+    let t = text.as_bytes();
+    let mut pi = 0usize;
+    let mut ti = 0usize;
+    let mut star_idx: Option<usize> = None;
+    let mut match_ti = 0usize;
+
+    while ti < t.len() {
+        if pi < p.len() && (p[pi] == b'?' || p[pi] == t[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < p.len() && p[pi] == b'*' {
+            star_idx = Some(pi);
+            match_ti = ti;
+            pi += 1;
+        } else if let Some(si) = star_idx {
+            pi = si + 1;
+            match_ti += 1;
+            ti = match_ti;
+        } else {
+            return false;
+        }
+    }
+
+    while pi < p.len() && p[pi] == b'*' {
+        pi += 1;
+    }
+
+    pi == p.len()
+}
+
+fn read_dir_entries(dir_path: &str) -> TextBuffer {
+    #[cfg(all(not(test), target_arch = "aarch64", target_os = "none"))]
+    {
+        if crate::fs::stat(dir_path) == 1 {
+            if let Ok(buf) = crate::fs::read_file(dir_path) {
+                let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+                if len > 0 {
+                    if let Ok(s) = core::str::from_utf8(&buf[..len]) {
+                        return TextBuffer::new(s);
+                    }
+                } else if matches!(dir_path, "/tmp" | "/apps")
+                    || !matches!(
+                        dir_path,
+                        "/" | "/dev" | "/proc" | "/etc" | "/bin" | "/scripts"
+                    )
+                {
+                    return TextBuffer::empty();
+                }
+            }
+        }
+    }
+
+    match dir_path {
+        "/" => TextBuffer::new("bin/\ndev/\nproc/\netc/\ntmp/\nscripts/\napps/\n"),
+        "/dev" => TextBuffer::new("tty\nnull\nzero\nserial\nurandom\n"),
+        "/proc" => TextBuffer::new("meminfo\nuptime\ncpuinfo\nversion\n"),
+        "/etc" => TextBuffer::new("motd\nai.conf\nschedules.conf\n"),
+        "/bin" => TextBuffer::new("sh\n"),
+        "/scripts" => TextBuffer::new("heartbeat.js\n"),
+        "/tmp" | "/apps" => TextBuffer::empty(),
+        _ => TextBuffer::empty(),
+    }
+}
+
+/// Builtin `ls` command supporting relative/absolute paths, single files, flags, and `*`/`?` globs.
+pub fn builtin_ls(args: &[&str]) -> TextBuffer {
+    let mut tb = TextBuffer::empty();
+    let mut cursor = 0usize;
+    let append = |out: &mut TextBuffer, cur: &mut usize, s: &str| {
+        let b = s.as_bytes();
+        let clen = b.len().min(511 - *cur);
+        out.buf[*cur..*cur + clen].copy_from_slice(&b[..clen]);
+        *cur += clen;
+    };
+
+    let mut targets: [&str; MAX_ARGS] = [""; MAX_ARGS];
+    let mut target_count = 0usize;
+    for &arg in args {
+        if arg.starts_with('-') && arg.len() > 1 {
+            continue;
+        }
+        if target_count < MAX_ARGS {
+            targets[target_count] = arg;
+            target_count += 1;
+        }
+    }
+
+    if target_count == 0 {
+        targets[0] = "";
+        target_count = 1;
+    }
+
+    let cwd = current_dir();
+
+    for &raw_arg in &targets[..target_count] {
+        let resolved = if raw_arg.is_empty() {
+            cwd
+        } else {
+            resolve_path(cwd.as_str(), raw_arg)
+        };
+        let res_str = resolved.as_str();
+
+        if res_str.contains('*') || res_str.contains('?') {
+            let slash_idx = res_str.rfind('/').unwrap_or(0);
+            let parent_dir = if slash_idx == 0 {
+                "/"
+            } else {
+                &res_str[..slash_idx]
+            };
+            let pattern = &res_str[slash_idx + 1..];
+
+            if !is_valid_directory(parent_dir) {
+                append(&mut tb, &mut cursor, "ls: cannot access '");
+                append(&mut tb, &mut cursor, raw_arg);
+                append(&mut tb, &mut cursor, "': No such file or directory\n");
+                continue;
+            }
+
+            let entries_tb = read_dir_entries(parent_dir);
+            let display_prefix = if let Some(raw_slash) = raw_arg.rfind('/') {
+                &raw_arg[..=raw_slash]
+            } else {
+                ""
+            };
+
+            let mut matched_any = false;
+            for entry in entries_tb.as_str().lines() {
+                if entry.is_empty() {
+                    continue;
+                }
+                let clean_entry = entry.trim_end_matches('/');
+                if wildcard_match(pattern, clean_entry) {
+                    append(&mut tb, &mut cursor, display_prefix);
+                    append(&mut tb, &mut cursor, entry);
+                    append(&mut tb, &mut cursor, "\n");
+                    matched_any = true;
+                }
+            }
+
+            if !matched_any {
+                append(&mut tb, &mut cursor, "ls: cannot access '");
+                append(&mut tb, &mut cursor, raw_arg);
+                append(&mut tb, &mut cursor, "': No such file or directory\n");
+            }
+        } else {
+            let st = crate::fs::stat(res_str);
+            if st == 1 || is_valid_directory(res_str) {
+                let entries_tb = read_dir_entries(res_str);
+                append(&mut tb, &mut cursor, entries_tb.as_str());
+            } else if st == 0 {
+                append(&mut tb, &mut cursor, raw_arg);
+                append(&mut tb, &mut cursor, "\n");
+            } else {
+                append(&mut tb, &mut cursor, "ls: cannot access '");
+                append(&mut tb, &mut cursor, raw_arg);
+                append(&mut tb, &mut cursor, "': No such file or directory\n");
+            }
+        }
+    }
+
+    tb.len = cursor;
+    tb
+}
+
 /// Execute a parsed shell command.
 pub fn execute_command(cmd: &Command<'_>) {
     if cmd.is_empty() {
@@ -577,6 +930,8 @@ pub fn execute_command(cmd: &Command<'_>) {
         "help" => {
             crate::io::println("metalOS shell built-in commands:");
             crate::io::println("  help          - Display this help message");
+            crate::io::println("  cd [dir]      - Change current working directory");
+            crate::io::println("  pwd           - Print current working directory");
             crate::io::println("  echo [args]   - Print arguments joined by space");
             crate::io::println("  uname [-a]    - Print system information");
             crate::io::println("  ls [path]     - List directory contents");
@@ -589,10 +944,21 @@ pub fn execute_command(cmd: &Command<'_>) {
             crate::io::println("  shutdown      - Power off QEMU virtual machine");
             crate::io::println("  exit [code]   - Exit shell");
         }
+        "cd" => match builtin_cd(cmd.args.as_slice()) {
+            Ok(Some(out)) => crate::io::print(&out),
+            Ok(None) => {}
+            Err(err_msg) => crate::io::print(&err_msg),
+        },
+        "pwd" => {
+            let out = builtin_pwd();
+            crate::io::print(&out);
+        }
         "echo" => {
             let out = echo(&cmd.args);
             if let Some(target_path) = cmd.redirect_stdout {
-                let _ = crate::fs::write_file(target_path, out.as_bytes());
+                let cwd = current_dir();
+                let resolved = resolve_path(cwd.as_str(), target_path);
+                let _ = crate::fs::write_file(resolved.as_str(), out.as_bytes());
             } else {
                 crate::io::print(&out);
             }
@@ -603,20 +969,16 @@ pub fn execute_command(cmd: &Command<'_>) {
             crate::io::print(&out);
         }
         "ls" => {
-            let path = if cmd.args.is_empty() { "/" } else { cmd.args[0] };
-            if path == "/dev" || path == "dev" {
-                crate::io::println("tty\nnull\nzero\nserial");
-            } else if path == "/proc" || path == "proc" {
-                crate::io::println("meminfo\nuptime\ncpuinfo\nversion");
-            } else {
-                crate::io::println("bin/\ndev/\nproc/\netc/\ntmp/");
-            }
+            let out = builtin_ls(cmd.args.as_slice());
+            crate::io::print(&out);
         }
         "cat" => {
             if cmd.args.is_empty() {
                 crate::io::println("cat: missing file operand");
             } else {
-                match crate::fs::read_file(cmd.args[0]) {
+                let cwd = current_dir();
+                let resolved = resolve_path(cwd.as_str(), cmd.args[0]);
+                match crate::fs::read_file(resolved.as_str()) {
                     Ok(buf) => {
                         let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
                         if let Ok(s) = core::str::from_utf8(&buf[..len]) {
@@ -735,7 +1097,10 @@ pub fn execute_line(line: &str) {
 pub fn run_shell() {
     let mut history = History::new();
     loop {
-        crate::io::print("metalos:/$ ");
+        let cwd = current_dir();
+        crate::io::print("metalos:");
+        crate::io::print(cwd.as_str());
+        crate::io::print("$ ");
         let line_buf = readline();
         let line_str = line_from_buf(&line_buf);
         let trimmed = line_str.trim();

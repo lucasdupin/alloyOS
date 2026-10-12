@@ -963,7 +963,6 @@ impl AiRuntime {
              gemini_model={}\n\
              claude_model={}\n\
              chatgpt_model={}\n\
-             shell_access=disabled\n\
              ui_mode=agent_exclusive\n",
             self.active.as_str(),
             self.active_model_id(),
@@ -1006,14 +1005,6 @@ impl AiRuntime {
                 }
                 "chatgpt_model" => {
                     self.chatgpt.model = v.to_string();
-                }
-                "shell_access" => {
-                    if v != "disabled" {
-                        return Err(AiError::ShellAccessForbidden(
-                            "Cannot enable shell_access in /etc/ai.conf on shell-free metalOS"
-                                .to_string(),
-                        ));
-                    }
                 }
                 _ => {}
             }

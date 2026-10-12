@@ -221,9 +221,7 @@ mod tests {
         // Test loading a custom /etc/ai.conf into a fresh runtime
         let mut restored = AiRuntime::new();
         restored
-            .load_config_str(
-                "provider=claude\nmodel=claude-sonnet-4-20250514\nshell_access=disabled\n",
-            )
+            .load_config_str("provider=claude\nmodel=claude-sonnet-4-20250514\n")
             .expect("config should load");
         assert_eq!(restored.active_provider_name(), "claude");
         assert_eq!(restored.active_model_id(), "claude-sonnet-4-20250514");

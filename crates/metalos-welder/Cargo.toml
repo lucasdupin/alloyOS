@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 metalos-forge = { path = "../metalos-forge" }
+metalos-js = { path = "../metalos-js" }
 serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 

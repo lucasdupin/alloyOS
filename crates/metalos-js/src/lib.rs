@@ -13,11 +13,14 @@ pub mod runtime;
 pub mod scheduler;
 pub mod value;
 
-pub use host::{MetalOsHost, OsEvent, SystemStatus, VirtualHostEnv};
+pub use host::{
+    CapabilityRequest, CapabilityScopedHost, MetalOsHost, OsEvent, ScriptCapabilities,
+    ScriptCapability, SystemStatus, VirtualHostEnv,
+};
 pub use parser::parse_program;
 pub use runtime::{JsIsolate, JsRuntime, V8Isolate, DEFAULT_MAX_STEPS};
 pub use scheduler::{
-     glob_match, CalendarTime, CronExpr, CronField, CronParseError, EventPattern, ScheduleTrigger,
+    glob_match, CalendarTime, CronExpr, CronField, CronParseError, EventPattern, ScheduleTrigger,
     ScheduledScript, ScriptExecutionReport, ScriptScheduler, ScriptStore, SCHEDULES_CONF_PATH,
 };
 pub use value::{json_parse, json_stringify, FunctionBody, JsError, JsFunction, JsValue};
@@ -389,6 +392,94 @@ mod tests {
             host.notifications,
             vec!["Processed /inbox/order_42.json".to_string()]
         );
+    }
+
+    #[test]
+    fn test_capability_scoping_fs_net_sys_ui_and_traversal_blocking() {
+        let mut host = VirtualHostEnv::with_capabilities(
+            ScriptCapabilities::none()
+                .with_fs_read("/inbox")
+                .with_fs_write("/outbox")
+                .with_net_domain("api.metalos.local")
+                .with_sys_status(false)
+                .with_ui_notify(true),
+        );
+        host.files.insert("/inbox/msg.txt".to_string(), "ok".to_string());
+        host.files.insert("/etc/secret.conf".to_string(), "top-secret".to_string());
+        host.register_http_response("https://api.metalos.local/ping", "pong");
+        host.register_http_response("https://evil.example.com/exfil", "nope");
+
+        let mut rt = JsRuntime::new();
+
+        // Allowed read under /inbox
+        assert_eq!(
+            rt.eval_with_host("MetalOS.fs.read('/inbox/msg.txt');", &mut host),
+            Ok(JsValue::String("ok".to_string()))
+        );
+        // Denied read outside /inbox or via .. traversal
+        assert!(matches!(
+            rt.eval_with_host("MetalOS.fs.read('/etc/secret.conf');", &mut host),
+            Err(JsError::ForbiddenCapability(_))
+        ));
+        assert!(matches!(
+            rt.eval_with_host("MetalOS.fs.read('/inbox/../etc/secret.conf');", &mut host),
+            Err(JsError::ForbiddenCapability(_))
+        ));
+
+        // Allowed write under /outbox
+        assert_eq!(
+            rt.eval_with_host("MetalOS.fs.write('/outbox/result.txt', 'done');", &mut host),
+            Ok(JsValue::Bool(true))
+        );
+        // Denied write outside /outbox
+        assert!(matches!(
+            rt.eval_with_host("MetalOS.fs.write('/etc/ai.conf', 'pwn');", &mut host),
+            Err(JsError::ForbiddenCapability(_))
+        ));
+
+        // Allowed net.fetch to api.metalos.local, denied to evil.example.com
+        assert_eq!(
+            rt.eval_with_host(
+                "MetalOS.net.fetch('https://api.metalos.local/ping');",
+                &mut host
+            ),
+            Ok(JsValue::String("pong".to_string()))
+        );
+        assert!(matches!(
+            rt.eval_with_host(
+                "MetalOS.net.fetch('https://evil.example.com/exfil');",
+                &mut host
+            ),
+            Err(JsError::ForbiddenCapability(_))
+        ));
+
+        // SysStatus is disabled, UiNotify is enabled
+        assert!(matches!(
+            rt.eval_with_host("MetalOS.sys.status();", &mut host),
+            Err(JsError::ForbiddenCapability(_))
+        ));
+        assert_eq!(
+            rt.eval_with_host("MetalOS.ui.notify('Scoped ok');", &mut host),
+            Ok(JsValue::Bool(true))
+        );
+    }
+
+    #[test]
+    fn test_shorthand_triggers_and_export_main_execution() {
+        let mut host = VirtualHostEnv::new();
+        let mut sched = ScriptScheduler::new();
+        sched.register_script_source(
+            "/scripts/heartbeat.js",
+            "export function main() { return MetalOS.sys.status().uptimeMs; }",
+        );
+        let trigger = ScheduleTrigger::deserialize("every:60s").unwrap();
+        assert_eq!(trigger, ScheduleTrigger::IntervalMs { every_ms: 60_000 });
+        sched.schedule_script("hb", "/scripts/heartbeat.js", trigger);
+
+        host.status.uptime_ms = 60_000;
+        let reports = sched.tick_time(60_000, None, &mut host);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].result, Ok(JsValue::Number(60_000)));
     }
 }
 

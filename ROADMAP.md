@@ -228,11 +228,11 @@ Forge only through an explicitly granted `MetalOS.forge(...)` capability.
   - One-shot timers, intervals, five-field cron expressions and event matching
   - Schedule serialization and host-backed save/load interfaces
   - Kernel boot dispatches the system boot event
-- [ ] **Live automation integration**
+- [x] **Live automation integration**
   - Connect Welder script tools to interpreter execution and the scheduler
   - Wire ongoing kernel time, filesystem, network and lifecycle events
   - Supply real capability-scoped OS host bindings in place of virtual host data
-- [ ] **Durable scripts and schedules**
+- [x] **Durable scripts and schedules**
   - Store `/scripts/*.js` and `/etc/schedules.conf` through CobaltFS
   - Restore and verify automations across reboot
 
@@ -300,6 +300,6 @@ learning. See [KNOWLEDGE.md](KNOWLEDGE.md) for the design.
 | **M3: Boot & Model Readiness** | Liquid boot logo, resident weight loading and workspace transition | `metalos-boot`, `metalos-kernel`, `metalos-ferrofluid` | Logo turbulence and loading implemented |
 | **M4: Ferrofluid System UI** | Slint rendering, chat bridge and native input | `metalos-ferrofluid`, `metalos-keyboard`, `metalos-kernel` | Chat and keyboard connected; synthesized views, IRQ wakeups and voice pending |
 | **M5: Welder & Forge** | Agent orchestration, resident inference and cloud adapters | `metalos-welder`, `metalos-forge` | Runtime libraries and model access implemented; default Auto routing, complete agent integration and full-model acceptance pending |
-| **M6: JS Automation** | Capability-scoped interpreter and time/event scheduler | `metalos-js`, `metalos-welder` | Libraries implemented; live OS wiring and durability pending |
+| **M6: JS Automation** | Capability-scoped interpreter and time/event scheduler | `metalos-js`, `metalos-welder`, `metalos-kernel` | Implemented |
 | **M7: MCP Apps** | Headless app platform, scoped capabilities and agent presentation | `metalos-mcp`, `metalos-welder`, `metalos-ferrofluid` | Core libraries implemented; live broker, app skills and view transport pending |
 | **M8: User Knowledge** | Durable profile, retrieval, learning and user controls | `metalos-welder`, `metalos-kernel`, `metalos-ferrofluid` | Planned |

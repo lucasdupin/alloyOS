@@ -449,5 +449,8 @@ pub mod tools;
 pub mod ui_synth;
 pub use runtime::{AgentRuntime, ConsoleTurnOutput};
 pub use metalos_forge::provider::{AiError, Message, Response, ToolCall as ProviderToolCall, ToolParameter, ToolSpec};
-pub use tools::{NativeToolRegistry, ToolExecutionOutput, is_forbidden_shell_tool, validate_console_input_no_shell, SHELL_FREE_POLICY_MESSAGE};
+pub use tools::{
+    is_forbidden_shell_tool, validate_console_input_no_shell, NativeToolRegistry,
+    SharedMapVfsBackend, ToolExecutionOutput, ToolVfsBackend, SHELL_FREE_POLICY_MESSAGE,
+};
 pub use ui_synth::{AgentUiSynthesizer, SynthesizedUiView, UiCallerOrigin, UiMetric, UiScheduleEntry, UiTable, ViewKind};

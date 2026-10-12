@@ -1,3 +1,4 @@
+pub mod automation;
 pub mod block;
 pub mod cobaltfs;
 pub mod devfs;

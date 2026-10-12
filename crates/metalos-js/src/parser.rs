@@ -83,6 +83,12 @@ impl Parser {
     }
 
     fn parse_stmt(&mut self) -> Result<Stmt, JsError> {
+        if matches!(self.peek(), Token::Ident(s) if s == "export") {
+            self.advance();
+            if matches!(self.peek(), Token::Ident(s) if s == "default") {
+                self.advance();
+            }
+        }
         match self.peek() {
             Token::Let => self.parse_var_decl(VarKind::Let),
             Token::Const => self.parse_var_decl(VarKind::Const),

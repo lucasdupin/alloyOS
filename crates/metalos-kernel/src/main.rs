@@ -210,9 +210,8 @@ pub extern "C" fn aarch64_kernel_entry() -> ! {
         mcp_registry.app_count()
     );
 
-    // 12. Init Welder Agent Runtime — Shell-Free Agent Operator (Phase 5)
-    let mut ai_runtime = metalos_welder::AgentRuntime::new();
-    ai_runtime.set_forge(forge_service.shared());
+    // 12. Init Welder Agent Runtime — Shell-Free Agent Operator & Live JS Automation (Phases 5 & 6)
+    let ai_runtime = fs::automation::init_kernel_agent_runtime(forge_service.shared());
     serial_println!(
         "[welder] Agent runtime online (active={}, shell-access=disabled).",
         ai_runtime.active_provider_name()

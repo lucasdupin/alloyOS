@@ -1,5 +1,7 @@
 //! Welder's conversational console, persistent configuration, tools and agent-owned UI.
-use crate::tools::{validate_console_input_no_shell, NativeToolRegistry, ToolExecutionOutput};
+use crate::tools::{
+    validate_console_input_no_shell, NativeToolRegistry, ToolExecutionOutput, ToolVfsBackend,
+};
 use crate::ui_synth::{AgentUiSynthesizer, SynthesizedUiView};
 use alloc::{
     format,
@@ -11,6 +13,7 @@ use alloc::{
 use core::{cell::RefCell, task::Poll};
 use metalos_forge::provider::{AiError, Message, Response};
 use metalos_forge::{ActiveProvider, Forge, ModelGateway};
+use metalos_js::{CalendarTime, OsEvent, ScriptExecutionReport};
 
 /// Result of handling a single conversational or slash-command turn in the Ferrofluid AI Console.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,11 +60,112 @@ impl AgentRuntime {
         runtime
     }
 
-    /// Connect the long-lived resident device service to the default local provider.
+    /// Construct an `AgentRuntime` pre-wired with a shared `Forge` instance.
+    pub fn with_forge(forge: Rc<RefCell<Forge>>) -> Self {
+        let mut runtime = Self::new();
+        runtime.set_forge(forge);
+        runtime
+    }
+
+    /// Construct an `AgentRuntime` backed by a durable VFS backend (e.g. CobaltFS),
+    /// restoring any persisted `/etc/ai.conf`, `/scripts/*.js`, and `/etc/schedules.conf`.
+    pub fn with_vfs_backend(backend: Rc<RefCell<dyn ToolVfsBackend>>) -> Self {
+        let mut runtime = Self {
+            gateway: ModelGateway::new(),
+            history: vec![Message::system(
+                "You are the metalOS Ferrofluid AI Agent running on bare-metal ARM64. \
+                 POSIX shells (sh, bash) do not exist for the agent; use structured OS tools, \
+                 local JavaScript scripts, and headless MCP apps. Only you can synthesize UI.",
+            )],
+            tool_registry: NativeToolRegistry::with_vfs_backend(backend),
+            ui_synthesizer: AgentUiSynthesizer::new(),
+        };
+        if let Some(conf) = runtime.tool_registry.vfs_read(Self::CONFIG_PATH) {
+            let _ = runtime.gateway.load_config_str(&conf);
+        } else {
+            runtime.persist_config_to_vfs();
+        }
+        runtime
+    }
+
+    /// Attach a custom VFS backend and restore persisted configuration, scripts, and schedules.
+    pub fn set_vfs_backend(
+        &mut self,
+        backend: Rc<RefCell<dyn ToolVfsBackend>>,
+    ) -> Result<usize, AiError> {
+        self.tool_registry.set_vfs_backend(backend);
+        self.restore_from_vfs()
+    }
+
+    /// Reloads `/etc/ai.conf` (if present) and restores `/scripts/*.js` and `/etc/schedules.conf`
+    /// from the attached VFS backend.
+    pub fn restore_from_vfs(&mut self) -> Result<usize, AiError> {
+        if let Some(conf) = self.tool_registry.vfs_read(Self::CONFIG_PATH) {
+            let _ = self.gateway.load_config_str(&conf);
+        } else {
+            self.persist_config_to_vfs();
+        }
+        self.tool_registry
+            .restore_automations_from_vfs()
+            .map_err(AiError::ConfigError)
+    }
+
+    /// Connect the long-lived resident device service to the default local provider
+    /// and make it available to `MetalOS.forge(...)` in capability-authorized JS scripts.
     pub fn set_forge(&mut self, forge: Rc<RefCell<Forge>>) {
+        self.tool_registry.set_forge(forge.clone());
         self.gateway.set_forge(forge);
         self.persist_config_to_vfs();
     }
+
+    /// Advance the JS automation scheduler to `now_ms` (and optional `calendar`) and return execution reports.
+    pub fn tick_scheduler(
+        &mut self,
+        now_ms: u64,
+        calendar: Option<CalendarTime>,
+    ) -> Vec<ScriptExecutionReport> {
+        self.tool_registry.tick_scheduler(now_ms, calendar)
+    }
+
+    /// Dispatch an OS event to all matching scheduled JS scripts.
+    pub fn dispatch_os_event(&mut self, event: &OsEvent) -> Vec<ScriptExecutionReport> {
+        self.tool_registry.dispatch_os_event(event)
+    }
+
+    /// Trigger all scripts scheduled for system boot (`SystemBoot` / `boot`).
+    pub fn notify_system_boot(&mut self) -> Vec<ScriptExecutionReport> {
+        self.tool_registry.notify_system_boot()
+    }
+
+    /// Trigger all scripts scheduled for file creation on `path`.
+    pub fn notify_file_created(&mut self, path: &str) -> Vec<ScriptExecutionReport> {
+        self.tool_registry.notify_file_created(path)
+    }
+
+    /// Trigger all scripts scheduled for file modifications on `path`.
+    pub fn notify_file_modified(&mut self, path: &str) -> Vec<ScriptExecutionReport> {
+        self.tool_registry.notify_file_modified(path)
+    }
+
+    /// Trigger all scripts scheduled for file deletion on `path`.
+    pub fn notify_file_deleted(&mut self, path: &str) -> Vec<ScriptExecutionReport> {
+        self.tool_registry.notify_file_deleted(path)
+    }
+
+    /// Trigger all scripts scheduled for network interface coming online.
+    pub fn notify_network_online(&mut self) -> Vec<ScriptExecutionReport> {
+        self.tool_registry.notify_network_online()
+    }
+
+    /// Trigger all scripts scheduled for incoming network packets/requests on `port`.
+    pub fn notify_network_request(
+        &mut self,
+        port: u16,
+        payload: &str,
+    ) -> Vec<ScriptExecutionReport> {
+        self.tool_registry.notify_network_request(port, payload)
+    }
+
     pub fn active_provider_name(&self) -> &'static str {
         self.gateway.active_provider_name()
     }
@@ -425,5 +529,200 @@ mod tests {
         ai.load_config_str("provider=forge\nmodel=gemma-2-2b-it\n")
             .unwrap();
         assert_eq!(ai.active_provider_name(), "forge");
+    }
+
+    #[test]
+    fn live_script_create_run_schedule_and_event_triggers() {
+        let mut runtime = AgentRuntime::new();
+        let mut ui = AgentUiSynthesizer::new();
+
+        // 1. Create and immediately run a script via Welder tools
+        let create_call = ToolCall::new(
+            "c1",
+            "script_create",
+            r#"{"path":"/scripts/compute.js","code":"let s = MetalOS.sys.status(); MetalOS.fs.write('/var/computed.txt', 'tasks=' + s.activeTasks); MetalOS.ui.notify('Compute: Done'); s.activeTasks * 10;"}"#,
+        );
+        runtime
+            .tool_registry
+            .execute_tool(&create_call, &mut ui)
+            .expect("script_create must succeed");
+
+        let run_call = ToolCall::new("r1", "script_run", r#"{"path":"/scripts/compute.js"}"#);
+        let run_out = runtime
+            .tool_registry
+            .execute_tool(&run_call, &mut ui)
+            .expect("script_run must execute via metalos-js");
+        assert!(run_out.output_json.contains(r#""ok":true"#));
+        assert!(run_out.output_json.contains(r#""value":60"#));
+        assert_eq!(
+            runtime.tool_registry.vfs_read("/var/computed.txt").as_deref(),
+            Some("tasks=6")
+        );
+        assert_eq!(
+            runtime.tool_registry.notifications(),
+            &[String::from("Compute: Done")]
+        );
+
+        // 2. Schedule an inbox watcher triggered by `fs:create:/inbox/*`
+        let watcher_create = ToolCall::new(
+            "c2",
+            "script_create",
+            r#"{"path":"/scripts/inbox_watcher.js","code":"let raw = MetalOS.fs.read(__event.path); MetalOS.fs.write('/processed/latest.txt', 'seen:' + raw); raw.length;"}"#,
+        );
+        runtime
+            .tool_registry
+            .execute_tool(&watcher_create, &mut ui)
+            .unwrap();
+
+        let watcher_sched = ToolCall::new(
+            "s1",
+            "script_schedule",
+            r#"{"path":"/scripts/inbox_watcher.js","trigger":"fs:create:/inbox/*"}"#,
+        );
+        runtime
+            .tool_registry
+            .execute_tool(&watcher_sched, &mut ui)
+            .unwrap();
+
+        // Writing a new file under /inbox via `fs_write` must automatically fire the scheduled script
+        let write_inbox = ToolCall::new(
+            "w1",
+            "fs_write",
+            r#"{"path":"/inbox/job1.txt","content":"payload-42"}"#,
+        );
+        let write_out = runtime
+            .tool_registry
+            .execute_tool(&write_inbox, &mut ui)
+            .unwrap();
+        assert!(write_out.output_json.contains(r#""triggered_scripts":1"#));
+        assert_eq!(
+            runtime
+                .tool_registry
+                .vfs_read("/processed/latest.txt")
+                .as_deref(),
+            Some("seen:payload-42")
+        );
+
+        // 3. Schedule a network request handler and a timer interval script
+        let net_create = ToolCall::new(
+            "c3",
+            "script_create",
+            r#"{"path":"/scripts/net_hook.js","code":"MetalOS.fs.write('/var/net_last.txt', __event.port + ':' + __event.payload); true;"}"#,
+        );
+        runtime
+            .tool_registry
+            .execute_tool(&net_create, &mut ui)
+            .unwrap();
+        let net_sched = ToolCall::new(
+            "s2",
+            "script_schedule",
+            r#"{"path":"/scripts/net_hook.js","trigger":"net:request:8080"}"#,
+        );
+        runtime
+            .tool_registry
+            .execute_tool(&net_sched, &mut ui)
+            .unwrap();
+
+        let net_reports = runtime.notify_network_request(8080, "GET /health");
+        assert_eq!(net_reports.len(), 1);
+        assert_eq!(
+            runtime.tool_registry.vfs_read("/var/net_last.txt").as_deref(),
+            Some("8080:GET /health")
+        );
+    }
+
+    #[test]
+    fn durable_scripts_and_schedules_restore_across_reboot() {
+        let shared_vfs = Rc::new(RefCell::new(crate::tools::SharedMapVfsBackend::new()));
+
+        // Boot 1: Create scripts and register schedules
+        {
+            let mut runtime = AgentRuntime::with_vfs_backend(shared_vfs.clone());
+            let mut ui = AgentUiSynthesizer::new();
+
+            runtime
+                .tool_registry
+                .execute_tool(
+                    &ToolCall::new(
+                        "c1",
+                        "script_create",
+                        r#"{"path":"/scripts/on_boot.js","code":"MetalOS.fs.write('/var/boot_marker.txt', 'booted-ok'); 'booted';"}"#,
+                    ),
+                    &mut ui,
+                )
+                .unwrap();
+            runtime
+                .tool_registry
+                .execute_tool(
+                    &ToolCall::new(
+                        "s1",
+                        "script_schedule",
+                        r#"{"path":"/scripts/on_boot.js","trigger":"boot"}"#,
+                    ),
+                    &mut ui,
+                )
+                .unwrap();
+
+            runtime
+                .tool_registry
+                .execute_tool(
+                    &ToolCall::new(
+                        "c2",
+                        "script_create",
+                        r#"{"path":"/scripts/tick_counter.js","code":"let prev = MetalOS.fs.read('/var/ticks.txt'); let next = '1'; if (prev !== null) { next = prev + '1'; } MetalOS.fs.write('/var/ticks.txt', next); next;"}"#,
+                    ),
+                    &mut ui,
+                )
+                .unwrap();
+            runtime
+                .tool_registry
+                .execute_tool(
+                    &ToolCall::new(
+                        "s2",
+                        "script_schedule",
+                        r#"{"path":"/scripts/tick_counter.js","trigger":"every:10s"}"#,
+                    ),
+                    &mut ui,
+                )
+                .unwrap();
+        }
+
+        // Verify `/etc/schedules.conf` was persisted into the shared VFS backing store
+        let conf_text = shared_vfs
+            .borrow_mut()
+            .read_file("/etc/schedules.conf")
+            .expect("/etc/schedules.conf must be persisted");
+        assert!(conf_text.contains("/scripts/on_boot.js"));
+        assert!(conf_text.contains("/scripts/tick_counter.js"));
+
+        // Boot 2: Construct a fresh AgentRuntime attached to the same durable VFS backend
+        let mut rebooted = AgentRuntime::with_vfs_backend(shared_vfs.clone());
+        assert_eq!(rebooted.tool_registry.scheduler().schedules().len(), 2);
+
+        // Firing SystemBoot on the rebooted runtime executes the restored `/scripts/on_boot.js`
+        let boot_reports = rebooted.notify_system_boot();
+        assert_eq!(boot_reports.len(), 1);
+        assert_eq!(
+            rebooted
+                .tool_registry
+                .vfs_read("/var/boot_marker.txt")
+                .as_deref(),
+            Some("booted-ok")
+        );
+
+        // Advancing the scheduler clock executes the restored `/scripts/tick_counter.js`
+        let tick1 = rebooted.tick_scheduler(10_000, None);
+        assert_eq!(tick1.len(), 1);
+        assert_eq!(
+            rebooted.tool_registry.vfs_read("/var/ticks.txt").as_deref(),
+            Some("1")
+        );
+
+        let tick2 = rebooted.tick_scheduler(20_000, None);
+        assert_eq!(tick2.len(), 1);
+        assert_eq!(
+            rebooted.tool_registry.vfs_read("/var/ticks.txt").as_deref(),
+            Some("11")
+        );
     }
 }

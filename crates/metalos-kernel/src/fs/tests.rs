@@ -288,4 +288,185 @@ pub mod tests {
         fs.unlink("/hello.txt").expect("Unlink file");
         assert_eq!(fs.lookup("/hello.txt"), Err(FsError::NotFound));
     }
+
+    impl MemBlockDevice {
+        fn new_formatted_large() -> Arc<Self> {
+            // 1 KiB-block CobaltFS image with 128 blocks and 64 inodes:
+            // Block 0: boot block
+            // Block 1: Superblock
+            // Block 2: BGD table
+            // Block 3: Block bitmap
+            // Block 4: Inode bitmap
+            // Block 5..13: Inode table (64 inodes * 128B = 8192B = 8 blocks)
+            // Block 13: Root directory data block
+            let bs = 1024usize;
+            let total_blocks = 128u32;
+            let inodes_count = 64u32;
+            let mut img = vec![0u8; bs * total_blocks as usize];
+
+            let sb = &mut img[1024..2048];
+            w32(sb, 0, inodes_count);
+            w32(sb, 4, total_blocks);
+            w32(sb, 12, total_blocks - 14);
+            w32(sb, 16, inodes_count - 11);
+            w32(sb, 20, 1);
+            w32(sb, 24, 0);
+            w32(sb, 32, total_blocks);
+            w32(sb, 40, inodes_count);
+            w16(sb, 56, COBALTFS_MAGIC);
+            w32(sb, 76, 0);
+
+            let bgd = BlockGroupDescriptor {
+                block_bitmap: 3,
+                inode_bitmap: 4,
+                inode_table: 5,
+                free_blocks_count: (total_blocks - 14) as u16,
+                free_inodes_count: (inodes_count - 11) as u16,
+                used_dirs_count: 1,
+            };
+            bgd.to_bytes(&mut img[2048..2048 + 32]);
+
+            // Mark blocks 0..=13 used in block bitmap (Block 3, offset 3072)
+            img[3072] = 0xFF; // blocks 0..7
+            img[3073] = 0b0011_1111; // blocks 8..=13
+
+            // Mark reserved inodes 1..=11 used in inode bitmap (Block 4, offset 4096)
+            img[4096] = 0xFF;
+            img[4097] = 0b0000_0111;
+
+            let mut root_ino = DiskInode {
+                mode: S_IFDIR | 0o755,
+                uid: 0,
+                size_lo: bs as u32,
+                atime: 0,
+                ctime: 0,
+                mtime: 0,
+                dtime: 0,
+                gid: 0,
+                links_count: 2,
+                blocks_512: 2,
+                flags: 0,
+                block: [0; 15],
+                file_acl: 0,
+                dir_acl: 0,
+            };
+            root_ino.block[0] = 13;
+            let root_off = 5120 + (ROOT_INO as usize - 1) * 128;
+            root_ino.to_bytes(&mut img[root_off..root_off + 128]);
+
+            let dir = &mut img[13 * bs..14 * bs];
+            w32(dir, 0, ROOT_INO as u32);
+            w16(dir, 4, 12);
+            dir[6] = 1;
+            dir[7] = FT_DIR;
+            dir[8] = b'.';
+
+            w32(dir, 12, ROOT_INO as u32);
+            w16(dir, 16, (bs - 12) as u16);
+            dir[18] = 2;
+            dir[19] = FT_DIR;
+            dir[20] = b'.';
+            dir[21] = b'.';
+
+            Arc::new(Self {
+                data: Mutex::new(img),
+                block_size: 512,
+            })
+        }
+    }
+
+    #[test]
+    fn cobaltfs_durable_scripts_and_schedules_persist_across_remount_and_execute() {
+        use crate::fs::automation::KernelVfsBackend;
+        use metalos_welder::{AgentRuntime, AgentUiSynthesizer, ProviderToolCall, ToolVfsBackend};
+
+        let dev = MemBlockDevice::new_formatted_large();
+
+        // Boot 1: Mount CobaltFS on the block device, create & schedule JS automations via Welder
+        {
+            let fs1 = CobaltFS::mount(dev.clone()).expect("Mount CobaltFS boot 1");
+            let vfs1 = Arc::new(Mutex::new(Vfs::with_root(Arc::new(fs1), "CobaltFS")));
+            let backend1 = KernelVfsBackend::from_vfs_rc(vfs1);
+            let mut runtime1 = AgentRuntime::with_vfs_backend(backend1);
+            let mut ui = AgentUiSynthesizer::new();
+
+            runtime1
+                .tool_registry
+                .execute_tool(
+                    &ProviderToolCall::new(
+                        "c1",
+                        "script_create",
+                        r#"{"path":"/scripts/boot_tag.js","source":"MetalOS.fs.write('/tmp/booted.txt', 'cobalt-boot-1'); 'ok';"}"#,
+                    ),
+                    &mut ui,
+                )
+                .expect("create boot_tag.js on CobaltFS");
+
+            runtime1
+                .tool_registry
+                .execute_tool(
+                    &ProviderToolCall::new(
+                        "s1",
+                        "script_schedule",
+                        r#"{"path":"/scripts/boot_tag.js","trigger":"boot"}"#,
+                    ),
+                    &mut ui,
+                )
+                .expect("schedule boot_tag.js on CobaltFS");
+
+            runtime1
+                .tool_registry
+                .execute_tool(
+                    &ProviderToolCall::new(
+                        "c2",
+                        "script_create",
+                        r#"{"path":"/scripts/tmp_watcher.js","source":"let v = MetalOS.fs.read(EVENT.path); MetalOS.fs.write('/etc/audit.txt', 'watched:' + v); true;"}"#,
+                    ),
+                    &mut ui,
+                )
+                .expect("create tmp_watcher.js on CobaltFS");
+
+            runtime1
+                .tool_registry
+                .execute_tool(
+                    &ProviderToolCall::new(
+                        "s2",
+                        "script_schedule",
+                        r#"{"path":"/scripts/tmp_watcher.js","trigger":"fs:create:/tmp/*"}"#,
+                    ),
+                    &mut ui,
+                )
+                .expect("schedule tmp_watcher.js on CobaltFS");
+        }
+
+        // Boot 2: Remount CobaltFS from the raw block device into a brand-new Vfs and AgentRuntime
+        let fs2 = CobaltFS::mount(dev).expect("Remount CobaltFS boot 2");
+        let vfs2 = Arc::new(Mutex::new(Vfs::with_root(Arc::new(fs2), "CobaltFS")));
+        let backend2 = KernelVfsBackend::from_vfs_rc(vfs2);
+        let mut runtime2 = AgentRuntime::with_vfs_backend(backend2.clone());
+
+        assert_eq!(
+            runtime2.tool_registry.scheduler().schedules().len(),
+            2,
+            "Both schedules must be restored from /etc/schedules.conf on CobaltFS"
+        );
+
+        // Dispatch SystemBoot: boot_tag.js writes /tmp/booted.txt, which cascades to tmp_watcher.js
+        // writing /etc/audit.txt on CobaltFS!
+        let reports = runtime2.notify_system_boot();
+        assert_eq!(
+            reports.len(),
+            2,
+            "SystemBoot must run boot_tag.js and cascade FsCreated(/tmp/booted.txt) to tmp_watcher.js"
+        );
+
+        assert_eq!(
+            backend2.borrow_mut().read_file("/tmp/booted.txt").as_deref(),
+            Some("cobalt-boot-1")
+        );
+        assert_eq!(
+            backend2.borrow_mut().read_file("/etc/audit.txt").as_deref(),
+            Some("watched:cobalt-boot-1")
+        );
+    }
 }

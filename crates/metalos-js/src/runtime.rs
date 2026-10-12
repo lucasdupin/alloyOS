@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 use crate::ast::{
     ArrowBody, AssignOp, AssignTarget, BinaryOp, Expr, Stmt, UnaryOp, UpdateOp, VarKind,
 };
-use crate::host::{MetalOsHost, VirtualHostEnv};
+use crate::host::{CapabilityRequest, MetalOsHost, VirtualHostEnv};
 use crate::parser::parse_program;
 use crate::value::{json_parse, json_stringify, FunctionBody, JsError, JsFunction, JsValue};
 
@@ -119,6 +119,13 @@ impl JsIsolate {
             match self.exec_stmt(stmt, host)? {
                 ControlFlow::None(v) => last_val = v,
                 ControlFlow::Return(v) => return Ok(v),
+            }
+        }
+        if last_val == JsValue::Undefined
+            && matches!(program.last(), Some(Stmt::FunctionDecl { name, .. }) if name == "main")
+        {
+            if let Ok(JsValue::Function(main_fn)) = self.lookup_var("main") {
+                return self.invoke_js_function(main_fn, &[], host);
             }
         }
         Ok(last_val)
@@ -775,6 +782,8 @@ impl JsIsolate {
                                         }
                                     }
                                 }
+                                host.check_capability(&CapabilityRequest::ForgeGenerate)
+                                    .map_err(JsError::ForbiddenCapability)?;
                                 host.forge(prompt, model, max_tokens).map(|s| Some(JsValue::String(s))).map_err(JsError::TypeError)
                             }
                             "log" => {
@@ -901,6 +910,8 @@ impl JsIsolate {
                         JsError::TypeError("MetalOS.fs.read requires a path argument".to_string())
                     })?
                     .to_js_string();
+                host.check_capability(&CapabilityRequest::FsRead(&path))
+                    .map_err(JsError::ForbiddenCapability)?;
                 match host.fs_read(&path) {
                     Some(content) => Ok(JsValue::String(content)),
                     None => Ok(JsValue::Null),
@@ -914,6 +925,8 @@ impl JsIsolate {
                 }
                 let path = args[0].to_js_string();
                 let content = args[1].to_js_string();
+                host.check_capability(&CapabilityRequest::FsWrite(&path))
+                    .map_err(JsError::ForbiddenCapability)?;
                 host.fs_write(&path, &content)
                     .map_err(JsError::HostError)?;
                 Ok(JsValue::Bool(true))
@@ -927,6 +940,8 @@ impl JsIsolate {
                         )
                     })?
                     .to_js_string();
+                host.check_capability(&CapabilityRequest::FsWrite(&path))
+                    .map_err(JsError::ForbiddenCapability)?;
                 let deleted = host.fs_delete(&path).map_err(JsError::HostError)?;
                 Ok(JsValue::Bool(deleted))
             }
@@ -935,6 +950,8 @@ impl JsIsolate {
                     .first()
                     .map(|v| v.to_js_string())
                     .unwrap_or_else(|| "/".to_string());
+                host.check_capability(&CapabilityRequest::FsRead(&dir_path))
+                    .map_err(JsError::ForbiddenCapability)?;
                 let entries = host
                     .fs_list(&dir_path)
                     .into_iter()
@@ -949,10 +966,14 @@ impl JsIsolate {
                         JsError::TypeError("MetalOS.net.fetch requires a url argument".to_string())
                     })?
                     .to_js_string();
+                host.check_capability(&CapabilityRequest::NetFetch(&url))
+                    .map_err(JsError::ForbiddenCapability)?;
                 let body = host.net_fetch(&url).map_err(JsError::HostError)?;
                 Ok(JsValue::String(body))
             }
             ("sys", "status") => {
+                host.check_capability(&CapabilityRequest::SysStatus)
+                    .map_err(JsError::ForbiddenCapability)?;
                 let st = host.sys_status();
                 let mut map = BTreeMap::new();
                 map.insert("uptimeMs".to_string(), JsValue::Number(st.uptime_ms as i64));
@@ -979,6 +1000,8 @@ impl JsIsolate {
                         )
                     })?
                     .to_js_string();
+                host.check_capability(&CapabilityRequest::UiNotify)
+                    .map_err(JsError::ForbiddenCapability)?;
                 host.ui_notify(&msg);
                 Ok(JsValue::Bool(true))
             }

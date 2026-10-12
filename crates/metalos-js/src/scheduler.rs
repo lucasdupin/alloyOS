@@ -3,7 +3,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use crate::host::{MetalOsHost, OsEvent};
+use crate::host::{CapabilityScopedHost, MetalOsHost, OsEvent, ScriptCapabilities};
 use crate::runtime::{JsIsolate, DEFAULT_MAX_STEPS};
 use crate::value::{JsError, JsValue};
 
@@ -239,9 +239,11 @@ impl EventPattern {
     /// Returns `true` if `event` matches this `EventPattern`.
     pub fn matches(&self, event: &OsEvent) -> bool {
         match (self, event) {
-            (EventPattern::FsCreated(pat), OsEvent::FsCreated { path }) => glob_match(pat, path),
-            (EventPattern::FsModified(pat), OsEvent::FsModified { path }) => glob_match(pat, path),
-            (EventPattern::FsDeleted(pat), OsEvent::FsDeleted { path }) => glob_match(pat, path),
+            (EventPattern::FsCreated(pat), OsEvent::FsCreated { path }) => fs_path_match(pat, path),
+            (EventPattern::FsModified(pat), OsEvent::FsModified { path }) => {
+                fs_path_match(pat, path)
+            }
+            (EventPattern::FsDeleted(pat), OsEvent::FsDeleted { path }) => fs_path_match(pat, path),
             (EventPattern::NetInterfaceUp, OsEvent::NetInterfaceUp) => true,
             (
                 EventPattern::NetPacketReceived { port: pat_port },
@@ -259,7 +261,7 @@ impl EventPattern {
         }
     }
 
-    fn serialize(&self) -> String {
+    pub fn serialize(&self) -> String {
         match self {
             EventPattern::FsCreated(p) => format!("FsCreated:{}", p),
             EventPattern::FsModified(p) => format!("FsModified:{}", p),
@@ -280,22 +282,57 @@ impl EventPattern {
         }
     }
 
-    fn deserialize(s: &str) -> Result<Self, String> {
-        if s == "NetInterfaceUp" {
-            return Ok(EventPattern::NetInterfaceUp);
+    pub fn deserialize(s: &str) -> Result<Self, String> {
+        let s = s.trim();
+        match s {
+            "NetInterfaceUp" | "NetworkOnline" | "net:online" => {
+                return Ok(EventPattern::NetInterfaceUp)
+            }
+            "SystemBoot" | "boot" => return Ok(EventPattern::SystemBoot),
+            "UserIdle" | "idle" => return Ok(EventPattern::UserIdle),
+            "NetPacketReceived" | "NetworkRequest" | "net:request" => {
+                return Ok(EventPattern::NetPacketReceived { port: None })
+            }
+            "LowMemory" => {
+                return Ok(EventPattern::LowMemory {
+                    threshold_bytes: None,
+                })
+            }
+            _ => {}
         }
-        if s == "SystemBoot" {
-            return Ok(EventPattern::SystemBoot);
+        if let Some(rest) = s
+            .strip_prefix("fs:create:")
+            .or_else(|| s.strip_prefix("fs:created:"))
+        {
+            return Ok(EventPattern::FsCreated(rest.to_string()));
         }
-        if s == "UserIdle" {
-            return Ok(EventPattern::UserIdle);
+        if let Some(rest) = s
+            .strip_prefix("fs:modify:")
+            .or_else(|| s.strip_prefix("fs:modified:"))
+        {
+            return Ok(EventPattern::FsModified(rest.to_string()));
+        }
+        if let Some(rest) = s
+            .strip_prefix("fs:delete:")
+            .or_else(|| s.strip_prefix("fs:deleted:"))
+        {
+            return Ok(EventPattern::FsDeleted(rest.to_string()));
+        }
+        if let Some(rest) = s.strip_prefix("net:request:") {
+            if rest == "*" {
+                return Ok(EventPattern::NetPacketReceived { port: None });
+            }
+            let p = rest
+                .parse::<u16>()
+                .map_err(|_| format!("Invalid port in EventPattern '{}'", s))?;
+            return Ok(EventPattern::NetPacketReceived { port: Some(p) });
         }
         if let Some((kind, arg)) = s.split_once(':') {
             match kind {
-                "FsCreated" => Ok(EventPattern::FsCreated(arg.to_string())),
-                "FsModified" => Ok(EventPattern::FsModified(arg.to_string())),
-                "FsDeleted" => Ok(EventPattern::FsDeleted(arg.to_string())),
-                "NetPacketReceived" => {
+                "FsCreated" | "FileCreated" => Ok(EventPattern::FsCreated(arg.to_string())),
+                "FsModified" | "FileModified" => Ok(EventPattern::FsModified(arg.to_string())),
+                "FsDeleted" | "FileDeleted" => Ok(EventPattern::FsDeleted(arg.to_string())),
+                "NetPacketReceived" | "NetworkRequest" => {
                     if arg == "*" {
                         Ok(EventPattern::NetPacketReceived { port: None })
                     } else {
@@ -325,6 +362,23 @@ impl EventPattern {
             Err(format!("Invalid EventPattern string '{}'", s))
         }
     }
+}
+
+fn fs_path_match(pattern: &str, text: &str) -> bool {
+    if glob_match(pattern, text) {
+        return true;
+    }
+    if !pattern.contains('*') {
+        let dir_prefix = pattern.trim_end_matches('/');
+        if !dir_prefix.is_empty() {
+            let mut with_slash = String::from(dir_prefix);
+            with_slash.push('/');
+            if text.starts_with(&with_slash) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Glob matching supporting `*`, prefix `/inbox/*`, suffix `*.json`, middle `/a/*/b`, and exact paths.
@@ -369,6 +423,40 @@ pub fn glob_match(pattern: &str, text: &str) -> bool {
     true
 }
 
+fn parse_duration_ms(raw: &str) -> Result<u64, String> {
+    let trimmed = raw.trim();
+    if let Some(num) = trimmed.strip_suffix("ms") {
+        return num
+            .trim()
+            .parse::<u64>()
+            .map_err(|_| format!("Invalid ms duration '{}'", raw));
+    }
+    if let Some(num) = trimmed.strip_suffix('s') {
+        let secs = num
+            .trim()
+            .parse::<u64>()
+            .map_err(|_| format!("Invalid seconds duration '{}'", raw))?;
+        return Ok(secs.saturating_mul(1_000));
+    }
+    if let Some(num) = trimmed.strip_suffix('m') {
+        let mins = num
+            .trim()
+            .parse::<u64>()
+            .map_err(|_| format!("Invalid minutes duration '{}'", raw))?;
+        return Ok(mins.saturating_mul(60_000));
+    }
+    if let Some(num) = trimmed.strip_suffix('h') {
+        let hours = num
+            .trim()
+            .parse::<u64>()
+            .map_err(|_| format!("Invalid hours duration '{}'", raw))?;
+        return Ok(hours.saturating_mul(3_600_000));
+    }
+    trimmed
+        .parse::<u64>()
+        .map_err(|_| format!("Invalid duration_ms '{}'", raw))
+}
+
 /// Time or event trigger for a scheduled JavaScript automation in `scriptd`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScheduleTrigger {
@@ -393,22 +481,31 @@ impl ScheduleTrigger {
         }
     }
 
-    /// Parses a trigger specification from `/etc/schedules.conf`.
+    /// Parses a trigger specification from `/etc/schedules.conf` or `script_schedule` tool calls.
     pub fn deserialize(spec: &str) -> Result<Self, String> {
-        let (kind, rest) = spec
+        let trimmed = spec.trim();
+        // Direct event shorthands without ':'
+        if matches!(
+            trimmed,
+            "SystemBoot" | "boot" | "NetInterfaceUp" | "NetworkOnline" | "UserIdle"
+        ) {
+            return Ok(ScheduleTrigger::OnEvent(EventPattern::deserialize(trimmed)?));
+        }
+        // Shorthand prefixes like `fs:modify:/etc`, `fs:create:/inbox/*`, `net:online`, `net:request:8080`
+        if trimmed.starts_with("fs:") || trimmed.starts_with("net:") {
+            return Ok(ScheduleTrigger::OnEvent(EventPattern::deserialize(trimmed)?));
+        }
+
+        let (kind, rest) = trimmed
             .split_once(':')
             .ok_or_else(|| format!("Invalid trigger spec '{}'", spec))?;
         match kind {
             "once" => {
-                let ms = rest
-                    .parse::<u64>()
-                    .map_err(|_| format!("Invalid once timestamp '{}'", rest))?;
+                let ms = parse_duration_ms(rest)?;
                 Ok(ScheduleTrigger::OnceAtMs(ms))
             }
-            "interval" => {
-                let every_ms = rest
-                    .parse::<u64>()
-                    .map_err(|_| format!("Invalid interval_ms '{}'", rest))?;
+            "interval" | "every" => {
+                let every_ms = parse_duration_ms(rest)?;
                 Ok(ScheduleTrigger::IntervalMs { every_ms })
             }
             "cron" => {
@@ -417,6 +514,11 @@ impl ScheduleTrigger {
             }
             "event" => {
                 let pat = EventPattern::deserialize(rest)?;
+                Ok(ScheduleTrigger::OnEvent(pat))
+            }
+            "FsCreated" | "FileCreated" | "FsModified" | "FileModified" | "FsDeleted"
+            | "FileDeleted" | "NetPacketReceived" | "NetworkRequest" | "LowMemory" => {
+                let pat = EventPattern::deserialize(trimmed)?;
                 Ok(ScheduleTrigger::OnEvent(pat))
             }
             other => Err(format!("Unknown trigger type '{}'", other)),
@@ -428,6 +530,7 @@ impl ScheduleTrigger {
 #[derive(Debug, Clone, Default)]
 pub struct ScriptStore {
     scripts: BTreeMap<String, String>,
+    capabilities: BTreeMap<String, ScriptCapabilities>,
 }
 
 impl ScriptStore {
@@ -435,12 +538,23 @@ impl ScriptStore {
     pub fn new() -> Self {
         Self {
             scripts: BTreeMap::new(),
+            capabilities: BTreeMap::new(),
         }
     }
 
     /// Inserts or updates a `.js` script at `path`.
     pub fn put_script(&mut self, path: &str, source: &str) {
         self.scripts.insert(path.to_string(), source.to_string());
+    }
+
+    /// Sets capability constraints for a script at `path`.
+    pub fn set_capabilities(&mut self, path: &str, caps: ScriptCapabilities) {
+        self.capabilities.insert(path.to_string(), caps);
+    }
+
+    /// Gets custom capability constraints for `path`, if configured.
+    pub fn get_capabilities(&self, path: &str) -> Option<&ScriptCapabilities> {
+        self.capabilities.get(path)
     }
 
     /// Retrieves the `.js` source for `path`.
@@ -450,6 +564,7 @@ impl ScriptStore {
 
     /// Removes a script from the store.
     pub fn remove_script(&mut self, path: &str) -> bool {
+        self.capabilities.remove(path);
         self.scripts.remove(path).is_some()
     }
 
@@ -480,6 +595,7 @@ pub struct ScheduledScript {
 }
 
 /// `scriptd` Event & Time Scheduler managing model-authored JavaScript automations.
+#[derive(Debug, Clone)]
 pub struct ScriptScheduler {
     store: ScriptStore,
     schedules: Vec<ScheduledScript>,
@@ -524,6 +640,16 @@ impl ScriptScheduler {
     /// Registers a script source in the `ScriptStore` at `script_path`.
     pub fn register_script_source(&mut self, script_path: &str, source: &str) {
         self.store.put_script(script_path, source);
+    }
+
+    /// Assigns capability constraints for a script at `script_path`.
+    pub fn set_script_capabilities(&mut self, script_path: &str, caps: ScriptCapabilities) {
+        self.store.set_capabilities(script_path, caps);
+    }
+
+    /// Returns capability constraints configured for `script_path`.
+    pub fn get_script_capabilities(&self, script_path: &str) -> Option<&ScriptCapabilities> {
+        self.store.get_capabilities(script_path)
     }
 
     /// Schedules a script by `id`, `script_path`, and `trigger`.
@@ -586,7 +712,7 @@ impl ScriptScheduler {
                     let should_fire = match entry.next_interval_ms {
                         None => {
                             entry.next_interval_ms = Some(now_ms.saturating_add(step));
-                            false
+                            now_ms >= step
                         }
                         Some(next_due) if now_ms >= next_due => {
                             // Advance next_interval_ms past now_ms
@@ -687,6 +813,31 @@ impl ScriptScheduler {
         reports
     }
 
+    /// Evaluates a script directly by `script_path` (resolving from `ScriptStore` or `host.fs_read`),
+    /// returning `(result_value, steps_executed)`.
+    pub fn eval_script_path(
+        &self,
+        script_path: &str,
+        host: &mut dyn MetalOsHost,
+    ) -> Result<(JsValue, usize), JsError> {
+        let source = self
+            .store
+            .get_script(script_path)
+            .map(|s| s.to_string())
+            .or_else(|| host.fs_read(script_path))
+            .ok_or_else(|| JsError::HostError(format!("Script not found: {}", script_path)))?;
+
+        let mut isolate = JsIsolate::with_max_steps(self.max_steps_per_script);
+        let result = if let Some(caps) = self.store.get_capabilities(script_path) {
+            let mut scoped = CapabilityScopedHost::new(host, caps.clone());
+            isolate.eval_with_host(&source, &mut scoped)
+        } else {
+            isolate.eval_with_host(&source, host)
+        };
+        let steps = isolate.steps_executed();
+        result.map(|val| (val, steps))
+    }
+
     fn execute_script(
         &self,
         schedule_id: &str,
@@ -714,8 +865,14 @@ impl ScriptScheduler {
         };
 
         let mut isolate = JsIsolate::with_max_steps(self.max_steps_per_script);
-        isolate.set_global("EVENT", event_obj);
-        let result = isolate.eval_with_host(&source, host);
+        isolate.set_global("EVENT", event_obj.clone());
+        isolate.set_global("__event", event_obj);
+        let result = if let Some(caps) = self.store.get_capabilities(script_path) {
+            let mut scoped = CapabilityScopedHost::new(host, caps.clone());
+            isolate.eval_with_host(&source, &mut scoped)
+        } else {
+            isolate.eval_with_host(&source, host)
+        };
         let steps_executed = isolate.steps_executed();
 
         ScriptExecutionReport {
@@ -748,6 +905,14 @@ impl ScriptScheduler {
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
+            if let Some((path_part, trig_part)) = line.split_once("->") {
+                let script_path = path_part.trim();
+                let trigger = ScheduleTrigger::deserialize(trig_part.trim())?;
+                let id = format!("sched-{}", count + 1);
+                self.schedule_script(&id, script_path, trigger);
+                count += 1;
+                continue;
+            }
             let parts: Vec<&str> = line.splitn(3, '|').collect();
             if parts.len() != 3 {
                 return Err(format!(
@@ -771,11 +936,43 @@ impl ScriptScheduler {
         host.fs_write(SCHEDULES_CONF_PATH, &content)
     }
 
-    /// Loads the schedule table from `/etc/schedules.conf` on `host`.
+    /// Loads `/scripts/*.js` and the schedule table from `/etc/schedules.conf` on `host`.
     pub fn load_from_host(&mut self, host: &mut dyn MetalOsHost) -> Result<usize, String> {
+        // Discover and cache any `/scripts/*.js` files present on the host
+        for entry in host.fs_list("/scripts") {
+            let clean = entry.trim_matches('/');
+            if clean.is_empty() {
+                continue;
+            }
+            let full_path = if entry.starts_with("/scripts/") {
+                entry
+            } else {
+                format!("/scripts/{}", clean)
+            };
+            if full_path.ends_with(".js") {
+                if let Some(source) = host.fs_read(&full_path) {
+                    self.store.put_script(&full_path, &source);
+                }
+            }
+        }
+
         let Some(content) = host.fs_read(SCHEDULES_CONF_PATH) else {
             return Ok(0);
         };
-        self.load_schedules_conf_str(&content)
+        let loaded = self.load_schedules_conf_str(&content)?;
+        // Also ensure any scheduled script paths outside `/scripts` are loaded into `ScriptStore` if readable
+        let scheduled_paths: Vec<String> = self
+            .schedules
+            .iter()
+            .map(|s| s.script_path.clone())
+            .collect();
+        for path in scheduled_paths {
+            if self.store.get_script(&path).is_none() {
+                if let Some(source) = host.fs_read(&path) {
+                    self.store.put_script(&path, &source);
+                }
+            }
+        }
+        Ok(loaded)
     }
 }

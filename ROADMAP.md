@@ -85,19 +85,28 @@ During boot, before transitioning into the interactive workspace, metalOS render
 
 ---
 
-## Phase 4: Ferrofluid (`ferrofluidd`) — GUI Display Server & Compositor
+## Phase 4: Ferrofluid System UI — Slint Platform & Window
 
-**Ferrofluid (`ferrofluidd`)** is the display server and window compositor for metalOS. It initializes directly into a single, distraction-free, terminal-like window that serves as the AI chat interface, and **only the AI agent is permitted to create and render UI surfaces**.
+Ferrofluid owns the single fullscreen Slint System UI window and its bare-metal
+platform adapter. The same Slint window renders the static boot logotype and the
+interactive workspace. Slint is the only UI toolkit; the previous custom
+compositor, widget library, font renderer, and simulated UI IPC were removed.
 
-- [x] **Ferrofluid Display Server Core (`crates/metalos-ferrofluid` / `ferrofluidd`)**
-  - Manages the VirtIO-GPU framebuffer, dirty-rectangle damage tracking, and vsync pacing
-  - Input event multiplexing from **VirtIO-Input** (`crates/metalos-kernel/src/drivers/virtio_input.rs`)
-  - Lightweight IPC protocol over shared memory rings (`SYS_SHM` / IPC channels) restricted exclusively to the AI agent runtime (`AgentUiToken`) for surface creation and input events
-- [x] **Ferrofluid Aesthetic & Rendering Primitives**
-  - Crisp monochrome & liquid-mercury visual language (deep obsidian `#000000`/`#0A0A0C` background, specular silver/chrome borders, anti-aliased bitmap monospace typography)
-  - Smooth cursor rendering, scrollback viewport, markdown/code-block formatting, and agent-synthesized interactive widgets/views (`AiConsoleView`, `MetricCard`, `DataTable`, `Sparkline`, `StatusBanner`)
-- [x] **Single-Window AI Boot Mode**
-  - On startup, `ferrofluidd` transitions seamlessly from the boot drip animation into a single centered (or fullscreen) terminal-like window—the **Ferrofluid AI Console**
+- [x] **Bare-metal Slint adapter (`crates/metalos-ferrofluid`)**
+  - Single-context `no_std` platform with software rendering and damage tracking
+  - Kernel bridge supplies monotonic time, VirtIO input, and VirtIO-GPU scanout
+  - Embedded Quicksand variable font: medium body text and bold headings/logotype
+- [x] **System UI window**
+  - Fluent dark controls, conversation viewport, local text editing and submission
+  - Static boot logotype and workspace use the same Slint component
+  - Serial-only debug shell is available separately via `--debug-shell`
+- [x] **Toolkit-independent agent capability gate**
+  - Rejects headless MCP apps and invalid agent credentials
+- [ ] **AI and agent-view transport**
+  - Connect model requests, streamed responses, and synthesized views to Slint
+  - The current UI displays submitted messages locally and reports AI unavailable
+- [ ] **Interrupt-driven input/timer wakeups**
+  - The initial UI loop polls at up to 60 Hz
 
 ---
 
@@ -175,7 +184,7 @@ In metalOS, third-party developers can build and distribute applications, but **
 | **M1: ARM64 Core & VFS** | `aarch64` kernel (HVF), PL011, VirtIO-Blk, CobaltFS | `metalos-kernel`, `metalos-user` | Complete (Native M4 HVF) |
 | **M2: Connected Metal** | VirtIO-Net, TCP/IP, DNS, TLS 1.3, HTTPS SSE client | `metalos-kernel`, `metalos-user` | Complete |
 | **M3: Liquid Boot** | VirtIO-GPU framebuffer + NEON dripping liquid-metal animation | `metalos-boot`, `metalos-kernel` | Complete |
-| **M4: Ferrofluid GUI (`ferrofluidd`)** | Display server booting into single terminal-style window | `metalos-ferrofluid`, `metalos-kernel` | Complete |
+| **M4: Ferrofluid System UI** | Slint window, Quicksand font, bare-metal platform adapter | `metalos-ferrofluid`, `metalos-kernel` | UI bring-up complete; AI bridge pending |
 | **M5: Pluggable AI OS** | Gemini, Claude & ChatGPT providers + shell-free native OS tools | `metalos-ai`, `metalos-user` | Complete |
 | **M6: JS Engine & Scheduler** | Embedded V8/JS runtime for model-authored scripts + time/event scheduling | `metalos-js`, `metalos-user` | Complete |
 | **M7: MCP Apps & Agent UI** | Headless MCP-only developer app SDK + agent-exclusive UI synthesis | `metalos-mcp`, `metalos-ferrofluid`, `metalos-ai` | Complete |

@@ -4,9 +4,20 @@
 
 # metalOS
 
-**metalOS** is an AI-first, bare-metal operating system written in Rust (`#![no_std]`), built to run with native hardware virtualization (`-accel hvf`). It boots into **Mercury (`mercuryd`)**, a display server that initializes a user interface entirely driven by a pluggable model (**Gemini**, **Claude**, **ChatGPT**).
+> **The desktop metaphor is dead weight. Stop bolting AI onto 1970s operating systems.**
 
-**metalOS** is lean by design: no file-system or shell access, no 3P graphic interfaces. Developers provide MCP-like endpoints, user only see what they want (no inconsistent junk UI), and the agent presents it in the best possible way. The UI is molded like **ferrofluid**.
+**metalOS** is an AI-first, bare-metal operating system written from scratch in `#![no_std]` Rust (`aarch64`, native `-accel hvf`). There is no POSIX baggage, no multi-user permission labyrinth, and no window manager cluttered with half-broken apps. It boots through a liquid-metal splash directly into **Mercury (`mercuryd`)**—a display server driven entirely by a pluggable frontier model (**Gemini**, **Claude**, **ChatGPT**).
+
+## The Manifesto
+
+1. **No Filesystem Maze. No Shell.**
+   Users shouldn't be system administrators, and AI agents shouldn't act through brittle string-piped shell commands (`sh`, `exec`, `spawn`). State lives in structured storage and typed capabilities. Neither the user nor the agent ever touches a raw shell.
+2. **Zero Third-Party UI.**
+   Every app shipping its own interface guarantees visual chaos, bloated binaries, and fragmented workflows. In **metalOS**, third-party software is strictly headless. Developers ship pure capabilities—**Model Context Protocol (MCP)** endpoints and isolated `#![no_std]` JS tasks—never pixels.
+3. **Agent-Exclusive Rendering.**
+   Only the AI agent holds the capability token to paint surfaces in **Mercury**. You never see inconsistent junk UI, dark patterns, or settings menus you didn't ask for. You see only what matters right now, synthesized by the agent in the highest-signal form possible.
+4. **UI as Ferrofluid.**
+   Interfaces should not be static windows nailed to a screen. Under the magnetic pull of intent, the interface coalesces on demand—forming tables, sparklines, controls, or prose—and dissolves back into obsidian the moment the task is done. The UI is molded like **ferrofluid**.
 
 See **[ROADMAP.md](ROADMAP.md)** for the full architecture and milestone plan.
 

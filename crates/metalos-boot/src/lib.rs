@@ -1,4 +1,13 @@
+#![cfg_attr(not(test), no_std)]
+
+extern crate alloc;
+
+pub mod splash;
+
 pub use metalos_proto::{MemoryRegion, MemoryRegionKind};
+pub use splash::{
+    crystal_weld_alpha, mercury_type_alpha, shade_mercury_pixel, LiquidSplashAnimation, Metaball,
+};
 
 pub mod bootloader {
 

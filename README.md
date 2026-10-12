@@ -77,3 +77,18 @@ Run the headless QEMU E2E test suite:
 ```bash
 cargo run --package xtask -- test
 ```
+
+Enable the repository's pre-push hook once per clone:
+
+```sh
+git config --local core.hooksPath .githooks
+```
+
+Every push runs `cargo run --package xtask -- ci`: all workspace tests (including
+the keyboard UI tests), followed by the bare-metal build and headless QEMU E2E
+suite. A failure blocks the upload. This requires the same Rust and QEMU setup
+as the normal test suite.
+
+UI screenshot tests compare committed PNG baselines and generate visual diffs
+on failure. See [the screenshot test guide](tests/README.md) for running them
+and explicitly reviewing baseline updates.

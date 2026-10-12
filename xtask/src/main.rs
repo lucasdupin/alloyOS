@@ -614,6 +614,9 @@ fn run_ci() -> Result<()> {
         .current_dir(&workspace_root)
         .arg("test")
         .arg("--workspace")
+        .arg("--features")
+        .arg("metalos-keyboard/preview")
+        .env_remove("METALOS_UPDATE_SCREENSHOTS")
         .status()
         .context("Failed to run cargo test --workspace")?;
 

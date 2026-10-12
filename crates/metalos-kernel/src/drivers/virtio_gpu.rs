@@ -682,7 +682,7 @@ impl VirtIoGpuDevice {
 }
 
 pub static VIRTIO_GPU: Mutex<Option<VirtIoGpuDevice>> = Mutex::new(None);
-pub static MERCURY_CONSOLE: Mutex<Option<FerrofluidServer>> = Mutex::new(None);
+pub static FERROFLUID_CONSOLE: Mutex<Option<FerrofluidServer>> = Mutex::new(None);
 
 pub fn init() -> FramebufferInfo {
     let dev = VirtIoGpuDevice::new(DEFAULT_FB_WIDTH, DEFAULT_FB_HEIGHT);
@@ -715,7 +715,7 @@ pub fn present_splash_frame(splash: &metalos_boot::splash::LiquidSplashAnimation
 
 /// Initializes the interactive `FerrofluidServer` console (402x874 logical phone display)
 /// and presents the initial frame on the hardware VirtIO-GPU display.
-pub fn init_mercury_console() -> (u32, u32) {
+pub fn init_ferrofluid_console() -> (u32, u32) {
     let mut server = FerrofluidServer::new(UI_WIDTH, UI_HEIGHT);
     server.console.history.clear();
     server
@@ -751,11 +751,11 @@ pub fn init_mercury_console() -> (u32, u32) {
             );
         }
     }
-    *MERCURY_CONSOLE.lock() = Some(server);
+    *FERROFLUID_CONSOLE.lock() = Some(server);
     dims
 }
 
-/// Feeds terminal output bytes written to `/dev/tty` into the live `MercuryServer` display
+/// Feeds terminal output bytes written to `/dev/tty` into the live `FerrofluidServer` display
 /// and flushes damaged scanlines to the QEMU VirtIO-GPU window.
 pub fn console_write_bytes(buf: &[u8]) {
     if !has_hardware_display() {
@@ -765,7 +765,7 @@ pub fn console_write_bytes(buf: &[u8]) {
         return;
     };
 
-    let mut console_guard = MERCURY_CONSOLE.lock();
+    let mut console_guard = FERROFLUID_CONSOLE.lock();
     let Some(server) = console_guard.as_mut() else {
         return;
     };

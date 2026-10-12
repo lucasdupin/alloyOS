@@ -495,10 +495,10 @@ fn run_e2e_tests(kernel_image: &Path, _overall_timeout: Duration) -> Result<()> 
         .context("e2e_net_init failed")?;
     harness
         .expect_output(
-            "[mercuryd] Mercury display server online",
+            "[ferrofluidd] Ferrofluid display server online",
             Duration::from_secs(10),
         )
-        .context("e2e_mercury_init failed")?;
+        .context("e2e_ferrofluid_init failed")?;
     harness
         .expect_output(
             "[scriptd] Embedded V8/JS runtime & event/time scheduler online.",
@@ -517,7 +517,7 @@ fn run_e2e_tests(kernel_image: &Path, _overall_timeout: Duration) -> Result<()> 
             Duration::from_secs(10),
         )
         .context("e2e_ai_init failed")?;
-    println!("[xtask] [PASS] e2e_memory_init + CobaltFS + Splash + Net + Mercury + JS + MCP + AI");
+    println!("[xtask] [PASS] e2e_memory_init + CobaltFS + Splash + Net + Ferrofluid + JS + MCP + AI");
 
     println!("[xtask] [TEST 3/10] e2e_shell_prompt...");
     harness

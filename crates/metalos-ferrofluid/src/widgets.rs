@@ -12,10 +12,10 @@ use crate::theme::{
     TEXT_MERCURY_BRIGHT,
 };
 
-/// Canonical model selector badge displayed in the Mercury AI Console header.
+/// Canonical model selector badge displayed in the Ferrofluid AI Console header.
 pub const MODEL_BADGE_BAR: &str = "[Gemini | Claude | ChatGPT]";
 
-/// Stateful representation of the primary Mercury AI Console window.
+/// Stateful representation of the primary Ferrofluid AI Console window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AiConsoleView {
     pub history: Vec<String>,
@@ -35,7 +35,7 @@ impl Default for AiConsoleView {
 impl AiConsoleView {
     pub fn new(active_model: &str) -> Self {
         let mut history = Vec::new();
-        history.push("**metalOS Mercury AI Console** initialized.".to_string());
+        history.push("**metalOS Ferrofluid AI Console** initialized.".to_string());
         history.push("Type an intent or query below. Developer apps run as headless `MCP` tools.".to_string());
         Self {
             history,
@@ -136,7 +136,7 @@ impl AiConsoleView {
             fb,
             x + 8,
             title_y,
-            "MERCURY // AI CONSOLE",
+            "FERROFLUID // AI CONSOLE",
             TEXT_MERCURY_BRIGHT,
             true,
         );

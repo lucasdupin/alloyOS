@@ -1,7 +1,7 @@
 //! VirtIO-Input MMIO Keyboard & Tablet/Mouse Driver (`VIRTIO_DEV_INPUT = 18`).
 //!
 //! Translates raw `virtio_input_event` structures (`EV_KEY`, `EV_REL`, `EV_ABS`) into
-//! `metalos_proto::InputEvent` messages for Mercury (`mercuryd`) as well as ASCII/ANSI
+//! `metalos_proto::InputEvent` messages for Ferrofluid (`ferrofluidd`) as well as ASCII/ANSI
 //! byte streams for interactive console input inside the QEMU display window.
 
 use alloc::collections::VecDeque;

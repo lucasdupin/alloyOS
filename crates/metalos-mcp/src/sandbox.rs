@@ -112,7 +112,7 @@ impl AppCapability {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpSandboxError {
     /// App attempted to declare or invoke a UI capability (`CreateWindow`, `DirectFramebuffer`, `RawInputCapture`).
-    /// Only the AI agent (`mercuryd`) may own the framebuffer or create visual surfaces.
+    /// Only the AI agent (`ferrofluidd`) may own the framebuffer or create visual surfaces.
     UiCapabilityForbidden {
         app_id: String,
         capability: AppCapability,

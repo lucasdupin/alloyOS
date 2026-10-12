@@ -82,7 +82,7 @@ fn offline_bare_metal_responder(
             "{}",
         ));
         reply_text = format!(
-            "[{}] Inspecting metalOS ARM64 system telemetry and synthesizing Mercury dashboard.",
+            "[{}] Inspecting metalOS ARM64 system telemetry and synthesizing Ferrofluid dashboard.",
             provider_label
         );
     } else if (lower.contains("read ") || lower.contains("/etc/ai.conf")) && has_tool("fs_read") {
@@ -131,7 +131,7 @@ fn offline_bare_metal_responder(
             "{\"app\":\"telemetry.mcp\",\"tool\":\"cluster_health\",\"args\":\"{}\"}",
         ));
         reply_text = format!(
-            "[{}] Querying headless MCP server 'telemetry.mcp' and synthesizing Mercury UI view.",
+            "[{}] Querying headless MCP server 'telemetry.mcp' and synthesizing Ferrofluid UI view.",
             provider_label
         );
     } else if (lower.contains("list") || lower.contains("files")) && has_tool("fs_list") {
@@ -146,7 +146,7 @@ fn offline_bare_metal_responder(
         );
     } else {
         reply_text = format!(
-            "[{} ({})] Ready on metalOS Mercury Console. Active tools: {}.",
+            "[{} ({})] Ready on metalOS Ferrofluid Console. Active tools: {}.",
             provider_label,
             model_name,
             tools.len()
@@ -880,7 +880,7 @@ impl ActiveProvider {
     }
 }
 
-/// Result of handling a single conversational or slash-command turn in the Mercury AI Console.
+/// Result of handling a single conversational or slash-command turn in the Ferrofluid AI Console.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsoleTurnOutput {
     pub active_provider: &'static str,
@@ -892,7 +892,7 @@ pub struct ConsoleTurnOutput {
 
 /// Pluggable AI Runtime (`libmetal-ai`) managing frontier model providers (`GeminiProvider`,
 /// `ClaudeProvider`, `ChatGptProvider`), `/etc/ai.conf` persistence, conversation history,
-/// shell-free native OS tools, and agent-exclusive Mercury UI synthesis.
+/// shell-free native OS tools, and agent-exclusive Ferrofluid UI synthesis.
 #[derive(Debug, Clone)]
 pub struct AiRuntime {
     active: ActiveProvider,
@@ -920,7 +920,7 @@ impl AiRuntime {
             claude: ClaudeProvider::new(),
             chatgpt: ChatGptProvider::new(),
             history: vec![Message::system(
-                "You are the metalOS Mercury AI Agent running on bare-metal ARM64. \
+                "You are the metalOS Ferrofluid AI Agent running on bare-metal ARM64. \
                  POSIX shells (sh, bash) do not exist for the agent; use structured OS tools, \
                  local JavaScript scripts, and headless MCP apps. Only you can synthesize UI.",
             )],
@@ -1040,7 +1040,7 @@ impl AiRuntime {
         self.tool_registry.vfs_write(Self::CONFIG_PATH, serialized);
     }
 
-    /// Processes a user input line from the Mercury AI Console:
+    /// Processes a user input line from the Ferrofluid AI Console:
     /// - Rejects `!` shell escapes and `sh`/`bash` commands with `AiError::ShellAccessForbidden`
     /// - Handles `/model gemini`, `/model claude`, `/model chatgpt` hot-swapping and persists `/etc/ai.conf`
     /// - Streams tokens from the active `AiModelProvider` and executes any emitted native OS `ToolCall`s.
@@ -1141,7 +1141,7 @@ impl AiRuntime {
         })
     }
 
-    /// Returns all UI views synthesized by the AI agent for Mercury (`mercuryd`).
+    /// Returns all UI views synthesized by the AI agent for Ferrofluid (`ferrofluidd`).
     pub fn synthesized_views(&self) -> &[SynthesizedUiView] {
         self.ui_synthesizer.views()
     }

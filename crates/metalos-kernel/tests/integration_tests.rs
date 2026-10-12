@@ -102,31 +102,31 @@ fn integration_full_ai_os_stack_e2e() {
         register_builtin_apps, validate_app_manifest, AppCapability, AppManifest, McpRegistry,
         McpValue,
     };
-    use metalos_mercury::{CallerPrincipal, MercuryError, MercuryServer, MercuryWidget};
+    use metalos_ferrofluid::{CallerPrincipal, FerrofluidError, FerrofluidServer, FerrofluidWidget};
 
-    // 1. Phase 3: Boot Splash & Liquid Metal Drip Animation coalescing into Mercury border
+    // 1. Phase 3: Boot Splash & Liquid Metal Drip Animation coalescing into Ferrofluid border
     let mut splash = LiquidSplashAnimation::new(320, 200);
     for _ in 0..20 {
         splash.step_frame(100);
     }
     assert_eq!(splash.coalesce_progress, 100);
 
-    // 2. Phase 4 & 7: Mercury Display Server enforces Agent-Exclusive UI (MCP apps cannot create UI)
-    let mut mercury = MercuryServer::new(320, 200);
-    let agent_token = mercury.agent_token();
+    // 2. Phase 4 & 7: Ferrofluid Display Server enforces Agent-Exclusive UI (MCP apps cannot create UI)
+    let mut ferrofluid = FerrofluidServer::new(320, 200);
+    let agent_token = ferrofluid.agent_token();
     let rogue_app_caller = CallerPrincipal::DeveloperMcpApp {
         app_id: "notes".to_string(),
     };
-    let ui_err = mercury.submit_widgets(
+    let ui_err = ferrofluid.submit_widgets(
         &rogue_app_caller,
         None,
-        vec![MercuryWidget::StatusBanner {
+        vec![FerrofluidWidget::StatusBanner {
             status: "Unauthorized UI".to_string(),
             active_mcp_apps: 1,
             scheduled_scripts: 0,
         }],
     );
-    assert_eq!(ui_err, Err(MercuryError::UiCreationForbiddenForApp));
+    assert_eq!(ui_err, Err(FerrofluidError::UiCreationForbiddenForApp));
 
     // 3. Phase 7: Headless MCP Apps expose tools & resources, validated against UI/Shell capabilities
     let bad_manifest = AppManifest::new(
@@ -235,7 +235,7 @@ fn integration_full_ai_os_stack_e2e() {
         .unwrap();
     assert_eq!(ai.active_provider_name(), "claude");
 
-    // Agent synthesizes UI view and renders it to Mercury using its exclusive token
+    // Agent synthesizes UI view and renders it to Ferrofluid using its exclusive token
     let view = ai
         .ui_synthesizer
         .synthesize_from_mcp_output(
@@ -248,18 +248,18 @@ fn integration_full_ai_os_stack_e2e() {
     assert_eq!(view.title, "Architecture");
     assert_eq!(view.source_app.as_deref(), Some("notes"));
 
-    let agent_caller = mercury.agent_principal();
-    let dirty = mercury
+    let agent_caller = ferrofluid.agent_principal();
+    let dirty = ferrofluid
         .submit_widgets(
             &agent_caller,
             Some(&agent_token),
-            vec![MercuryWidget::StatusBanner {
+            vec![FerrofluidWidget::StatusBanner {
                 status: "Agent UI Active".to_string(),
                 active_mcp_apps: mcp.app_count(),
                 scheduled_scripts: scheduler.schedules().len(),
             }],
         )
-        .expect("Agent with valid token can submit UI widgets to Mercury");
+        .expect("Agent with valid token can submit UI widgets to Ferrofluid");
     assert!(dirty.width > 0 && dirty.height > 0);
 }
 

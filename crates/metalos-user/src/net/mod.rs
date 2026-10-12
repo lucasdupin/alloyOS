@@ -543,7 +543,7 @@ impl HttpRequestBuilder {
         out.push_str(&self.path);
         out.push_str(" HTTP/1.1\r\nHost: ");
         out.push_str(&self.host);
-        out.push_str("\r\nUser-Agent: metalOS/0.1.0 (aarch64; Mercury)\r\n");
+        out.push_str("\r\nUser-Agent: metalOS/0.1.0 (aarch64; Ferrofluid)\r\n");
 
         for (k, v) in &self.headers {
             out.push_str(k);

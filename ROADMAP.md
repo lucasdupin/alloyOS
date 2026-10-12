@@ -1,11 +1,11 @@
 # metalOS Roadmap
 
-**metalOS** is an AI-first, single-user, bare-metal `aarch64` (ARM64) operating system written in `#![no_std]` Rust, optimized for native Apple Silicon (**M4** via `Hypervisor.framework` / `-accel hvf`) and QEMU `virt`. Rather than bolting AI onto a legacy multi-user desktop metaphor, metalOS boots through a liquid-metal splash animation directly into **Mercury (`mercuryd`)**—a lightweight display server initialized with a single terminal-style AI chat window backed by pluggable frontier models (**Gemini**, **Claude**, **ChatGPT**).
+**metalOS** is an AI-first, single-user, bare-metal `aarch64` (ARM64) operating system written in `#![no_std]` Rust, optimized for native Apple Silicon (**M4** via `Hypervisor.framework` / `-accel hvf`) and QEMU `virt`. Rather than bolting AI onto a legacy multi-user desktop metaphor, metalOS boots through a liquid-metal splash animation directly into **Ferrofluid (`ferrofluidd`)**—a lightweight display server initialized with a single terminal-style AI chat window backed by pluggable frontier models (**Gemini**, **Claude**, **ChatGPT**).
 
 ### Core Architectural Invariants
 - **Single-User by Design**: Personal devices are single-owner devices. metalOS intentionally omits multi-user support (no UIDs/GIDs, user session switching, `/home/<user>` hierarchies, or cross-user permission matrices). Security and isolation boundaries exist strictly between **the AI Agent** and **capability-scoped JS isolates / headless MCP apps**, eliminating an entire class of state-synchronization and permission bugs.
 - **No Shell for the AI**: The AI agent cannot see or execute shell commands (`sh`, `exec`, `spawn`). It interacts with the OS exclusively through typed native tools, local JavaScript (`metalos-js`), and MCP servers.
-- **Agent-Exclusive UI**: Third-party developer apps are strictly headless MCP servers (`metalos-mcp`). Only the AI agent is permitted to create and update UI surfaces in **Mercury (`mercuryd`)**.
+- **Agent-Exclusive UI**: Third-party developer apps are strictly headless MCP servers (`metalos-mcp`). Only the AI agent is permitted to create and update UI surfaces in **Ferrofluid (`ferrofluidd`)**.
 
 ---
 
@@ -17,8 +17,8 @@ flowchart TD
     Splash --> Kernel["metalos-kernel (EL1/EL0 Exceptions, MMU TTBR0/1, Scheduler, VFS, CobaltFS)"]
     Kernel --> VirtIO["VirtIO Transport (VirtIO-Blk, VirtIO-Net, VirtIO-GPU/ramfb, VirtIO-Input)"]
     VirtIO --> Net["Network Stack (smoltcp TCP/IP + Hardware RNG + TLS 1.3)"]
-    VirtIO --> Mercury["Mercury Display Server (mercuryd)"]
-    Mercury --> AIConsole["Agent-Owned UI & AI Console (Only the Agent Creates UI)"]
+    VirtIO --> Ferrofluid["Ferrofluid Display Server (ferrofluidd)"]
+    Ferrofluid --> AIConsole["Agent-Owned UI & AI Console (Only the Agent Creates UI)"]
     AIConsole --> AIRuntime["Pluggable AI Runtime (libmetal-ai)"]
     AIRuntime --> Gemini["Google Gemini Provider"]
     AIRuntime --> Claude["Anthropic Claude Provider"]
@@ -81,29 +81,29 @@ During boot, before transitioning into the interactive workspace, metalOS render
   - Recreate the `crystal-weld` and `mercury-type` SVG filter physics (`feGaussianBlur` + high-contrast alpha thresholding `28*a - 11`) in a real-time `#![no_std]` ARM NEON shader (`crates/metalos-boot/src/splash.rs`)
   - Render the **metalOS** viscous meniscus wordmark and **Ferrofluid Crystal Emblem** on a pure `#000000` canvas
 - [x] **Viscous Drip Physics During Kernel Init**
-  - Animate molten mercury droplets detaching from the bottom meniscus bridges of the `metalOS` typography and ferrofluid spikes, stretching under simulated gravity and surface tension before coalescing into the initial **Mercury** terminal window border
+  - Animate molten mercury droplets detaching from the bottom meniscus bridges of the `metalOS` typography and ferrofluid spikes, stretching under simulated gravity and surface tension before coalescing into the initial **Ferrofluid** terminal window border
 
 ---
 
-## Phase 4: Mercury (`mercuryd`) — GUI Display Server & Compositor
+## Phase 4: Ferrofluid (`ferrofluidd`) — GUI Display Server & Compositor
 
-**Mercury (`mercuryd`)** is the display server and window compositor for metalOS. It initializes directly into a single, distraction-free, terminal-like window that serves as the AI chat interface, and **only the AI agent is permitted to create and render UI surfaces**.
+**Ferrofluid (`ferrofluidd`)** is the display server and window compositor for metalOS. It initializes directly into a single, distraction-free, terminal-like window that serves as the AI chat interface, and **only the AI agent is permitted to create and render UI surfaces**.
 
-- [x] **Mercury Display Server Core (`crates/metalos-mercury` / `mercuryd`)**
+- [x] **Ferrofluid Display Server Core (`crates/metalos-ferrofluid` / `ferrofluidd`)**
   - Manages the VirtIO-GPU framebuffer, dirty-rectangle damage tracking, and vsync pacing
   - Input event multiplexing from **VirtIO-Input** (`crates/metalos-kernel/src/drivers/virtio_input.rs`)
   - Lightweight IPC protocol over shared memory rings (`SYS_SHM` / IPC channels) restricted exclusively to the AI agent runtime (`AgentUiToken`) for surface creation and input events
-- [x] **Mercury Aesthetic & Rendering Primitives**
+- [x] **Ferrofluid Aesthetic & Rendering Primitives**
   - Crisp monochrome & liquid-mercury visual language (deep obsidian `#000000`/`#0A0A0C` background, specular silver/chrome borders, anti-aliased bitmap monospace typography)
   - Smooth cursor rendering, scrollback viewport, markdown/code-block formatting, and agent-synthesized interactive widgets/views (`AiConsoleView`, `MetricCard`, `DataTable`, `Sparkline`, `StatusBanner`)
 - [x] **Single-Window AI Boot Mode**
-  - On startup, `mercuryd` transitions seamlessly from the boot drip animation into a single centered (or fullscreen) terminal-like window—the **Mercury AI Console**
+  - On startup, `ferrofluidd` transitions seamlessly from the boot drip animation into a single centered (or fullscreen) terminal-like window—the **Ferrofluid AI Console**
 
 ---
 
 ## Phase 5: AI-First Console & Pluggable Model Runtime
 
-Because metalOS is an **AI-first operating system**, there are very few traditional shell commands, and **the AI agent cannot see or execute shell commands**. Instead of wrapping a legacy POSIX shell, the Mercury console is a pure conversational AI interface backed by structured OS capabilities and an embedded scripting engine.
+Because metalOS is an **AI-first operating system**, there are very few traditional shell commands, and **the AI agent cannot see or execute shell commands**. Instead of wrapping a legacy POSIX shell, the Ferrofluid console is a pure conversational AI interface backed by structured OS capabilities and an embedded scripting engine.
 
 - [x] **Pluggable Provider Trait (`crates/metalos-ai`)**
   - Unified `AiModelProvider` interface supporting streaming token generation, conversation history, system prompts, and tool/function calling:
@@ -138,7 +138,7 @@ Rather than relying on shell scripts or CLI binaries, the AI model extends and a
 
 - [x] **Embedded JavaScript Engine (`crates/metalos-js`)**
   - `#![no_std]` JavaScript engine (`V8Isolate` / `JsRuntime`) executing model-authored scripts in isolated contexts with deterministic instruction fuel limits
-  - Safe, capability-scoped host bindings (`MetalOS.*` global API) for filesystem access (CobaltFS), HTTP/network requests, system metrics, and Mercury UI notifications—with zero shell access (`JsError::ForbiddenCapability`)
+  - Safe, capability-scoped host bindings (`MetalOS.*` global API) for filesystem access (CobaltFS), HTTP/network requests, system metrics, and Ferrofluid UI notifications—with zero shell access (`JsError::ForbiddenCapability`)
 - [x] **Model-Authored Local Scripts**
   - Allow the AI agent to write, update, inspect, and persist local `.js` scripts on CobaltFS (e.g., `/scripts/*.js`) to fulfill user workflows, background tasks, and custom OS behaviors
 - [x] **Time-Based & Event-Driven Script Scheduler (`scriptd`)**
@@ -161,9 +161,9 @@ In metalOS, third-party developers can build and distribute applications, but **
   - Built-in headless MCP apps (`NotesVaultApp`, `TaskBoardApp`, `SysPulseApp`) and `/apps/*.mcp` manifest discovery
 - [x] **Zero App-Owned UI Enforcement**
   - `validate_app_manifest` and `RuntimeCapabilityGuard` reject any app requesting `CreateWindow`, `DirectFramebuffer`, `RawInputCapture`, or `ShellExecution`
-  - Developer apps have no access to `mercuryd` window surfaces, framebuffers, or direct user input streams
+  - Developer apps have no access to `ferrofluidd` window surfaces, framebuffers, or direct user input streams
 - [x] **Agent-Synthesized Generative UI**
-  - **Only the AI agent can create, compose, and update UI** inside **Mercury (`mercuryd`)**
+  - **Only the AI agent can create, compose, and update UI** inside **Ferrofluid (`ferrofluidd`)**
   - When a user interacts with one or more apps, the agent invokes their MCP tools/resources and dynamically synthesizes the appropriate visual presentation, interactive controls, or data views tailored to the user's immediate intent
 
 ---
@@ -175,7 +175,7 @@ In metalOS, third-party developers can build and distribute applications, but **
 | **M1: ARM64 Core & VFS** | `aarch64` kernel (HVF), PL011, VirtIO-Blk, CobaltFS | `metalos-kernel`, `metalos-user` | Complete (Native M4 HVF) |
 | **M2: Connected Metal** | VirtIO-Net, TCP/IP, DNS, TLS 1.3, HTTPS SSE client | `metalos-kernel`, `metalos-user` | Complete |
 | **M3: Liquid Boot** | VirtIO-GPU framebuffer + NEON dripping liquid-metal animation | `metalos-boot`, `metalos-kernel` | Complete |
-| **M4: Mercury GUI (`mercuryd`)** | Display server booting into single terminal-style window | `metalos-mercury`, `metalos-kernel` | Complete |
+| **M4: Ferrofluid GUI (`ferrofluidd`)** | Display server booting into single terminal-style window | `metalos-ferrofluid`, `metalos-kernel` | Complete |
 | **M5: Pluggable AI OS** | Gemini, Claude & ChatGPT providers + shell-free native OS tools | `metalos-ai`, `metalos-user` | Complete |
 | **M6: JS Engine & Scheduler** | Embedded V8/JS runtime for model-authored scripts + time/event scheduling | `metalos-js`, `metalos-user` | Complete |
-| **M7: MCP Apps & Agent UI** | Headless MCP-only developer app SDK + agent-exclusive UI synthesis | `metalos-mcp`, `metalos-mercury`, `metalos-ai` | Complete |
+| **M7: MCP Apps & Agent UI** | Headless MCP-only developer app SDK + agent-exclusive UI synthesis | `metalos-mcp`, `metalos-ferrofluid`, `metalos-ai` | Complete |

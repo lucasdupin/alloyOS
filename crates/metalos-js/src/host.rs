@@ -137,7 +137,7 @@ pub trait MetalOsHost {
     /// Queries system uptime and memory statistics (`MetalOS.sys.status()`).
     fn sys_status(&self) -> SystemStatus;
 
-    /// Queues a notification to the Mercury UI (`MetalOS.ui.notify(message)`).
+    /// Queues a notification to the Ferrofluid UI (`MetalOS.ui.notify(message)`).
     fn ui_notify(&mut self, message: &str);
 
     /// Appends a message to the script execution log (`MetalOS.log(message)`).

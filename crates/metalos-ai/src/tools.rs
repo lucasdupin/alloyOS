@@ -85,7 +85,7 @@ pub struct ToolExecutionOutput {
 ///
 /// The AI agent has zero access to `sh` or POSIX shell execution; all OS interaction goes through
 /// strongly-typed tools for CobaltFS, system telemetry, local JavaScript automation, headless MCP
-/// apps, and Mercury UI synthesis.
+/// apps, and Ferrofluid UI synthesis.
 #[derive(Debug, Clone)]
 pub struct NativeToolRegistry {
     tools: Vec<ToolSpec>,
@@ -218,7 +218,7 @@ impl NativeToolRegistry {
             ),
             ToolSpec::new(
                 "mcp_call_tool",
-                "Invoke a structured tool on a headless MCP developer app and synthesize Mercury UI if needed.",
+                "Invoke a structured tool on a headless MCP developer app and synthesize Ferrofluid UI if needed.",
                 vec![
                     ToolParameter::new("app", "string", "Headless MCP server identifier", true),
                     ToolParameter::new("tool", "string", "MCP tool name to invoke", true),
@@ -240,7 +240,7 @@ impl NativeToolRegistry {
             ),
             ToolSpec::new(
                 "ui_render_view",
-                "Agent-exclusive tool to synthesize or update a generative UI view in Mercury (mercuryd).",
+                "Agent-exclusive tool to synthesize or update a generative UI view in Ferrofluid (ferrofluidd).",
                 vec![
                     ToolParameter::new(
                         "kind",
@@ -375,7 +375,7 @@ impl NativeToolRegistry {
             "sys_status" => {
                 let view = ui_synth.synthesize_metric_dashboard(
                     "metalOS System Telemetry",
-                    "ARM64 Apple M4 HVF kernel & Mercury runtime metrics",
+                    "ARM64 Apple M4 HVF kernel & Ferrofluid runtime metrics",
                     vec![
                         UiMetric::new("Arch", "aarch64", "EL1"),
                         UiMetric::new("Heap Used", "12", "MB"),
@@ -528,7 +528,7 @@ impl NativeToolRegistry {
                 let title = extract_json_string_field(&call.arguments_json, "title")
                     .unwrap_or_else(|| "Synthesized View".to_string());
                 let summary = extract_json_string_field(&call.arguments_json, "summary")
-                    .unwrap_or_else(|| "Agent-rendered Mercury surface".to_string());
+                    .unwrap_or_else(|| "Agent-rendered Ferrofluid surface".to_string());
                 let source_app = extract_json_string_field(&call.arguments_json, "source_app");
 
                 let view = ui_synth.synthesize_custom_view(
@@ -538,7 +538,7 @@ impl NativeToolRegistry {
                     source_app,
                     call.arguments_json.clone(),
                 );
-                let descriptor = view.to_mercury_descriptor();
+                let descriptor = view.to_ferrofluid_descriptor();
                 Ok(ToolExecutionOutput {
                     tool_name: call.name.clone(),
                     output_json: descriptor,

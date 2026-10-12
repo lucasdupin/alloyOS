@@ -220,7 +220,7 @@ pub enum InputEventKind {
     PointerButtonUp = 5,
 }
 
-/// Hardware input event delivered to Mercury (`mercuryd`).
+/// Hardware input event delivered to Ferrofluid (`ferrofluidd`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub struct InputEvent {

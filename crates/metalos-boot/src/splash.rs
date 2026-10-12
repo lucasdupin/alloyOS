@@ -8,7 +8,7 @@
 //! - **metalOS** viscous meniscus wordmark (glyph strokes + inter-letter meniscus bridges)
 //! - **Viscous Drip Physics Engine** (`LiquidSplashAnimation`) animating molten mercury
 //!   droplets detaching under gravity and surface tension before coalescing into the
-//!   initial **Mercury (`mercuryd`)** terminal window border rectangle.
+//!   initial **Ferrofluid (`ferrofluidd`)** terminal window border rectangle.
 
 use alloc::vec::Vec;
 use metalos_proto::DirtyRect;
@@ -442,7 +442,7 @@ pub fn wordmark_meniscus_field(wx: i32, wy: i32) -> (u32, i32, i32) {
 /// Renders the **Ferrofluid Crystal Emblem** and **metalOS** meniscus wordmark on a pure
 /// `#000000` background, detaches molten mercury droplets from the bottom meniscus bridges
 /// and ferrofluid spikes under simulated gravity (`9.8 m/s²` scaled to screen space), and
-/// coalesces them into the initial **Mercury (`mercuryd`)** terminal window border rectangle.
+/// coalesces them into the initial **Ferrofluid (`ferrofluidd`)** terminal window border rectangle.
 #[derive(Debug, Clone)]
 pub struct LiquidSplashAnimation {
     /// Viewport width in pixels.
@@ -451,13 +451,13 @@ pub struct LiquidSplashAnimation {
     pub height: u32,
     /// Total elapsed animation time in milliseconds.
     pub elapsed_ms: u32,
-    /// Coalescence progress (`0..=100`) toward the Mercury (`mercuryd`) window frame.
+    /// Coalescence progress (`0..=100`) toward the Ferrofluid (`ferrofluidd`) window frame.
     pub coalesce_progress: u8,
     /// Active molten mercury droplets in Q16.16 fixed-point space.
     pub droplets: Vec<Metaball>,
     /// Anchor coordinates `(x_px, y_px)` where each droplet detaches from the meniscus/emblem.
     pub anchor_points: Vec<(i32, i32)>,
-    /// Target rectangle for the initial **Mercury (`mercuryd`)** terminal window border.
+    /// Target rectangle for the initial **Ferrofluid (`ferrofluidd`)** terminal window border.
     pub target_window_rect: DirtyRect,
 }
 
@@ -473,7 +473,7 @@ impl LiquidSplashAnimation {
         let w = width.max(64);
         let h = height.max(64);
 
-        // Initial Mercury (mercuryd) terminal window border centered in the lower-middle viewport
+        // Initial Ferrofluid (ferrofluidd) terminal window border centered in the lower-middle viewport
         let win_w = ((w * 3) / 4).max(32);
         let win_h = ((h * 3) / 5).max(24);
         let win_x = (w - win_w) / 2;
@@ -554,7 +554,7 @@ impl LiquidSplashAnimation {
             drop.x_q16 = drop.x_q16.saturating_add(dx_q16);
             drop.y_q16 = drop.y_q16.saturating_add(dy_q16);
 
-            // Target point along the Mercury terminal window border perimeter
+            // Target point along the Ferrofluid terminal window border perimeter
             let perimeter_x =
                 target_left_x + ((target_right_x - target_left_x) * (idx as i32)) / (num_drops - 1).max(1);
             let perimeter_y = if idx % 2 == 0 {
@@ -605,7 +605,7 @@ impl LiquidSplashAnimation {
         }
     }
 
-    /// Evaluates the coalesced **Mercury (`mercuryd`)** terminal window border field at `(px, py)`.
+    /// Evaluates the coalesced **Ferrofluid (`ferrofluidd`)** terminal window border field at `(px, py)`.
     #[inline]
     fn window_border_field(&self, px: i32, py: i32) -> (u32, i32, i32) {
         if self.coalesce_progress == 0 {
@@ -780,7 +780,7 @@ impl LiquidSplashAnimation {
                     }
                 }
 
-                // 4. Coalescing Mercury (`mercuryd`) terminal window border contribution
+                // 4. Coalescing Ferrofluid (`ferrofluidd`) terminal window border contribution
                 let (bf, bgx, bgy) = self.window_border_field(px, py);
                 if bf > 0 {
                     field = field.saturating_add(bf);
@@ -883,7 +883,7 @@ mod tests {
     }
 
     #[test]
-    fn coalescence_reaches_mercury_window_border_at_completion() {
+    fn coalescence_reaches_ferrofluid_window_border_at_completion() {
         let mut anim = LiquidSplashAnimation::new(240, 160);
         for _ in 0..12 {
             anim.step_frame(100);
@@ -901,7 +901,7 @@ mod tests {
         let border_px = fb[top_y * 240 + mid_x];
         assert_ne!(
             border_px, OBSIDIAN_BLACK_ARGB,
-            "Coalesced Mercury terminal window border must be rendered with metallic chrome pixels"
+            "Coalesced Ferrofluid terminal window border must be rendered with metallic chrome pixels"
         );
     }
 

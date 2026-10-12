@@ -8,7 +8,7 @@ use crate::provider::{
 };
 use metalos_proto::DirtyRect;
 
-/// Exclusive view archetypes synthesized by the metalOS AI agent for Mercury (`mercuryd`).
+/// Exclusive view archetypes synthesized by the metalOS AI agent for Ferrofluid (`ferrofluidd`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewKind {
     Console,
@@ -109,7 +109,7 @@ impl UiScheduleEntry {
     }
 }
 
-/// Agent-synthesized UI surface descriptor delivered to Mercury (`mercuryd`).
+/// Agent-synthesized UI surface descriptor delivered to Ferrofluid (`ferrofluidd`).
 ///
 /// In metalOS, developer applications are headless MCP servers and never own windows or widgets;
 /// only the AI agent creates and updates `SynthesizedUiView` instances.
@@ -128,8 +128,8 @@ pub struct SynthesizedUiView {
 }
 
 impl SynthesizedUiView {
-    /// Serializes this agent-synthesized view into a Mercury IPC frame description.
-    pub fn to_mercury_descriptor(&self) -> String {
+    /// Serializes this agent-synthesized view into a Ferrofluid IPC frame description.
+    pub fn to_ferrofluid_descriptor(&self) -> String {
         format!(
             "{{\"view_id\":{},\"kind\":\"{}\",\"title\":\"{}\",\"source_app\":{},\"summary\":\"{}\",\"metrics_count\":{},\"has_table\":{},\"schedules_count\":{}}}",
             self.view_id,
@@ -169,7 +169,7 @@ impl AgentUiSynthesizer {
         let boot_console = SynthesizedUiView {
             view_id: synth.alloc_id(),
             kind: ViewKind::Console,
-            title: "Mercury AI Console".to_string(),
+            title: "Ferrofluid AI Console".to_string(),
             source_app: None,
             summary: "Single-window liquid-mercury AI conversational console".to_string(),
             metrics: Vec::new(),

@@ -6,7 +6,7 @@
 
 > **The desktop metaphor is dead weight. Stop bolting AI onto 1970s operating systems.**
 
-**metalOS** is an AI-first, bare-metal operating system written from scratch in `#![no_std]` Rust (`aarch64`, native `-accel hvf`). There is no POSIX baggage, no multi-user permission labyrinth, and no window manager cluttered with half-broken apps. It boots through a liquid-metal splash directly into **Mercury (`mercuryd`)**—a display server driven entirely by a pluggable frontier model (**Gemini**, **Claude**, **ChatGPT**).
+**metalOS** is an AI-first, bare-metal operating system written from scratch in `#![no_std]` Rust (`aarch64`, native `-accel hvf`). There is no POSIX baggage, no multi-user permission labyrinth, and no window manager cluttered with half-broken apps. It boots through a liquid-metal splash directly into **Ferrofluid (`ferrofluidd`)**—a display server driven entirely by a pluggable frontier model (**Gemini**, **Claude**, **ChatGPT**).
 
 ## The Manifesto
 
@@ -15,7 +15,7 @@
 2. **Zero Third-Party UI.**
    Every app shipping its own interface guarantees visual chaos, bloated binaries, and fragmented workflows. In **metalOS**, third-party software is strictly headless. Developers ship pure capabilities—**Model Context Protocol (MCP)** endpoints and isolated `#![no_std]` JS tasks—never pixels.
 3. **Agent-Exclusive Rendering.**
-   Only the AI agent holds the capability token to paint surfaces in **Mercury**. You never see inconsistent junk UI, dark patterns, or settings menus you didn't ask for. You see only what matters right now, synthesized by the agent in the highest-signal form possible.
+   Only the AI agent holds the capability token to paint surfaces in **Ferrofluid**. You never see inconsistent junk UI, dark patterns, or settings menus you didn't ask for. You see only what matters right now, synthesized by the agent in the highest-signal form possible.
 4. **UI as Ferrofluid.**
    Interfaces should not be static windows nailed to a screen. Under the magnetic pull of intent, the interface coalesces on demand—forming tables, sparklines, controls, or prose—and dissolves back into obsidian the moment the task is done. The UI is molded like **ferrofluid**.
 
@@ -29,7 +29,7 @@ See **[ROADMAP.md](ROADMAP.md)** for the full architecture and milestone plan.
 | [`crates/metalos-boot`](crates/metalos-boot) | Boot configuration, physical memory map validation, and **Liquid Metal Drip** metaball/surface-tension splash engine |
 | [`crates/metalos-proto`](crates/metalos-proto) | Shared ABI/syscall definitions (`Socket`, `ShmGet`, `GetRandom`, `DirtyRect`, `InputEvent`) between kernel and userland |
 | [`crates/metalos-user`](crates/metalos-user) | Userland standard library (`libmetal`), TLS 1.3 + HTTPS SSE streaming client, and bring-up console |
-| [`crates/metalos-mercury`](crates/metalos-mercury) | **Mercury (`mercuryd`)** GUI display server, double-buffered compositor, agent-exclusive UI security gate, and generative UI widgets |
+| [`crates/metalos-ferrofluid`](crates/metalos-ferrofluid) | **Ferrofluid (`ferrofluidd`)** GUI display server, double-buffered compositor, agent-exclusive UI security gate, and generative UI widgets |
 | [`crates/metalos-js`](crates/metalos-js) | Embedded `#![no_std]` JavaScript engine (`V8Isolate` / `JsRuntime`), `MetalOS.*` bindings (zero shell access), and event/time scheduler (`scriptd`) |
 | [`crates/metalos-mcp`](crates/metalos-mcp) | Headless **Model Context Protocol (MCP)** developer app SDK, zero-UI capability sandbox, and built-in MCP servers |
 | [`crates/metalos-ai`](crates/metalos-ai) | Pluggable AI runtime (`Gemini`, `Claude`, `ChatGPT`), shell-free native OS tool registry, and agent-exclusive UI synthesizer |

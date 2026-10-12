@@ -139,10 +139,10 @@ pub extern "C" fn aarch64_kernel_entry() -> ! {
     metalos_kernel::net::with_net_stack(|_| {});
     serial_println!("[net] VirtIO-Net + TCP/IP + DNS + TLS 1.3 stack online.");
 
-    // 9. Init Mercury Display Server (`mercuryd`) in Single-Window AI Boot Mode (Phase 4)
-    let (mw, mh) = drivers::virtio_gpu::init_mercury_console();
+    // 9. Init Ferrofluid Display Server (`ferrofluidd`) in Single-Window AI Boot Mode (Phase 4)
+    let (mw, mh) = drivers::virtio_gpu::init_ferrofluid_console();
     serial_println!(
-        "[mercuryd] Mercury display server online ({}x{}, agent-exclusive UI mode).",
+        "[ferrofluidd] Ferrofluid display server online ({}x{}, agent-exclusive UI mode).",
         mw,
         mh
     );

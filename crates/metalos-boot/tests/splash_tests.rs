@@ -44,7 +44,7 @@ fn splash_emblem_and_wordmark_geometry_fields() {
 }
 
 #[test]
-fn splash_animation_drip_and_coalescence_into_mercuryd_border() {
+fn splash_animation_drip_and_coalescence_into_ferrofluidd_border() {
     let mut anim = LiquidSplashAnimation::new(200, 140);
     assert_eq!(anim.coalesce_progress, 0);
 

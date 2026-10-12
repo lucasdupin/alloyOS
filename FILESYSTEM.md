@@ -28,7 +28,7 @@ metalOS exposes a unified POSIX-inspired hierarchy managed by the kernel's Virtu
 ├── tmp/                    # Scratch directory for temporary files
 ├── scripts/                # Local JavaScript ES modules executed by scriptd (metalos-js)
 │   └── heartbeat.js        # Default system telemetry heartbeat script
-├── apps/                   # Headless MCP apps; app-provided skills are planned
+├── apps/                   # Headless MCP apps with endpoints and skill-like recipes
 └── knowledge/              # Planned local user context; not seeded yet
     ├── profile.md          # Explicit user facts
     ├── preferences.md      # Scoped communication, visual, and workflow preferences

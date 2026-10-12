@@ -121,12 +121,22 @@ fn standalone_keyboard_types_switches_pages_and_dismisses() {
     render(1552);
     render(2080);
     assert_eq!(ui.get_reveal(), 260.0, "new input request reopens keyboard");
-    ui.set_scroll_offset(156.0);
+    ui.set_scroll_offset(1.0);
     render(2096);
     render(2640);
     assert_eq!(
         ui.get_reveal(),
-        104.0,
-        "host scroll intent retracts keyboard"
+        0.0,
+        "the first scroll movement fully dismisses the keyboard"
     );
+    ui.set_scroll_offset(0.0);
+    render(2656);
+    render(3200);
+    assert_eq!(ui.get_reveal(), 0.0, "scroll reversal keeps keyboard hidden");
+    ui.set_requested(false);
+    render(3216);
+    ui.set_requested(true);
+    render(3232);
+    render(3776);
+    assert_eq!(ui.get_reveal(), 260.0, "refocusing reopens the keyboard");
 }

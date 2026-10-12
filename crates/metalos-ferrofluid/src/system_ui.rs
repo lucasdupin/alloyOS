@@ -532,11 +532,34 @@ mod tests {
         });
         ui.render(Duration::from_millis(1840));
         ui.render(Duration::from_millis(2384));
-        assert!(
-            ui.ui.get_keyboard_reveal() < 260.0,
-            "scrolling retracts keyboard"
+        assert_eq!(
+            ui.ui.get_keyboard_reveal(),
+            0.0,
+            "scrolling fully hides keyboard"
         );
-        let key_y = 2000 + ((260.0 - ui.ui.get_keyboard_reveal()) * PHONE_SCALE as f32) as i32;
+        assert!(
+            !ui.ui.get_keyboard_visible(),
+            "scrolling removes editor focus"
+        );
+        for kind in [
+            InputEventKind::PointerButtonDown,
+            InputEventKind::PointerButtonUp,
+        ] {
+            ui.handle_input(InputEvent {
+                kind,
+                code: 0x110,
+                x: 300,
+                y: 2500,
+            });
+        }
+        ui.render(Duration::from_millis(2400));
+        ui.render(Duration::from_millis(2944));
+        assert_eq!(
+            ui.ui.get_keyboard_reveal(),
+            260.0,
+            "composer reopens after scrolling"
+        );
+        let key_y = 2000;
         for kind in [
             InputEventKind::PointerButtonDown,
             InputEventKind::PointerButtonUp,
@@ -553,7 +576,7 @@ mod tests {
             "q",
             "soft keys work after a flick"
         );
-        ui.render(Duration::from_millis(2400));
+        ui.render(Duration::from_millis(2960));
         ui.set_transcript("A streamed response");
         assert!(ui.render(Duration::from_millis(20)).is_some());
         // Key releases retain the original character even if Shift changes.

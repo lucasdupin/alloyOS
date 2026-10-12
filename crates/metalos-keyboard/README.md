@@ -13,7 +13,9 @@ It does not depend on Ferrofluid, a transcript, an editor, or an AI provider.
 (editor focus), `suspended` (e.g. boot), and `scroll-offset` in logical pixels.
 The component exposes `shown` and animated `reveal`; anchor its `y` to
 `parent.height - self.reveal` and reserve `reveal` above it for the host content.
-`scroll-retreat` defaults to 156px, and keyboard height defaults to 260px.
+Changing `scroll-offset` dismisses the keyboard completely and emits `dismiss()`
+so the host can relinquish editor focus. Scroll reversal keeps it hidden until
+a new focus request or `reopen()`. Keyboard height defaults to 260px.
 `key(string)` emits text or the reserved `backspace` and `return` actions;
 `SoftKey` translates these into typed actions and Slint key text. `dismiss()`
 lets the host relinquish editor focus; `reopen()` clears manual dismissal.

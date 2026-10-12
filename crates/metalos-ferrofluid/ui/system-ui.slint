@@ -59,7 +59,7 @@ export component SystemUi inherits Window {
                         // Snapshot after scroll updates: a live binding feeds viewport
                         // height back into Flickable's animated content-y limits.
                         changed content-y => {
-                            keyboard.scroll-offset = max(0px, -self.content-y);
+                            keyboard.scroll-offset = -self.content-y;
                         }
                         transcript-text := Text {
                             x: 0;

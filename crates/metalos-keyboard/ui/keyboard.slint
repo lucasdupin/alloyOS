@@ -63,12 +63,17 @@ export component SoftKeyboard inherits Rectangle {
     in property <bool> requested: false;
     in property <bool> suspended: false;
     in property <length> scroll-offset: 0px;
-    in property <length> scroll-retreat: 156px;
     property <bool> dismissed: false;
     out property <bool> shown: root.requested && !root.dismissed && !root.suspended;
-    out property <length> reveal: root.shown ? root.height - min(root.scroll-retreat, max(0px, root.scroll-offset)) : 0px;
+    out property <length> reveal: root.shown ? root.height : 0px;
     animate reveal { duration: 420ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
     changed requested => { root.dismissed = false; }
+    changed scroll-offset => {
+        if (root.shown) {
+            root.dismissed = true;
+            root.dismiss();
+        }
+    }
     public function reopen() { root.dismissed = false; }
     height: 260px;
     callback key(string);

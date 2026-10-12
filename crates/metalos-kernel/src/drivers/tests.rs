@@ -147,6 +147,19 @@ pub mod tests {
     }
 
     #[test]
+    fn portrait_input_uses_scanout_dimensions_and_discards_shell_bytes() {
+        let mut input = VirtIoInputDevice::new();
+        input.set_display_size(1206, 2622);
+        input.push_raw_event(VirtioInputRawEvent { type_: EV_ABS, code: ABS_X, value: 16384 });
+        input.push_raw_event(VirtioInputRawEvent { type_: EV_ABS, code: ABS_Y, value: 16384 });
+        assert_eq!(input.poll_ui_event().unwrap().x, 603);
+        assert_eq!(input.poll_ui_event().unwrap().y, 1311);
+        input.push_raw_event(VirtioInputRawEvent { type_: EV_KEY, code: 32, value: 1 });
+        assert_eq!(input.poll_ui_event().unwrap().code, 32);
+        assert!(input.poll_ascii_byte().is_none());
+    }
+
+    #[test]
     fn tcp_ip_headers_checksums_and_dns_roundtrip() {
         let mut net_dev = VirtIoNetDevice::new_loopback();
         let eth = EthernetHeader {

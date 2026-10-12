@@ -156,6 +156,8 @@ pub struct VirtIoInputDevice {
     pub mmio_base: Option<usize>,
     pub pointer_x: i32,
     pub pointer_y: i32,
+    display_width: i32,
+    display_height: i32,
     shift_down: bool,
     caps_lock: bool,
     slots: [Option<InputMmioSlot>; MAX_INPUT_SLOTS],
@@ -169,6 +171,8 @@ impl VirtIoInputDevice {
             mmio_base: None,
             pointer_x: 640,
             pointer_y: 400,
+            display_width: 1280,
+            display_height: 800,
             shift_down: false,
             caps_lock: false,
             slots: [None; MAX_INPUT_SLOTS],
@@ -488,9 +492,9 @@ impl VirtIoInputDevice {
             EV_REL => {
                 let delta = raw.value as i32;
                 if raw.code == REL_X {
-                    self.pointer_x = (self.pointer_x + delta).clamp(0, 1279);
+                    self.pointer_x = self.pointer_x.saturating_add(delta).clamp(0, self.display_width - 1);
                 } else if raw.code == REL_Y {
-                    self.pointer_y = (self.pointer_y + delta).clamp(0, 799);
+                    self.pointer_y = self.pointer_y.saturating_add(delta).clamp(0, self.display_height - 1);
                 }
                 let ev = InputEvent {
                     kind: InputEventKind::PointerMove,
@@ -505,9 +509,9 @@ impl VirtIoInputDevice {
                 // QEMU virtio-tablet reports 0..32767
                 let scaled = raw.value as i64;
                 if raw.code == ABS_X {
-                    self.pointer_x = ((scaled * 1280) / 32768).clamp(0, 1279) as i32;
+                    self.pointer_x = ((scaled * self.display_width as i64) / 32768).clamp(0, (self.display_width - 1) as i64) as i32;
                 } else if raw.code == ABS_Y {
-                    self.pointer_y = ((scaled * 800) / 32768).clamp(0, 799) as i32;
+                    self.pointer_y = ((scaled * self.display_height as i64) / 32768).clamp(0, (self.display_height - 1) as i64) as i32;
                 }
                 let ev = InputEvent {
                     kind: InputEventKind::PointerMove,
@@ -524,6 +528,20 @@ impl VirtIoInputDevice {
 
     pub fn poll_event(&mut self) -> Option<InputEvent> {
         self.poll_hardware();
+        self.queue.pop_front()
+    }
+
+    pub fn set_display_size(&mut self, width: u32, height: u32) {
+        self.display_width = width.clamp(1, i32::MAX as u32) as i32;
+        self.display_height = height.clamp(1, i32::MAX as u32) as i32;
+        self.pointer_x = self.pointer_x.clamp(0, self.display_width - 1);
+        self.pointer_y = self.pointer_y.clamp(0, self.display_height - 1);
+    }
+
+    /// System UI consumes raw evdev events, not the debug shell's ASCII queue.
+    pub fn poll_ui_event(&mut self) -> Option<InputEvent> {
+        self.poll_hardware();
+        self.ascii_queue.clear();
         self.queue.pop_front()
     }
 

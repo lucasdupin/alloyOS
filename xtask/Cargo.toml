@@ -8,5 +8,6 @@ name = "xtask"
 path = "src/main.rs"
 
 [dependencies]
+metalos-proto = { path = "../crates/metalos-proto" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

@@ -1,5 +1,7 @@
 #![cfg_attr(not(test), no_std)]
 
+pub mod display;
+
 #[cfg(test)]
 extern crate std;
 

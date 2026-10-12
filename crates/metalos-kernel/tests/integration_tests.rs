@@ -94,6 +94,7 @@ fn integration_scheduler_lifecycle() {
 fn integration_full_ai_os_stack_e2e() {
     use metalos_ai::{AiRuntime, ToolCall, UiCallerOrigin};
     use metalos_boot::splash::LiquidSplashAnimation;
+    use metalos_ferrofluid::{AgentUiToken, CallerPrincipal, FerrofluidError, SecurityGate};
     use metalos_js::{
         CalendarTime, CronExpr, EventPattern, MetalOsHost, OsEvent, ScheduleTrigger,
         ScriptScheduler, VirtualHostEnv,
@@ -102,7 +103,6 @@ fn integration_full_ai_os_stack_e2e() {
         register_builtin_apps, validate_app_manifest, AppCapability, AppManifest, McpRegistry,
         McpValue,
     };
-    use metalos_ferrofluid::{CallerPrincipal, FerrofluidError, FerrofluidServer, FerrofluidWidget};
 
     // 1. Phase 3: Boot Splash & Liquid Metal Drip Animation coalescing into Ferrofluid border
     let mut splash = LiquidSplashAnimation::new(320, 200);
@@ -111,22 +111,16 @@ fn integration_full_ai_os_stack_e2e() {
     }
     assert_eq!(splash.coalesce_progress, 100);
 
-    // 2. Phase 4 & 7: Ferrofluid Display Server enforces Agent-Exclusive UI (MCP apps cannot create UI)
-    let mut ferrofluid = FerrofluidServer::new(320, 200);
-    let agent_token = ferrofluid.agent_token();
+    // 2. Phase 4 & 7: the UI capability boundary rejects headless MCP apps.
+    let agent_token = AgentUiToken::system_default();
+    let gate = SecurityGate::new(agent_token);
     let rogue_app_caller = CallerPrincipal::DeveloperMcpApp {
         app_id: "notes".to_string(),
     };
-    let ui_err = ferrofluid.submit_widgets(
-        &rogue_app_caller,
-        None,
-        vec![FerrofluidWidget::StatusBanner {
-            status: "Unauthorized UI".to_string(),
-            active_mcp_apps: 1,
-            scheduled_scripts: 0,
-        }],
+    assert_eq!(
+        gate.authorize(&rogue_app_caller, None),
+        Err(FerrofluidError::UiCreationForbiddenForApp),
     );
-    assert_eq!(ui_err, Err(FerrofluidError::UiCreationForbiddenForApp));
 
     // 3. Phase 7: Headless MCP Apps expose tools & resources, validated against UI/Shell capabilities
     let bad_manifest = AppManifest::new(
@@ -189,9 +183,7 @@ fn integration_full_ai_os_stack_e2e() {
     );
 
     // Trigger FS event
-    js_host
-        .fs_write("/notes/design.md", "AI-First OS")
-        .unwrap();
+    js_host.fs_write("/notes/design.md", "AI-First OS").unwrap();
     let evt_reports = scheduler.dispatch_event(
         &OsEvent::FsCreated {
             path: "/notes/design.md".to_string(),
@@ -248,18 +240,7 @@ fn integration_full_ai_os_stack_e2e() {
     assert_eq!(view.title, "Architecture");
     assert_eq!(view.source_app.as_deref(), Some("notes"));
 
-    let agent_caller = ferrofluid.agent_principal();
-    let dirty = ferrofluid
-        .submit_widgets(
-            &agent_caller,
-            Some(&agent_token),
-            vec![FerrofluidWidget::StatusBanner {
-                status: "Agent UI Active".to_string(),
-                active_mcp_apps: mcp.app_count(),
-                scheduled_scripts: scheduler.schedules().len(),
-            }],
-        )
-        .expect("Agent with valid token can submit UI widgets to Ferrofluid");
-    assert!(dirty.width > 0 && dirty.height > 0);
+    // The agent retains authorization independently of any rendering toolkit.
+    gate.authorize(&agent_token.principal(), Some(&agent_token))
+        .expect("Agent with valid token can update System UI");
 }
-

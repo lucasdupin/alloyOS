@@ -1,0 +1,433 @@
+//! Ferrofluid-owned Slint platform, single System UI window, and software scanout.
+//!
+//! All APIs must run on the same execution context, outside interrupt handlers.
+//! The bare-metal Slint runtime uses `unsafe-single-threaded` storage. Keep this
+//! owner local to the UI loop; do not put it in a global mutex or mark it Send.
+
+use alloc::{boxed::Box, collections::VecDeque, rc::Rc, string::String, vec, vec::Vec};
+use core::{
+    cell::{Cell, RefCell},
+    time::Duration,
+};
+use metalos_proto::{DirtyRect, InputEvent, InputEventKind};
+use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
+use slint::platform::{Key, Platform, PointerEventButton, WindowAdapter, WindowEvent};
+use slint::{ComponentHandle, LogicalPosition, PhysicalSize, SharedString};
+
+slint::include_modules!();
+
+struct FerrofluidPlatform {
+    window: Rc<MinimalSoftwareWindow>,
+    now: Rc<Cell<Duration>>,
+    claimed: Cell<bool>,
+}
+
+impl Platform for FerrofluidPlatform {
+    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, slint::PlatformError> {
+        if self.claimed.replace(true) {
+            return Err(slint::PlatformError::Other(
+                "Ferrofluid owns one System UI window".into(),
+            ));
+        }
+        Ok(self.window.clone())
+    }
+
+    fn duration_since_start(&self) -> Duration {
+        self.now.get()
+    }
+}
+
+/// Single owner of the system window. Drivers supply time/input and consume
+/// opaque ARGB8888 pixels; they never own or invoke Slint components.
+pub struct FerrofluidSystemUi {
+    window: Rc<MinimalSoftwareWindow>,
+    ui: SystemUi,
+    now: Rc<Cell<Duration>>,
+    submissions: Rc<RefCell<VecDeque<String>>>,
+    rgb: Vec<slint::Rgb8Pixel>,
+    argb: Vec<u32>,
+    size: PhysicalSize,
+    scale: f32,
+    keys: EvdevKeyboard,
+}
+
+impl FerrofluidSystemUi {
+    /// Installs the process-wide Slint platform once, creates and shows System UI.
+    pub fn new(width: u32, height: u32, scale: f32) -> Result<Self, slint::PlatformError> {
+        // Embedded glyphs are compiled at the current display's native 3x density.
+        if width == 0 || height == 0 || scale != metalos_proto::display::PHONE_SCALE as f32 {
+            return Err(slint::PlatformError::Other(
+                "Invalid System UI geometry".into(),
+            ));
+        }
+        let window = MinimalSoftwareWindow::new(RepaintBufferType::ReusedBuffer);
+        let now = Rc::new(Cell::new(Duration::ZERO));
+        slint::platform::set_platform(Box::new(FerrofluidPlatform {
+            window: window.clone(),
+            now: now.clone(),
+            claimed: Cell::new(false),
+        }))
+        .map_err(|_| slint::PlatformError::Other("Slint platform already installed".into()))?;
+        let ui = SystemUi::new()?;
+        let size = PhysicalSize::new(width, height);
+        window.dispatch_event(WindowEvent::ScaleFactorChanged {
+            scale_factor: scale,
+        });
+        window.set_size(size);
+        let submissions = Rc::new(RefCell::new(VecDeque::new()));
+        let queue = submissions.clone();
+        let weak = ui.as_weak();
+        ui.on_submit(move |text| {
+            if text.trim().is_empty() || queue.borrow().len() >= 16 {
+                return;
+            }
+            queue.borrow_mut().push_back(String::from(text.as_str()));
+            if let Some(ui) = weak.upgrade() {
+                ui.set_draft(SharedString::default());
+            }
+        });
+        ui.show()?;
+        window.dispatch_event(WindowEvent::WindowActiveChanged(true));
+        Ok(Self {
+            window,
+            ui,
+            now,
+            submissions,
+            rgb: vec![slint::Rgb8Pixel::default(); width as usize * height as usize],
+            argb: vec![0xff000000; width as usize * height as usize],
+            size,
+            scale,
+            keys: EvdevKeyboard::default(),
+        })
+    }
+
+    pub fn set_booting(&self, booting: bool) {
+        self.ui.set_booting(booting);
+    }
+
+    pub fn set_transcript(&self, text: &str) {
+        self.ui.set_transcript(text.into());
+    }
+    pub fn set_status(&self, text: &str) {
+        self.ui.set_status(text.into());
+    }
+    pub fn set_active_model(&self, text: &str) {
+        self.ui.set_active_model(text.into());
+    }
+    pub fn take_submission(&self) -> Option<String> {
+        self.submissions.borrow_mut().pop_front()
+    }
+    pub fn pixels(&self) -> &[u32] {
+        &self.argb
+    }
+    pub fn size(&self) -> PhysicalSize {
+        self.size
+    }
+
+    /// Input coordinates are physical scanout pixels; Slint receives logical points.
+    pub fn handle_input(&mut self, event: InputEvent) {
+        let position =
+            LogicalPosition::new(event.x as f32 / self.scale, event.y as f32 / self.scale);
+        let translated = match event.kind {
+            InputEventKind::PointerMove => Some(WindowEvent::PointerMoved { position }),
+            InputEventKind::PointerButtonDown | InputEventKind::PointerButtonUp => {
+                let button = match event.code {
+                    0x110 | 0x14a => PointerEventButton::Left, // BTN_LEFT / BTN_TOUCH
+                    0x111 => PointerEventButton::Right,
+                    0x112 => PointerEventButton::Middle,
+                    _ => return,
+                };
+                Some(if event.kind == InputEventKind::PointerButtonDown {
+                    WindowEvent::PointerPressed { position, button }
+                } else {
+                    WindowEvent::PointerReleased { position, button }
+                })
+            }
+            InputEventKind::KeyDown | InputEventKind::KeyUp => {
+                let down = event.kind == InputEventKind::KeyDown;
+                let repeated = down && self.keys.pressed.contains_key(&event.code);
+                self.keys.translate(event.code, down).map(|text| {
+                    if repeated {
+                        WindowEvent::KeyPressRepeated { text }
+                    } else if down {
+                        WindowEvent::KeyPressed { text }
+                    } else {
+                        WindowEvent::KeyReleased { text }
+                    }
+                })
+            }
+        };
+        if let Some(event) = translated {
+            self.window.dispatch_event(event);
+        }
+    }
+
+    /// Advances local timers and renders only when Slint requests a repaint.
+    /// Returns physical damage bounds for VirtIO-GPU transfer/flush.
+    pub fn render(&mut self, elapsed: Duration) -> Option<DirtyRect> {
+        self.now.set(elapsed.max(self.now.get()));
+        slint::platform::update_timers_and_animations();
+        let mut damage = None;
+        self.window.draw_if_needed(|renderer| {
+            let region = renderer.render(&mut self.rgb, self.size.width as usize);
+            let origin = region.bounding_box_origin();
+            let size = region.bounding_box_size();
+            if size.width == 0 || size.height == 0 {
+                return;
+            }
+            let rect = DirtyRect::new(origin.x as u32, origin.y as u32, size.width, size.height);
+            for y in rect.y..rect.y + rect.height {
+                for x in rect.x..rect.x + rect.width {
+                    let i = y as usize * self.size.width as usize + x as usize;
+                    let p = self.rgb[i];
+                    self.argb[i] = 0xff000000 | (p.r as u32) << 16 | (p.g as u32) << 8 | p.b as u32;
+                }
+            }
+            damage = Some(rect);
+        });
+        damage
+    }
+}
+
+/// Linux evdev codes are not ASCII: KEY_D (32) must not become a space.
+#[derive(Default)]
+struct EvdevKeyboard {
+    shifts: u8,
+    caps: bool,
+    pressed: alloc::collections::BTreeMap<u16, SharedString>,
+}
+
+impl EvdevKeyboard {
+    fn translate(&mut self, code: u16, down: bool) -> Option<SharedString> {
+        if code == 42 || code == 54 {
+            let bit = if code == 42 { 1 } else { 2 };
+            if down {
+                self.shifts |= bit;
+            } else {
+                self.shifts &= !bit;
+            }
+        }
+        if code == 58 && down && !self.pressed.contains_key(&code) {
+            self.caps = !self.caps;
+        }
+        if !down {
+            return self.pressed.remove(&code).filter(|text| !text.is_empty());
+        }
+        if let Some(text) = self.pressed.get(&code) {
+            return Some(text.clone());
+        }
+        let shift = self.shifts != 0;
+        let special = match code {
+            1 => Some(Key::Escape),
+            14 => Some(Key::Backspace),
+            15 => Some(Key::Tab),
+            28 => Some(Key::Return),
+            29 => Some(Key::Control),
+            97 => Some(Key::ControlR),
+            42 => Some(Key::Shift),
+            54 => Some(Key::ShiftR),
+            56 => Some(Key::Alt),
+            100 => Some(Key::AltGr),
+            102 => Some(Key::Home),
+            103 => Some(Key::UpArrow),
+            104 => Some(Key::PageUp),
+            105 => Some(Key::LeftArrow),
+            106 => Some(Key::RightArrow),
+            107 => Some(Key::End),
+            108 => Some(Key::DownArrow),
+            109 => Some(Key::PageDown),
+            111 => Some(Key::Delete),
+            125 => Some(Key::Meta),
+            126 => Some(Key::MetaR),
+            _ => None,
+        };
+        let text: SharedString = if let Some(key) = special {
+            key.into()
+        } else {
+            let letter = match code {
+                16..=25 => Some(b"qwertyuiop"[(code - 16) as usize]),
+                30..=38 => Some(b"asdfghjkl"[(code - 30) as usize]),
+                44..=50 => Some(b"zxcvbnm"[(code - 44) as usize]),
+                _ => None,
+            };
+            let ch = if let Some(letter) = letter {
+                (if shift ^ self.caps {
+                    letter.to_ascii_uppercase()
+                } else {
+                    letter
+                }) as char
+            } else {
+                match code {
+                    2..=11 => {
+                        (if shift { b"!@#$%^&*()" } else { b"1234567890" })[(code - 2) as usize]
+                            as char
+                    }
+                    12 => {
+                        if shift {
+                            '_'
+                        } else {
+                            '-'
+                        }
+                    }
+                    13 => {
+                        if shift {
+                            '+'
+                        } else {
+                            '='
+                        }
+                    }
+                    26 => {
+                        if shift {
+                            '{'
+                        } else {
+                            '['
+                        }
+                    }
+                    27 => {
+                        if shift {
+                            '}'
+                        } else {
+                            ']'
+                        }
+                    }
+                    39 => {
+                        if shift {
+                            ':'
+                        } else {
+                            ';'
+                        }
+                    }
+                    40 => {
+                        if shift {
+                            '"'
+                        } else {
+                            '\''
+                        }
+                    }
+                    41 => {
+                        if shift {
+                            '~'
+                        } else {
+                            '`'
+                        }
+                    }
+                    43 => {
+                        if shift {
+                            '|'
+                        } else {
+                            '\\'
+                        }
+                    }
+                    51 => {
+                        if shift {
+                            '<'
+                        } else {
+                            ','
+                        }
+                    }
+                    52 => {
+                        if shift {
+                            '>'
+                        } else {
+                            '.'
+                        }
+                    }
+                    53 => {
+                        if shift {
+                            '?'
+                        } else {
+                            '/'
+                        }
+                    }
+                    57 => ' ',
+                    // Keep CapsLock tracked across repeats even though it emits no text.
+                    58 => {
+                        self.pressed.insert(code, SharedString::default());
+                        return None;
+                    }
+                    _ => return None,
+                }
+            };
+            ch.into()
+        };
+        self.pressed.insert(code, text.clone());
+        Some(text)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Only one test owns Slint's process-wide, single-context platform.
+    #[test]
+    fn system_ui_renders_and_accepts_local_input() {
+        use metalos_proto::display::{PHONE_WIDTH, PHONE_HEIGHT, PHONE_SCALE};
+        let mut ui = FerrofluidSystemUi::new(PHONE_WIDTH, PHONE_HEIGHT, PHONE_SCALE as f32).unwrap();
+        ui.set_booting(true);
+        ui.render(Duration::ZERO).unwrap();
+        assert_eq!(ui.pixels()[0], 0xff000000);
+        assert!(ui.pixels().contains(&0xffffffff));
+        for (i, &pixel) in ui.pixels().iter().enumerate() {
+            if pixel != 0xff000000 {
+                let x = i as u32 % PHONE_WIDTH;
+                let y = i as u32 / PHONE_WIDTH;
+                assert!(x > PHONE_WIDTH / 3 && x < PHONE_WIDTH * 2 / 3);
+                assert!(y > PHONE_HEIGHT / 2 - 100 && y < PHONE_HEIGHT / 2 + 100);
+            }
+        }
+        assert!(ui.render(Duration::from_millis(16)).is_none(), "boot is static");
+        ui.set_booting(false);
+        let damage = ui.render(Duration::ZERO).unwrap();
+        assert!(damage.width > 0 && damage.height > 0);
+        assert_eq!(ui.pixels().len(), (PHONE_WIDTH * PHONE_HEIGHT) as usize);
+        assert!(ui.pixels().iter().all(|pixel| pixel >> 24 == 255));
+        assert!(ui.pixels().iter().any(|pixel| *pixel != ui.pixels()[0]));
+        // Click the composer through physical-to-logical coordinate conversion.
+        for kind in [
+            InputEventKind::PointerButtonDown,
+            InputEventKind::PointerButtonUp,
+        ] {
+            ui.handle_input(InputEvent {
+                kind,
+                code: 0x110,
+                x: 300,
+                y: 2500,
+            });
+        }
+        for kind in [InputEventKind::KeyDown, InputEventKind::KeyUp] {
+            ui.handle_input(InputEvent {
+                kind,
+                code: 32,
+                x: 0,
+                y: 0,
+            });
+        }
+        assert_eq!(
+            ui.ui.get_draft().as_str(),
+            "d",
+            "evdev KEY_D is not ASCII space"
+        );
+        ui.handle_input(InputEvent {
+            kind: InputEventKind::KeyDown,
+            code: 28,
+            x: 0,
+            y: 0,
+        });
+        assert_eq!(ui.take_submission().as_deref(), Some("d"));
+        assert_eq!(ui.ui.get_draft().as_str(), "");
+        assert!(ui.take_submission().is_none());
+        ui.set_transcript("A streamed response");
+        assert!(ui.render(Duration::from_millis(20)).is_some());
+        // Key releases retain the original character even if Shift changes.
+        let mut keys = EvdevKeyboard::default();
+        keys.translate(42, true);
+        assert_eq!(keys.translate(32, true).unwrap().as_str(), "D");
+        keys.translate(42, false);
+        assert_eq!(keys.translate(32, false).unwrap().as_str(), "D");
+        assert!(
+            FerrofluidSystemUi::new(PHONE_WIDTH, PHONE_HEIGHT, PHONE_SCALE as f32).is_err(),
+            "second platform is rejected"
+        );
+    }
+}

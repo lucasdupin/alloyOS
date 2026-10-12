@@ -73,16 +73,11 @@ _start:
 "#
 );
 
-/// Static memory map for QEMU `-M virt` (256 MiB RAM at `0x4000_0000..0x5000_0000`).
-/// Usable frame allocation starts at `0x4040_0000` (4 MiB into RAM, above kernel & boot stack).
+// Initialized once on the boot CPU before the allocator sees a static slice.
 #[cfg(target_os = "none")]
-static VIRT_MEMORY_REGIONS: [MemoryRegion; 2] = [
-    MemoryRegion::new(
-        0x4000_0000,
-        0x0040_0000,
-        MemoryRegionKind::KernelAndModules,
-    ),
-    MemoryRegion::new(0x4040_0000, 0x0FC0_0000, MemoryRegionKind::Usable),
+static mut VIRT_MEMORY_REGIONS: [MemoryRegion; 2] = [
+    MemoryRegion::new(0x4000_0000, 0, MemoryRegionKind::KernelAndModules),
+    MemoryRegion::new(0x4000_0000, 0, MemoryRegionKind::Usable),
 ];
 
 #[cfg(target_os = "none")]
@@ -99,8 +94,23 @@ pub extern "C" fn aarch64_kernel_entry() -> ! {
     serial_println!("metalOS v0.1.0 booting...");
 
     // 4. Init memory (bitmap frame allocator + 4 MiB kernel heap)
+    // Slint and embedded fonts make the image larger than the old fixed 4 MiB
+    // reservation. Reserve the entire linked image and stack before allocating.
+    unsafe extern "C" { static __kernel_end: u8; }
+    let usable_start = (core::ptr::addr_of!(__kernel_end) as u64 + 4095) & !4095;
+    assert!(usable_start < 0x5000_0000, "kernel exceeds QEMU RAM");
+    let memory_regions = [
+        MemoryRegion::new(0x4000_0000, usable_start - 0x4000_0000, MemoryRegionKind::KernelAndModules),
+        MemoryRegion::new(usable_start, 0x5000_0000 - usable_start, MemoryRegionKind::Usable),
+    ];
+    // SAFETY: only CPU 0 reaches boot initialization; this map is never mutated
+    // again after publishing the immutable reference required by BootInfo.
+    let memory_regions = unsafe {
+        core::ptr::addr_of_mut!(VIRT_MEMORY_REGIONS).write(memory_regions);
+        &*core::ptr::addr_of!(VIRT_MEMORY_REGIONS)
+    };
     let boot_info = BootInfo {
-        memory_regions: &VIRT_MEMORY_REGIONS,
+        memory_regions,
         physical_memory_offset: 0,
         kernel_image_offset: 0x4008_0000,
         rsdp_addr: None,
@@ -112,23 +122,20 @@ pub extern "C" fn aarch64_kernel_entry() -> ! {
     drivers::pic::init();
     let _ = drivers::rng::next_u64();
 
-    // 6. Init VirtIO-GPU framebuffer & Liquid Metal Drip Boot Splash (Phase 3)
+    // 6. Present the static logotype using Ferrofluid's own font and display scale.
     let _ = drivers::virtio_gpu::init();
     drivers::virtio_input::init();
-    {
-        let mut splash = metalos_boot::splash::LiquidSplashAnimation::new(
-            drivers::virtio_gpu::UI_WIDTH / 2,
-            drivers::virtio_gpu::UI_HEIGHT / 2,
-        );
-        for dt in [160u32, 180, 160] {
-            splash.step_frame(dt);
-            drivers::virtio_gpu::present_splash_frame(&splash);
-        }
-        serial_println!(
-            "[splash] Liquid Metal Drip animation active (coalesce={}%).",
-            splash.coalesce_progress
-        );
-    }
+    let mut system_ui = if drivers::virtio_gpu::has_hardware_display() {
+        let mut ui = drivers::system_ui::create();
+        ui.set_booting(true);
+        ui.render(core::time::Duration::ZERO);
+        let size = ui.size();
+        drivers::virtio_gpu::present_ui_frame(ui.pixels(), size.width, size.height);
+        Some(ui)
+    } else {
+        None
+    };
+    serial_println!("[splash] Static metalOS logotype visible.");
 
     // 7. Init VFS (probes VirtIO-Blk for CobaltFS volume, falls back to RamFS)
     let root_backend = fs::init();
@@ -139,8 +146,25 @@ pub extern "C" fn aarch64_kernel_entry() -> ! {
     metalos_kernel::net::with_net_stack(|_| {});
     serial_println!("[net] VirtIO-Net + TCP/IP + DNS + TLS 1.3 stack online.");
 
-    // 9. Init Ferrofluid Display Server (`ferrofluidd`) in Single-Window AI Boot Mode (Phase 4)
-    let (mw, mh) = drivers::virtio_gpu::init_ferrofluid_console();
+    // 9. Transition the Ferrofluid-owned Slint window from boot to System UI.
+    #[cfg(feature = "debug-shell")]
+    {
+        drop(system_ui.take());
+        serial_println!("[ferrofluidd] System UI disabled (serial debug shell).");
+    }
+    #[cfg(not(feature = "debug-shell"))]
+    if let Some(ui) = system_ui.as_mut() {
+        ui.set_booting(false);
+        ui.render(core::time::Duration::ZERO);
+        let size = ui.size();
+        drivers::virtio_gpu::crossfade_to_frame(ui.pixels(), size.width, size.height);
+    }
+    #[cfg(not(feature = "debug-shell"))]
+    let (mw, mh) = system_ui.as_ref().map(|ui| {
+        let size = ui.size();
+        (size.width, size.height)
+    }).unwrap_or((0, 0));
+    #[cfg(not(feature = "debug-shell"))]
     serial_println!(
         "[ferrofluidd] Ferrofluid display server online ({}x{}, agent-exclusive UI mode).",
         mw,
@@ -171,7 +195,13 @@ pub extern "C" fn aarch64_kernel_entry() -> ! {
     // 13. Init scheduler, spawn init task
     task::init();
 
-    // 14. Launch console / debug bring-up loop
+    // 14. Ferrofluid owns the Slint System UI and its execution context.
+    #[cfg(not(feature = "debug-shell"))]
+    if let Some(ui) = system_ui {
+        serial_println!("[systemui] Slint window online; Ferrofluid owns platform and input.");
+        drivers::system_ui::run(ui);
+    }
+    // Serial bring-up fallback, or explicitly selected debug-shell build.
     serial_println!("metalOS initialized successfully. Launching metal-sh...");
     libmetal::shell::run_shell();
 

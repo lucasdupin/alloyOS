@@ -21,11 +21,15 @@ enum Commands {
     Build {
         #[arg(long)]
         release: bool,
+        #[arg(long)]
+        debug_shell: bool,
     },
     /// Builds then launches metalOS in QEMU (aarch64 virt)
     Run {
         #[arg(long)]
         release: bool,
+        #[arg(long)]
+        debug_shell: bool,
     },
     /// Runs headless E2E QEMU tests
     Test {
@@ -68,7 +72,7 @@ impl QemuHarness {
             .arg("-device")
             .arg("virtio-blk-device,drive=hd0")
             .arg("-device")
-            .arg("virtio-gpu-device,xres=1206,yres=2622")
+            .arg(format!("virtio-gpu-device,xres={},yres={}", metalos_proto::display::PHONE_WIDTH, metalos_proto::display::PHONE_HEIGHT))
             .arg("-device")
             .arg("virtio-keyboard-device")
             .arg("-device")
@@ -316,7 +320,7 @@ fn ensure_cobaltfs_image(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn build_crates(release: bool) -> Result<PathBuf> {
+fn build_crates(release: bool, debug_shell: bool) -> Result<PathBuf> {
     let workspace_root = get_workspace_root()?;
 
     println!("[xtask] Building kernel crate for aarch64-unknown-none...");
@@ -328,6 +332,9 @@ fn build_crates(release: bool) -> Result<PathBuf> {
         .arg("metalos-kernel")
         .arg("--target")
         .arg("aarch64-unknown-none");
+    if debug_shell {
+        kernel_cmd.args(["--features", "debug-shell"]);
+    }
     if release {
         kernel_cmd.arg("--release");
     }
@@ -373,9 +380,9 @@ fn build_crates(release: bool) -> Result<PathBuf> {
     Ok(kernel_bin)
 }
 
-fn run_qemu(release: bool) -> Result<()> {
+fn run_qemu(release: bool, debug_shell: bool) -> Result<()> {
     let workspace_root = get_workspace_root()?;
-    let kernel_image = build_crates(release)?;
+    let kernel_image = build_crates(release, debug_shell)?;
     let cobalt_image = get_cobaltfs_image_path(&workspace_root, release);
     ensure_cobaltfs_image(&cobalt_image)?;
 
@@ -428,7 +435,7 @@ fn run_qemu(release: bool) -> Result<()> {
         .arg("-device")
         .arg("virtio-blk-device,drive=hd0")
         .arg("-device")
-        .arg("virtio-gpu-device,xres=1206,yres=2622")
+        .arg(format!("virtio-gpu-device,xres={},yres={}", metalos_proto::display::PHONE_WIDTH, metalos_proto::display::PHONE_HEIGHT))
         .arg("-device")
         .arg("virtio-keyboard-device")
         .arg("-device")
@@ -480,7 +487,7 @@ fn run_e2e_tests(kernel_image: &Path, _overall_timeout: Duration) -> Result<()> 
         .context("e2e_memory_init failed")?;
     harness
         .expect_output(
-            "[splash] Liquid Metal Drip animation active",
+            "[splash] Static metalOS logotype visible",
             Duration::from_secs(10),
         )
         .context("e2e_splash_init failed")?;
@@ -495,7 +502,7 @@ fn run_e2e_tests(kernel_image: &Path, _overall_timeout: Duration) -> Result<()> 
         .context("e2e_net_init failed")?;
     harness
         .expect_output(
-            "[ferrofluidd] Ferrofluid display server online",
+            "[ferrofluidd] System UI disabled (serial debug shell).",
             Duration::from_secs(10),
         )
         .context("e2e_ferrofluid_init failed")?;
@@ -615,7 +622,7 @@ fn run_ci() -> Result<()> {
     }
 
     println!("[xtask] Step 2: Building metalOS (aarch64) and executing E2E tests...");
-    let kernel_image = build_crates(false)?;
+    let kernel_image = build_crates(false, true)?;
     run_e2e_tests(&kernel_image, Duration::from_secs(60))?;
     Ok(())
 }
@@ -623,12 +630,12 @@ fn run_ci() -> Result<()> {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Build { release } => {
-            let image = build_crates(release)?;
+        Commands::Build { release, debug_shell } => {
+            let image = build_crates(release, debug_shell)?;
             println!("[xtask] Kernel built: {}", image.display());
             Ok(())
         }
-        Commands::Run { release } => run_qemu(release),
+        Commands::Run { release, debug_shell } => run_qemu(release, debug_shell),
         Commands::Test {
             timeout,
             release,
@@ -636,7 +643,7 @@ fn main() -> Result<()> {
         } => {
             let image = match disk_image {
                 Some(path) => path,
-                None => build_crates(release)?,
+                None => build_crates(release, true)?,
             };
             run_e2e_tests(&image, Duration::from_secs(timeout))
         }
@@ -651,16 +658,18 @@ mod tests {
     #[test]
     fn parse_build_command() {
         let args = Cli::parse_from(["xtask", "build", "--release"]);
-        assert_eq!(args.command, Commands::Build { release: true });
+        assert_eq!(args.command, Commands::Build { release: true, debug_shell: false });
 
         let args_debug = Cli::parse_from(["xtask", "build"]);
-        assert_eq!(args_debug.command, Commands::Build { release: false });
+        assert_eq!(args_debug.command, Commands::Build { release: false, debug_shell: false });
     }
 
     #[test]
     fn parse_run_command() {
         let args = Cli::parse_from(["xtask", "run"]);
-        assert_eq!(args.command, Commands::Run { release: false });
+        assert_eq!(args.command, Commands::Run { release: false, debug_shell: false });
+        let debug = Cli::parse_from(["xtask", "run", "--debug-shell"]);
+        assert_eq!(debug.command, Commands::Run { release: false, debug_shell: true });
     }
 
     #[test]

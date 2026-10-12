@@ -4,12 +4,10 @@
 //! `DirtyRect` damage updates, and accelerates scanline blits using ARM64 NEON 128-bit SIMD
 //! loads/stores (`vld1q_u8` / `vst1q_u8`).
 
-use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{fence, Ordering};
-use metalos_ferrofluid::FerrofluidServer;
 use metalos_proto::{DirtyRect, FramebufferInfo};
 use spin::Mutex;
 
@@ -18,11 +16,10 @@ use crate::drivers::virtio_blk::{VIRTIO_MMIO_BASE, VIRTIO_MMIO_COUNT, VIRTIO_MMI
 const VIRTIO_MAGIC: u32 = 0x7472_6976;
 pub const VIRTIO_DEV_GPU: u32 = 16;
 
-pub const DEFAULT_FB_WIDTH: u32 = 1206;
-pub const DEFAULT_FB_HEIGHT: u32 = 2622;
-// Render at phone logical dimensions, then scale 3x to the physical scanout.
-pub const UI_WIDTH: u32 = DEFAULT_FB_WIDTH / 3;
-pub const UI_HEIGHT: u32 = DEFAULT_FB_HEIGHT / 3;
+pub use metalos_proto::display::{
+    PHONE_WIDTH as DEFAULT_FB_WIDTH, PHONE_HEIGHT as DEFAULT_FB_HEIGHT,
+    PHONE_LOGICAL_WIDTH as UI_WIDTH, PHONE_LOGICAL_HEIGHT as UI_HEIGHT,
+};
 pub const DEFAULT_FB_BPP: u32 = 4;
 
 // VirtIO-GPU 2D command constants
@@ -682,7 +679,6 @@ impl VirtIoGpuDevice {
 }
 
 pub static VIRTIO_GPU: Mutex<Option<VirtIoGpuDevice>> = Mutex::new(None);
-pub static FERROFLUID_CONSOLE: Mutex<Option<FerrofluidServer>> = Mutex::new(None);
 
 pub fn init() -> FramebufferInfo {
     let dev = VirtIoGpuDevice::new(DEFAULT_FB_WIDTH, DEFAULT_FB_HEIGHT);
@@ -699,127 +695,50 @@ pub fn has_hardware_display() -> bool {
         .is_some()
 }
 
-/// Presents a `LiquidSplashAnimation` frame onto the hardware VirtIO-GPU display.
-pub fn present_splash_frame(splash: &metalos_boot::splash::LiquidSplashAnimation) {
-    if !has_hardware_display() {
-        return;
-    }
-    let w = splash.width as usize;
-    let h = splash.height as usize;
-    let mut frame = vec![0xFF00_0000u32; w * h];
-    let dirty = splash.render_frame(&mut frame, w);
-    if let Some(gpu) = VIRTIO_GPU.lock().as_mut() {
-        gpu.present_scaled_argb(&frame, splash.width, splash.height, Some(dirty));
-    }
-}
-
-/// Initializes the interactive `FerrofluidServer` console (402x874 logical phone display)
-/// and presents the initial frame on the hardware VirtIO-GPU display.
-pub fn init_ferrofluid_console() -> (u32, u32) {
-    let mut server = FerrofluidServer::new(UI_WIDTH, UI_HEIGHT);
-    server.console.history.clear();
-    server
-        .console
-        .history
-        .push(String::from("**metalOS Ferrofluid Console**"));
-    server.console.history.push(String::from(
-        "Headless `MCP` apps | Zero shell access for AI",
-    ));
-    server
-        .console
-        .history
-        .push(String::from("[kernel] metalOS v0.1.0 (aarch64 HVF)"));
-    server
-        .console
-        .history
-        .push(String::from("[fs] CobaltFS / | [net] TLS 1.3 online"));
-    server
-        .console
-        .history
-        .push(String::from("[ai] Gemini / Claude / ChatGPT ready"));
-    server.composite_internal();
-    let _ = server.present();
-    let dims = (server.framebuffer.width, server.framebuffer.height);
-
+/// Present an already rendered frame at the shared phone geometry.
+pub fn present_ui_frame(pixels: &[u32], width: u32, height: u32) {
     if let Some(gpu) = VIRTIO_GPU.lock().as_mut() {
         if gpu.mmio_base.is_some() {
-            gpu.present_scaled_argb(
-                &server.framebuffer.front_buffer,
-                server.framebuffer.width,
-                server.framebuffer.height,
-                None,
-            );
+            gpu.present_scaled_argb(pixels, width, height, None);
         }
     }
-    *FERROFLUID_CONSOLE.lock() = Some(server);
-    dims
 }
 
-/// Feeds terminal output bytes written to `/dev/tty` into the live `FerrofluidServer` display
-/// and flushes damaged scanlines to the QEMU VirtIO-GPU window.
-pub fn console_write_bytes(buf: &[u8]) {
-    if !has_hardware_display() {
+/// Fade the static boot scanout into Ferrofluid over half a second.
+pub fn crossfade_to_frame(pixels: &[u32], width: u32, height: u32) {
+    let mut guard = VIRTIO_GPU.lock();
+    let Some(gpu) = guard.as_mut() else { return; };
+    if gpu.mmio_base.is_none() || width != gpu.info.width || height != gpu.info.height
+        || pixels.len() < width as usize * height as usize
+    {
         return;
     }
-    let Ok(s) = core::str::from_utf8(buf) else {
-        return;
-    };
-
-    let mut console_guard = FERROFLUID_CONSOLE.lock();
-    let Some(server) = console_guard.as_mut() else {
-        return;
-    };
-
-    const MAX_COLS: usize = ((UI_WIDTH - 32) / 8) as usize;
-
-    if buf == b"\x08 \x08" {
-        server.console.streaming_line.pop();
-    } else if s.contains("\x1b[2J") {
-        server.console.history.clear();
-        server.console.streaming_line.clear();
-    } else if let Some(idx) = s.find("\r\x1b[2K") {
-        server.console.streaming_line.clear();
-        let rest = &s[idx + 5..];
-        server.console.streaming_line.push_str(rest);
-    } else {
-        for ch in s.chars() {
-            match ch {
-                '\n' => {
-                    let line = core::mem::take(&mut server.console.streaming_line);
-                    server.console.history.push(line);
-                    if server.console.history.len() > 160 {
-                        server.console.history.remove(0);
-                    }
+    let source = gpu.vram.clone();
+    const DURATION_NS: u64 = 500_000_000;
+    const FRAME_NS: u64 = 16_666_667;
+    let start = super::rng::monotonic_time_ns();
+    loop {
+        let frame_start = super::rng::monotonic_time_ns();
+        let elapsed = frame_start.saturating_sub(start).min(DURATION_NS);
+        let t = elapsed * 255 / DURATION_NS;
+        // Smoothstep eases both ends without moving or deforming the logo.
+        let alpha = (t * t * (765 - 2 * t) / (255 * 255)) as u32;
+        for y in 0..height as usize {
+            for x in 0..width as usize {
+                let offset = y * gpu.info.stride_bytes as usize + x * 4;
+                let target = pixels[y * width as usize + x].to_le_bytes();
+                for channel in 0..3 {
+                    gpu.vram[offset + channel] = ((source[offset + channel] as u32 * (255 - alpha)
+                        + target[channel] as u32 * alpha + 127) / 255) as u8;
                 }
-                '\r' => {}
-                '\x08' | '\x7f' => {
-                    server.console.streaming_line.pop();
-                }
-                c if (' '..='~').contains(&c) => {
-                    server.console.streaming_line.push(c);
-                    if !server.console.streaming_line.starts_with("metalos:")
-                        && server.console.streaming_line.len() >= MAX_COLS
-                    {
-                        let wrapped = core::mem::take(&mut server.console.streaming_line);
-                        server.console.history.push(wrapped);
-                        if server.console.history.len() > 160 {
-                            server.console.history.remove(0);
-                        }
-                    }
-                }
-                _ => {}
+                gpu.vram[offset + 3] = 255;
             }
         }
-    }
-
-    let dirty = server.composite_internal();
-    let _ = server.present();
-    if let Some(gpu) = VIRTIO_GPU.lock().as_mut() {
-        gpu.present_scaled_argb(
-            &server.framebuffer.front_buffer,
-            server.framebuffer.width,
-            server.framebuffer.height,
-            Some(dirty),
-        );
+        gpu.transfer_and_flush_rows(0, height);
+        gpu.flush_count = gpu.flush_count.wrapping_add(1);
+        if elapsed == DURATION_NS { break; }
+        while super::rng::monotonic_time_ns().saturating_sub(frame_start) < FRAME_NS {
+            core::hint::spin_loop();
+        }
     }
 }

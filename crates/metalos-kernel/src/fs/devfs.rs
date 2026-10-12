@@ -87,7 +87,6 @@ impl FileSystem for DevFS {
                 if let Ok(s) = core::str::from_utf8(buf) {
                     crate::serial_print!("{}", s);
                 }
-                crate::drivers::virtio_gpu::console_write_bytes(buf);
                 Ok(buf.len())
             }
             _ => Err(FsError::NotFound),

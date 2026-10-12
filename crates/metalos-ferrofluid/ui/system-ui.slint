@@ -1,0 +1,78 @@
+import { VerticalBox, HorizontalBox, ScrollView, LineEdit, Button } from "std-widgets.slint";
+import "../../../assets/fonts/Quicksand.ttf";
+
+component Logotype inherits Text {
+    text: "metalOS";
+    font-family: "Quicksand";
+    font-size: 26px;
+    font-weight: 700;
+    color: #ffffff;
+}
+
+export component SystemUi inherits Window {
+    title: "metalOS · Ferrofluid";
+    in property <bool> booting: false;
+    background: root.booting ? #000000 : #0a0a0c;
+    default-font-family: "Quicksand";
+    default-font-weight: 500;
+    default-font-size: 16px;
+    in property <string> active-model: "Gemini";
+    in property <string> transcript: "Welcome to metalOS.\n\nYour workspace takes shape around what you need.";
+    in property <string> status: "System UI ready";
+    in-out property <string> draft;
+    callback submit(string);
+
+    if root.booting: Logotype {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+    if !root.booting: VerticalBox {
+        padding: 24px;
+        spacing: 20px;
+        HorizontalBox {
+            Logotype { }
+            Text { text: root.active-model; color: #a0a0ae; horizontal-alignment: right; }
+        }
+        Rectangle {
+            background: #15151b;
+            border-radius: 16px;
+            border-width: 1px;
+            border-color: #30303c;
+            VerticalBox {
+                padding: 20px;
+                Text { text: "Your workspace"; color: #f0f0f4; font-size: 20px; font-weight: 700; }
+                scroll := ScrollView {
+                    mouse-drag-pan-enabled: true;
+                    content-width: self.visible-width;
+                    content-height: max(self.visible-height, transcript-text.preferred-height);
+                    horizontal-scrollbar-policy: always-off;
+                    transcript-text := Text {
+                        x: 0;
+                        y: 0;
+                        width: scroll.visible-width;
+                        height: self.preferred-height;
+                        text: root.transcript;
+                        color: #d2d2dc;
+                        wrap: word-wrap;
+                        horizontal-alignment: left;
+                        vertical-alignment: top;
+                    }
+                }
+            }
+        }
+        Text { text: root.status; color: #a0a0ae; font-size: 13px; wrap: word-wrap; }
+        HorizontalBox {
+            spacing: 8px;
+            input := LineEdit {
+                placeholder-text: "What would you like to do?";
+                text <=> root.draft;
+                accepted => { if (root.draft != "") { root.submit(root.draft); } }
+            }
+            Button {
+                text: "Send";
+                enabled: root.draft != "";
+                clicked => { root.submit(root.draft); }
+            }
+        }
+    }
+}

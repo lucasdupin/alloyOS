@@ -29,7 +29,7 @@ See **[ROADMAP.md](ROADMAP.md)** for the full architecture and milestone plan.
 | [`crates/metalos-boot`](crates/metalos-boot) | Boot configuration, physical memory map validation, and **Liquid Metal Drip** metaball/surface-tension splash engine |
 | [`crates/metalos-proto`](crates/metalos-proto) | Shared ABI/syscall definitions (`Socket`, `ShmGet`, `GetRandom`, `DirtyRect`, `InputEvent`) between kernel and userland |
 | [`crates/metalos-user`](crates/metalos-user) | Userland standard library (`libmetal`), TLS 1.3 + HTTPS SSE streaming client, and bring-up console |
-| [`crates/metalos-ferrofluid`](crates/metalos-ferrofluid) | **Ferrofluid (`ferrofluidd`)** GUI display server, double-buffered compositor, agent-exclusive UI security gate, and generative UI widgets |
+| [`crates/metalos-ferrofluid`](crates/metalos-ferrofluid) | **Ferrofluid System UI**: Slint window, bare-metal platform adapter, software rendering, Quicksand typography, and the agent capability gate |
 | [`crates/metalos-js`](crates/metalos-js) | Embedded `#![no_std]` JavaScript engine (`V8Isolate` / `JsRuntime`), `MetalOS.*` bindings (zero shell access), and event/time scheduler (`scriptd`) |
 | [`crates/metalos-mcp`](crates/metalos-mcp) | Headless **Model Context Protocol (MCP)** developer app SDK, zero-UI capability sandbox, and built-in MCP servers |
 | [`crates/metalos-ai`](crates/metalos-ai) | Pluggable AI runtime (`Gemini`, `Claude`, `ChatGPT`), shell-free native OS tool registry, and agent-exclusive UI synthesizer |
@@ -45,6 +45,11 @@ metalOS uses a Virtual Filesystem Switch ([`vfs.rs`](crates/metalos-kernel/src/f
 - **DevFS** — Device nodes (`/dev/tty`, `/dev/null`, `/dev/zero`, `/dev/serial`, `/dev/urandom`).
 
 ## Building & Running
+
+The graphical boot now opens **Ferrofluid System UI**, a Slint window with a
+Ferrofluid-owned bare-metal adapter. See [its integration notes](crates/metalos-ferrofluid/README.md)
+for architecture, the host preview, and current limitations. Use `run --debug-shell`
+for the serial bring-up shell; the existing shell E2E tests select it automatically.
 
 Build the bootable `aarch64` kernel and launch in QEMU with native Apple Silicon HVF acceleration:
 

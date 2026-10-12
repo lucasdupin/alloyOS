@@ -1,6 +1,6 @@
 use alloc::string::String;
 
-/// Errors returned by the Ferrofluid (`ferrofluidd`) display server and compositor.
+/// Errors returned by the Ferrofluid System UI authorization boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FerrofluidError {
     /// Strict security gate violation: third-party developer MCP apps and
@@ -11,14 +11,6 @@ pub enum FerrofluidError {
     /// The caller claimed to be the AI agent, but provided a missing or
     /// mismatched `AgentUiToken`.
     InvalidAgentToken,
-    /// Invalid surface or widget dimensions.
-    InvalidDimensions,
-    /// Drawing or widget coordinates out of bounds.
-    OutOfBounds,
-    /// The shared-memory IPC ring buffer is full.
-    IpcRingFull,
-    /// Target widget or surface index was not found.
-    NotFound,
 }
 
 /// Identifies the security principal attempting to interact with `ferrofluidd`.

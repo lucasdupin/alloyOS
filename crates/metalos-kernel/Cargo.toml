@@ -8,16 +8,19 @@ spin = "0.9"
 linked_list_allocator = "0.10"
 bitflags = "2"
 metalos-proto = { path = "../metalos-proto" }
-metalos-boot = { path = "../metalos-boot" }
 metalos-user = { path = "../metalos-user" }
 metalos-ferrofluid = { path = "../metalos-ferrofluid" }
 metalos-js = { path = "../metalos-js" }
 metalos-mcp = { path = "../metalos-mcp" }
 metalos-ai = { path = "../metalos-ai" }
 
+[dev-dependencies]
+metalos-boot = { path = "../metalos-boot" }
+
 [features]
 default = []
 host-tests = []
+debug-shell = []
 
 [lib]
 name = "metalos_kernel"

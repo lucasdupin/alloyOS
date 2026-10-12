@@ -52,15 +52,14 @@ pub struct FileHandle {
 pub const MAX_FDS: usize = 256;
 
 pub struct FileDescriptorTable {
-    pub open_file_table: [Option<FileHandle>; MAX_FDS],
+    pub open_file_table: Vec<Option<FileHandle>>,
 }
 
 impl FileDescriptorTable {
     pub fn new() -> Self {
-        const INIT: Option<FileHandle> = None;
-        let mut table = Self {
-            open_file_table: [INIT; MAX_FDS],
-        };
+        let mut open_file_table = Vec::with_capacity(MAX_FDS);
+        open_file_table.resize(MAX_FDS, None);
+        let mut table = Self { open_file_table };
 
         // Pre-populate stdin (0), stdout (1), stderr (2) as serial CharDevice
         table.open_file_table[0] = Some(FileHandle {
@@ -243,15 +242,18 @@ pub fn init() -> &'static str {
 }
 
 fn try_mount_cobaltfs() -> Option<Vfs> {
-    use crate::drivers::ata::AtaPio;
-    use crate::fs::cobaltfs::CobaltFS;
+    #[cfg(target_os = "none")]
+    {
+        use crate::drivers::ata::AtaPio;
+        use crate::fs::cobaltfs::CobaltFS;
 
-    // Probe ATA Primary Slave (drive 1, attached data disk) first, then Primary Master (drive 0)
-    for drive in [1u8, 0u8] {
-        if let Some(ata) = AtaPio::probe(drive) {
-            let dev: Arc<dyn crate::fs::block::BlockDevice> = Arc::new(ata);
-            if let Ok(cobalt) = CobaltFS::mount(dev) {
-                return Some(Vfs::with_root(Arc::new(cobalt), "CobaltFS"));
+        // Probe ATA Primary Slave (drive 1, attached data disk) first, then Primary Master (drive 0)
+        for drive in [1u8, 0u8] {
+            if let Some(ata) = AtaPio::probe(drive) {
+                let dev: Arc<dyn crate::fs::block::BlockDevice> = Arc::new(ata);
+                if let Ok(cobalt) = CobaltFS::mount(dev) {
+                    return Some(Vfs::with_root(Arc::new(cobalt), "CobaltFS"));
+                }
             }
         }
     }

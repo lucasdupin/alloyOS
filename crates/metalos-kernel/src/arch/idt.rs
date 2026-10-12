@@ -61,11 +61,12 @@ pub fn create_idt() -> InterruptDescriptorTable {
 
 pub static IDT: Lazy<InterruptDescriptorTable> = Lazy::new(create_idt);
 
+#[cfg(all(target_arch = "x86_64", target_os = "none"))]
 extern "C" fn rust_syscall_handler(num: u64, a1: u64, a2: u64, a3: u64) -> i64 {
     crate::syscall::dispatch::dispatch_syscall(num, a1, a2, a3, 0, 0, 0)
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", target_os = "none"))]
 #[unsafe(naked)]
 pub unsafe extern "C" fn syscall_entry() {
     core::arch::naked_asm!(
@@ -101,7 +102,7 @@ pub unsafe extern "C" fn syscall_entry() {
 }
 
 pub fn init_syscall_msrs() {
-    #[cfg(all(not(test), target_arch = "x86_64"))]
+    #[cfg(all(target_arch = "x86_64", target_os = "none"))]
     unsafe {
         use x86_64::registers::control::{Efer, EferFlags};
         use x86_64::registers::model_specific::Msr;

@@ -4,7 +4,9 @@
 
 # metalOS
 
-**metalOS** is a bare-metal `x86_64` operating system written in Rust (`#![no_std]`).
+**metalOS** is an AI-first, bare-metal `x86_64` operating system written in Rust (`#![no_std]`). It boots through a liquid-metal drip animation into **Mercury (`mercuryd`)**, a display server that initializes with a single terminal-style AI chat window powered by pluggable models (**Gemini**, **Claude**, **ChatGPT**).
+
+See **[ROADMAP.md](ROADMAP.md)** for the full architecture and milestone plan.
 
 ## Workspace Structure
 

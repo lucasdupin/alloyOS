@@ -2289,6 +2289,7 @@ version = "0.1.0"
 dependencies = [
  "metalos-keyboard",
  "metalos-proto",
+ "png",
  "slint",
  "slint-build",
 ]
@@ -2321,6 +2322,7 @@ name = "metalos-keyboard"
 version = "0.1.0"
 dependencies = [
  "metalos-proto",
+ "png",
  "slint",
  "slint-build",
 ]

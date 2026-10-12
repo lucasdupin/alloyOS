@@ -15,3 +15,6 @@ slint = { version = "=1.18.1", default-features = false, features = ["compat-1-1
 [build-dependencies]
 metalos-proto = { path = "../metalos-proto" }
 slint-build = "=1.18.1"
+
+[dev-dependencies]
+png = "=0.18.1"

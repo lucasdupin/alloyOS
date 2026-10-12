@@ -4,7 +4,9 @@
 
 # metalOS
 
-**metalOS** is an AI-first, bare-metal `aarch64` (ARM64) operating system written in Rust (`#![no_std]`), built to run with native hardware virtualization (`-accel hvf`) on Apple Silicon. It boots through a liquid-metal drip animation into **Mercury (`mercuryd`)**, a display server that initializes with a single terminal-style AI chat window powered by pluggable models (**Gemini**, **Claude**, **ChatGPT**).
+**metalOS** is an AI-first, bare-metal operating system written in Rust (`#![no_std]`), built to run with native hardware virtualization (`-accel hvf`). It boots into **Mercury (`mercuryd`)**, a display server that initializes a user interface entirely driven by a pluggable model (**Gemini**, **Claude**, **ChatGPT**).
+
+**metalOS** is lean by design: no file-system or shell access, no 3P graphic interfaces. Developers provide MCP-like endpoints, user only see what they want (no inconsistent junk UI), and the agent presents it in the best possible way. The UI is molded like **ferrofluid**.
 
 See **[ROADMAP.md](ROADMAP.md)** for the full architecture and milestone plan.
 

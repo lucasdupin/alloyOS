@@ -217,6 +217,44 @@ for the design. This phase is planned, not implemented.
 
 ## Milestone Summary
 
+## Forge & Welder: Resident Local Intelligence
+
+**Forge** is the always-on, on-device inference subsystem. It owns a pluggable
+model registry and resident model lifetimes, rather than being a Gemma-specific
+wrapper. Gemma 2 2B instruction-tuned is the first default model; other local
+models can be loaded and selected through the same interfaces. Model weights
+stay in device memory once loaded. Cloud providers remain explicit alternatives.
+
+**Welder** is the host-side development and test harness. It launches and
+controls QEMU, exposes a local endpoint for inference requests to Forge, and
+reports model readiness and errors. It must exercise actual generation rather
+than substituting canned responses for unavailable weights or backends.
+
+- [ ] Implement Forge's multi-model registry, inference backend, bounded
+  requests, resident lifecycle, and default-model selection.
+- [ ] Expose a capability-scoped `MetalOS.forge(...)` JavaScript function and
+  a versioned request/response transport that Welder can invoke.
+- [ ] Build Welder's launch, readiness, inference endpoint, and integration
+  tests, preserving existing QEMU and screenshot test workflows.
+- [ ] Add a host download script for Gemma, with explicit model/revision,
+  authentication from local environment or files, integrity verification,
+  resumable/atomic downloads, and inclusion of weights in a local system image.
+- [ ] Size guest RAM, model storage, and runtime allocation for real model
+  weights; the existing 256 MiB guest and 64 MiB heap cannot host Gemma 2 2B.
+- [ ] Accept authentication references as launch parameters (environment
+  variable names or private file paths). Deliver credentials to QEMU through
+  a transient local boot channel. Never place token values in command lines,
+  logs, committed config, model manifests, or persistent guest disk images.
+  Ignore local secrets and downloaded weights in Git; examples use placeholders.
+- [ ] Validate registry/backend behavior, JS capabilities, transport errors,
+  image packaging, credential redaction, and real-model readiness/generation.
+  Report missing credentials or unsupported backends explicitly.
+
+Implementation status must distinguish a tested interface from a running
+Gemma model; completion requires real weights and actual model execution.
+
+---
+
 | Milestone | Deliverable | Target Crate(s) | Status |
 |---|---|---|---|
 | **M1: ARM64 Core & VFS** | `aarch64` kernel (HVF), PL011, VirtIO-Blk, CobaltFS | `metalos-kernel`, `metalos-user` | Complete (Native M4 HVF) |

@@ -1,0 +1,12 @@
+[package]
+name = "metalos-ai"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "metalos_ai"
+path = "src/lib.rs"
+
+[dependencies]
+metalos-proto = { path = "../metalos-proto" }
+

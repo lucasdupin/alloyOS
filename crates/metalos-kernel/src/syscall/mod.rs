@@ -1,5 +1,5 @@
 pub mod dispatch;
 pub mod handlers;
 
-#[cfg(any(test, feature = "host-tests"))]
+#[cfg(test)]
 pub mod tests;

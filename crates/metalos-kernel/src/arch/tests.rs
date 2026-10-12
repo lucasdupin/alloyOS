@@ -1,4 +1,4 @@
-#[cfg(any(test, feature = "host-tests"))]
+#[cfg(test)]
 pub mod tests {
     use alloc::boxed::Box;
     use crate::arch::gdt::{create_gdt, create_tss, DOUBLE_FAULT_IST_INDEX};

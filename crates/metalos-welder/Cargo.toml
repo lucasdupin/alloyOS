@@ -1,0 +1,11 @@
+[package]
+name = "metalos-welder"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+metalos-forge = { path = "../metalos-forge" }
+serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
+
+metalos-proto = { path = "../metalos-proto" }

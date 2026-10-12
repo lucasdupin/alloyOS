@@ -7,6 +7,11 @@ extern crate std;
 
 extern crate alloc;
 
+// The userland dependency also belongs to the serial-shell build variant.
+// Forge builds omit that entry point but retain the workspace dependency.
+#[cfg(feature = "forge")]
+use libmetal as _;
+
 #[cfg(target_os = "none")]
 use metalos_kernel::{arch, drivers, fs, mm, serial_println, task};
 #[cfg(target_os = "none")]
@@ -98,10 +103,14 @@ pub extern "C" fn aarch64_kernel_entry() -> ! {
     // reservation. Reserve the entire linked image and stack before allocating.
     unsafe extern "C" { static __kernel_end: u8; }
     let usable_start = (core::ptr::addr_of!(__kernel_end) as u64 + 4095) & !4095;
-    assert!(usable_start < 0x5000_0000, "kernel exceeds QEMU RAM");
+    #[cfg(not(feature = "forge"))]
+    let allocator_end = 0x5000_0000;
+    #[cfg(feature = "forge")]
+    let allocator_end = 0x8000_0000;
+    assert!(usable_start < allocator_end, "kernel exceeds QEMU RAM");
     let memory_regions = [
         MemoryRegion::new(0x4000_0000, usable_start - 0x4000_0000, MemoryRegionKind::KernelAndModules),
-        MemoryRegion::new(usable_start, 0x5000_0000 - usable_start, MemoryRegionKind::Usable),
+        MemoryRegion::new(usable_start, allocator_end - usable_start, MemoryRegionKind::Usable),
     ];
     // SAFETY: only CPU 0 reaches boot initialization; this map is never mutated
     // again after publishing the immutable reference required by BootInfo.
@@ -116,7 +125,7 @@ pub extern "C" fn aarch64_kernel_entry() -> ! {
         rsdp_addr: None,
     };
     mm::init(&boot_info);
-    serial_println!("[mm] Frame allocator and 4 MiB kernel heap online.");
+    serial_println!("[mm] Frame allocator and {} MiB kernel heap online.", mm::heap::HEAP_SIZE / (1024 * 1024));
 
     // 5. Init GIC/timer & Hardware RNG
     drivers::pic::init();
@@ -172,7 +181,21 @@ pub extern "C" fn aarch64_kernel_entry() -> ! {
     );
 
     // 10. Init Embedded JS Engine (V8 / JS Isolate) & Event/Time Scheduler (`scriptd`) (Phase 6)
+    #[cfg(feature = "forge")]
+    let forge_service = drivers::forge::ForgeService::from_boot();
+    #[cfg(not(feature = "forge"))]
+    let forge_service = drivers::forge::ForgeService::new();
     let mut js_host = metalos_js::VirtualHostEnv::new();
+    let shared_forge = forge_service.shared();
+    js_host.set_forge_handler(alloc::boxed::Box::new(move |prompt, model, max_tokens| {
+        let request = metalos_forge::GenerationRequest {
+            model: model.map(alloc::string::String::from),
+            prompt: alloc::string::String::from(prompt),
+            max_tokens,
+        };
+        shared_forge.borrow_mut().generate(&request)
+            .map(|output| output.text).map_err(|error| alloc::format!("{}", error))
+    }));
     let mut js_scheduler = metalos_js::ScriptScheduler::new();
     let _ = js_scheduler.dispatch_event(&metalos_js::OsEvent::SystemBoot, &mut js_host);
     serial_println!("[scriptd] Embedded V8/JS runtime & event/time scheduler online.");
@@ -185,10 +208,11 @@ pub extern "C" fn aarch64_kernel_entry() -> ! {
         mcp_registry.app_count()
     );
 
-    // 12. Init Pluggable AI Runtime (`libmetal-ai`) — Shell-Free Agent Operator (Phase 5)
-    let ai_runtime = metalos_ai::AiRuntime::new();
+    // 12. Init Welder Agent Runtime — Shell-Free Agent Operator (Phase 5)
+    let mut ai_runtime = metalos_welder::AgentRuntime::new();
+    ai_runtime.set_forge(forge_service.shared());
     serial_println!(
-        "[ai] Pluggable AI runtime online (active={}, shell-access=disabled).",
+        "[welder] Agent runtime online (active={}, shell-access=disabled).",
         ai_runtime.active_provider_name()
     );
 
@@ -199,14 +223,19 @@ pub extern "C" fn aarch64_kernel_entry() -> ! {
     #[cfg(not(feature = "debug-shell"))]
     if let Some(ui) = system_ui {
         serial_println!("[systemui] Slint window online; Ferrofluid owns platform and input.");
-        drivers::system_ui::run(ui);
+        drivers::system_ui::run(ui, forge_service, ai_runtime);
     }
-    // Serial bring-up fallback, or explicitly selected debug-shell build.
-    serial_println!("metalOS initialized successfully. Launching metal-sh...");
-    libmetal::shell::run_shell();
+    #[cfg(feature = "forge")]
+    forge_service.run();
+    #[cfg(not(feature = "forge"))]
+    {
+        // Serial bring-up fallback, or explicitly selected debug-shell build.
+        serial_println!("metalOS initialized successfully. Launching metal-sh...");
+        libmetal::shell::run_shell();
 
-    loop {
-        arch::wfi();
+        loop {
+            arch::wfi();
+        }
     }
 }
 

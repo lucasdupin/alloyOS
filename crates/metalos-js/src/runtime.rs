@@ -758,6 +758,25 @@ impl JsIsolate {
                             args.push(self.eval_expr(a, host)?);
                         }
                         return match property.as_str() {
+                            "forge" => {
+                                if args.is_empty() || args.len() > 2 {
+                                    return Err(JsError::TypeError("MetalOS.forge requires (prompt, options?)".to_string()));
+                                }
+                                let prompt = match &args[0] { JsValue::String(s) if !s.is_empty() && s.len() <= 8192 => s, _ => return Err(JsError::TypeError("Forge prompt must be a nonempty string of at most 8192 bytes".to_string())) };
+                                let mut model = None;
+                                let mut max_tokens = 128;
+                                if let Some(options) = args.get(1) {
+                                    let fields = match options { JsValue::Object(fields) => fields, _ => return Err(JsError::TypeError("Forge options must be an object".to_string())) };
+                                    for (key,value) in fields {
+                                        match (key.as_str(),value) {
+                                            ("model",JsValue::String(id)) if !id.is_empty() => model = Some(id.as_str()),
+                                            ("max_tokens",JsValue::Number(n)) if *n > 0 && *n <= 256 => max_tokens = *n as u32,
+                                            _ => return Err(JsError::TypeError("Invalid Forge option".to_string())),
+                                        }
+                                    }
+                                }
+                                host.forge(prompt, model, max_tokens).map(|s| Some(JsValue::String(s))).map_err(JsError::TypeError)
+                            }
                             "log" => {
                                 let msg = args
                                     .iter()

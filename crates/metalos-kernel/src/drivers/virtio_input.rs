@@ -6,6 +6,7 @@
 
 use alloc::collections::VecDeque;
 use core::ptr::{read_volatile, write_volatile};
+#[cfg(target_os = "none")]
 use core::sync::atomic::{fence, Ordering};
 use metalos_proto::{InputEvent, InputEventKind};
 use spin::Mutex;
@@ -41,8 +42,10 @@ const STATUS_DRIVER: u32 = 2;
 const STATUS_DRIVER_OK: u32 = 4;
 const STATUS_FEATURES_OK: u32 = 8;
 
+#[cfg(target_os = "none")]
 const QUEUE_SIZE: usize = 16;
 const VRING_DESC_F_WRITE: u16 = 2;
+#[cfg(target_os = "none")]
 const MAX_INPUT_SLOTS: usize = 2;
 
 // Linux evdev event types used by VirtIO-Input
@@ -67,6 +70,7 @@ pub struct VirtioInputRawEvent {
     pub value: u32,
 }
 
+#[cfg(target_os = "none")]
 #[repr(C, align(16))]
 #[derive(Clone, Copy)]
 struct VirtqDesc {
@@ -76,6 +80,7 @@ struct VirtqDesc {
     next: u16,
 }
 
+#[cfg(target_os = "none")]
 #[repr(C, align(2))]
 #[derive(Clone, Copy)]
 struct VirtqAvail {
@@ -85,6 +90,7 @@ struct VirtqAvail {
     used_event: u16,
 }
 
+#[cfg(target_os = "none")]
 #[repr(C, align(4))]
 #[derive(Clone, Copy)]
 struct VirtqUsedElem {
@@ -92,6 +98,7 @@ struct VirtqUsedElem {
     len: u32,
 }
 
+#[cfg(target_os = "none")]
 #[repr(C, align(4))]
 #[derive(Clone, Copy)]
 struct VirtqUsed {
@@ -101,6 +108,7 @@ struct VirtqUsed {
     avail_event: u16,
 }
 
+#[cfg(target_os = "none")]
 #[repr(C, align(4096))]
 #[derive(Clone, Copy)]
 struct VirtQueueMemory {
@@ -110,6 +118,7 @@ struct VirtQueueMemory {
     used: VirtqUsed,
 }
 
+#[cfg(target_os = "none")]
 impl VirtQueueMemory {
     const fn zeroed() -> Self {
         Self {
@@ -136,9 +145,11 @@ impl VirtQueueMemory {
     }
 }
 
+#[cfg(target_os = "none")]
 static mut INPUT_VIRTQ_MEM: [VirtQueueMemory; MAX_INPUT_SLOTS] =
     [VirtQueueMemory::zeroed(); MAX_INPUT_SLOTS];
 
+#[cfg(target_os = "none")]
 static mut INPUT_EVENT_BUFS: [[VirtioInputRawEvent; QUEUE_SIZE]; MAX_INPUT_SLOTS] = [[VirtioInputRawEvent {
     type_: 0,
     code: 0,
@@ -146,6 +157,7 @@ static mut INPUT_EVENT_BUFS: [[VirtioInputRawEvent; QUEUE_SIZE]; MAX_INPUT_SLOTS
 }; QUEUE_SIZE];
     MAX_INPUT_SLOTS];
 
+#[cfg(target_os = "none")]
 #[derive(Clone, Copy)]
 struct InputMmioSlot {
     base: usize,
@@ -160,6 +172,7 @@ pub struct VirtIoInputDevice {
     display_height: i32,
     shift_down: bool,
     caps_lock: bool,
+    #[cfg(target_os = "none")]
     slots: [Option<InputMmioSlot>; MAX_INPUT_SLOTS],
     queue: VecDeque<InputEvent>,
     ascii_queue: VecDeque<u8>,
@@ -175,6 +188,7 @@ impl VirtIoInputDevice {
             display_height: 800,
             shift_down: false,
             caps_lock: false,
+            #[cfg(target_os = "none")]
             slots: [None; MAX_INPUT_SLOTS],
             queue: VecDeque::new(),
             ascii_queue: VecDeque::new(),
@@ -368,7 +382,6 @@ impl VirtIoInputDevice {
                 self.slots[slot_idx] = Some(slot_state);
             }
         }
-        let _ = self.slots;
     }
 
     fn translate_evdev_key_to_ascii(&mut self, code: u16, value: u32) {

@@ -4,7 +4,7 @@ pub mod devfs;
 pub mod ramfs;
 pub mod vfs;
 
-#[cfg(any(test, feature = "host-tests"))]
+#[cfg(test)]
 pub mod tests;
 
 pub fn init() -> &'static str {

@@ -153,7 +153,7 @@ impl Vfs {
                 let _ = root_fs.write(
                     ino.ino,
                     0,
-                    b"provider=gemini\nmodel=gemini-2.5-pro\n",
+                    b"provider=forge\nmodel=gemma-2-2b-it\n",
                 );
             }
         }

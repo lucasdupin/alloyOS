@@ -11,3 +11,4 @@ path = "src/main.rs"
 metalos-proto = { path = "../crates/metalos-proto" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+metalos-dev-harness = { path = "../crates/metalos-dev-harness" }

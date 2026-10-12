@@ -1,4 +1,6 @@
 use alloc::collections::BTreeMap;
+use alloc::{boxed::Box,rc::Rc};
+use core::cell::RefCell;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use metalos_proto::{InputEvent, InputEventKind};
@@ -119,6 +121,11 @@ impl Default for SystemStatus {
 /// Notice that shell execution capabilities (`sh`, `exec`, `spawn`) are intentionally
 /// absent by design in metalOS.
 pub trait MetalOsHost {
+    /// Local inference capability; hosts must opt in explicitly.
+    fn forge(&mut self, _prompt: &str, _model: Option<&str>, _max_tokens: u32) -> Result<String, String> {
+        Err("Forge capability unavailable".to_string())
+    }
+
     /// Reads a UTF-8 file from CobaltFS/VFS (`MetalOS.fs.read(path)`).
     fn fs_read(&mut self, path: &str) -> Option<String>;
 
@@ -148,7 +155,8 @@ pub trait MetalOsHost {
 }
 
 /// In-memory virtual host environment implementing `MetalOsHost` for testing and local sandboxing.
-#[derive(Debug, Clone, Default)]
+pub type ForgeHandler = dyn FnMut(&str, Option<&str>, u32) -> Result<String, String>;
+#[derive(Clone, Default)]
 pub struct VirtualHostEnv {
     pub files: BTreeMap<String, String>,
     pub http_routes: BTreeMap<String, String>,
@@ -156,9 +164,16 @@ pub struct VirtualHostEnv {
     pub notifications: Vec<String>,
     pub logs: Vec<String>,
     pub emitted_events: Vec<OsEvent>,
+    forge_handler: Option<Rc<RefCell<Box<ForgeHandler>>>>,
 }
 
+impl core::fmt::Debug for VirtualHostEnv {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result { f.debug_struct("VirtualHostEnv").field("status", &self.status).field("forge_enabled", &self.forge_handler.is_some()).finish_non_exhaustive() }
+}
 impl VirtualHostEnv {
+    pub fn set_forge_handler(&mut self, handler: Box<ForgeHandler>) {
+        self.forge_handler = Some(Rc::new(RefCell::new(handler)));
+    }
     /// Creates a new `VirtualHostEnv` with default system status.
     pub fn new() -> Self {
         Self {
@@ -168,6 +183,7 @@ impl VirtualHostEnv {
             notifications: Vec::new(),
             logs: Vec::new(),
             emitted_events: Vec::new(),
+            forge_handler: None,
         }
     }
 
@@ -192,6 +208,9 @@ impl VirtualHostEnv {
 }
 
 impl MetalOsHost for VirtualHostEnv {
+    fn forge(&mut self, prompt: &str, model: Option<&str>, max_tokens: u32) -> Result<String, String> {
+        match &self.forge_handler { Some(handler) => (handler.borrow_mut())(prompt, model, max_tokens), None => Err("Forge capability unavailable".to_string()) }
+    }
     fn fs_read(&mut self, path: &str) -> Option<String> {
         let norm = Self::normalize_path(path);
         self.files.get(&norm).cloned()

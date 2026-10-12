@@ -15,18 +15,26 @@ pub fn create() -> FerrofluidSystemUi {
     virtio_input::VIRTIO_INPUT
         .lock()
         .set_display_size(size.width, size.height);
-    FerrofluidSystemUi::new(size.width, size.height, metalos_proto::display::PHONE_SCALE as f32)
-        .expect("initialize Ferrofluid Slint System UI")
+    FerrofluidSystemUi::new(
+        size.width,
+        size.height,
+        metalos_proto::display::PHONE_SCALE as f32,
+    )
+    .expect("initialize Ferrofluid Slint System UI")
 }
 
-pub fn run(mut ui: FerrofluidSystemUi) -> ! {
+pub fn run(
+    mut ui: FerrofluidSystemUi,
+    mut forge: super::forge::ForgeService,
+    mut agent: metalos_welder::AgentRuntime,
+) -> ! {
     let start = rng::monotonic_time_ns();
     let mut transcript =
         String::from("Welcome to metalOS.\n\nYour workspace takes shape around what you need.");
-    // This milestone brings up the UI transport. Model requests will be consumed
-    // by the AI runtime once its asynchronous System UI bridge is implemented.
-    ui.set_status("Ready · AI unavailable");
+    ui.set_active_model(agent.active_model_id());
+    ui.set_status("Welder · resident local inference");
     loop {
+        forge.poll();
         // Bound work per frame so a busy input device cannot starve rendering.
         for _ in 0..64 {
             let event = virtio_input::VIRTIO_INPUT.lock().poll_ui_event();
@@ -41,8 +49,18 @@ pub fn run(mut ui: FerrofluidSystemUi) -> ! {
             }
             transcript.push_str("\n\nYou: ");
             transcript.push_str(&text);
+            match agent.handle_console_input(&text, &mut |_| {}) {
+                Ok(output) => {
+                    transcript.push_str("\n\nWelder: ");
+                    transcript.push_str(&output.response_text);
+                    ui.set_status("Welder · response ready");
+                }
+                Err(error) => {
+                    ui.set_status(&alloc::format!("Welder unavailable · {}", error));
+                }
+            }
+            ui.set_active_model(agent.active_model_id());
             ui.set_transcript(&transcript);
-            ui.set_status("Message saved locally · AI unavailable");
         }
         let elapsed = Duration::from_nanos(rng::monotonic_time_ns().saturating_sub(start));
         if let Some(damage) = ui.render(elapsed) {

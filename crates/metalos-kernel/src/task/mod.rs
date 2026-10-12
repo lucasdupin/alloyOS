@@ -1,7 +1,7 @@
 pub mod pcb;
 pub mod scheduler;
 
-#[cfg(any(test, feature = "host-tests"))]
+#[cfg(test)]
 pub mod tests;
 
 use alloc::sync::Arc;

@@ -92,7 +92,7 @@ fn integration_scheduler_lifecycle() {
 
 #[test]
 fn integration_full_ai_os_stack_e2e() {
-    use metalos_ai::{AiRuntime, ToolCall, UiCallerOrigin};
+    use metalos_welder::{AgentRuntime, ProviderToolCall as ToolCall, UiCallerOrigin};
     use metalos_boot::splash::LiquidSplashAnimation;
     use metalos_ferrofluid::{AgentUiToken, CallerPrincipal, FerrofluidError, SecurityGate};
     use metalos_js::{
@@ -215,7 +215,7 @@ fn integration_full_ai_os_stack_e2e() {
         .starts_with("uptime="));
 
     // 5. Phase 5: Pluggable AI Runtime blocks shell commands and synthesizes UI exclusively
-    let mut ai = AiRuntime::new();
+    let mut ai = AgentRuntime::new();
     assert!(ai.handle_console_input("!ls /", &mut |_| {}).is_err());
     let forbidden_call = ToolCall::new("tc_1", "sh_exec", "{\"cmd\":\"ls\"}");
     assert!(ai

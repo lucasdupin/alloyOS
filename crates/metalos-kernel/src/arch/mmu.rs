@@ -57,7 +57,14 @@ impl L1PageTable {
         // 0x0000_0000 .. 0x4000_0000: Device MMIO (UART, GIC, VirtIO)
         entries[0] = l1_device_block(0x0000_0000);
         // 0x4000_0000 .. 0x8000_0000: Normal Cacheable RAM (QEMU -M virt RAM starts at 0x4000_0000)
-        entries[1] = l1_normal_ram_block(0x4000_0000);
+        // Forge weights are loaded into a reserved region above the ordinary
+        // allocator. Cover up to 32 GiB while retaining device attributes below
+        // 1 GiB. Unbacked RAM is never handed to the allocator or accessed.
+        let mut slot = 1;
+        while slot < 32 {
+            entries[slot] = l1_normal_ram_block((slot as u64) << 30);
+            slot += 1;
+        }
         Self { entries }
     }
 }

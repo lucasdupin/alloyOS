@@ -193,6 +193,8 @@ impl Response {
 /// Errors produced by the AI runtime, provider adapters, or OS policy guards.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AiError {
+    /// Resident local model load or execution error; never falls back to cloud silently.
+    LocalInferenceError(String),
     /// Attempted to register or execute a POSIX shell command/tool or `!` escape in a shell-free OS.
     ShellAccessForbidden(String),
     /// Requested model provider or identifier is not recognized.
@@ -214,6 +216,7 @@ pub enum AiError {
 impl fmt::Display for AiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            AiError::LocalInferenceError(msg) => write!(f, "local inference error: {}", msg),
             AiError::ShellAccessForbidden(msg) => write!(f, "shell access forbidden: {}", msg),
             AiError::UnknownModel(model) => write!(f, "unknown AI model provider: {}", model),
             AiError::UnknownTool(tool) => write!(f, "unknown tool: {}", tool),
@@ -226,7 +229,7 @@ impl fmt::Display for AiError {
     }
 }
 
-/// Unified pluggable frontier model provider trait (`libmetal-ai`).
+/// Unified pluggable frontier model provider trait (Forge).
 pub trait AiModelProvider {
     fn name(&self) -> &'static str;
     fn stream_chat(

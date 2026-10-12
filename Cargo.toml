@@ -8,7 +8,9 @@ members = [
     "crates/metalos-keyboard",
     "crates/metalos-js",
     "crates/metalos-mcp",
-    "crates/metalos-ai",
+    "crates/metalos-forge",
+    "crates/metalos-welder",
+    "crates/metalos-dev-harness",
     "xtask",
 ]
 resolver = "2"

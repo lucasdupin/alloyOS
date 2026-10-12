@@ -3,3 +3,14 @@
 *.img
 *.iso
 .DS_Store
+
+# Local credentials and resident model weights are never repository artifacts.
+/.local/
+/.secrets/
+.env
+.env.*
+!.env.example
+*.gguf
+*.safetensors
+*.part
+__pycache__/

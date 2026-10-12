@@ -1,4 +1,4 @@
-#[cfg(any(test, feature = "host-tests"))]
+#[cfg(test)]
 pub mod tests {
     use alloc::string::String;
     use crate::fs::devfs::{DevFS, INO_DEV_NULL, INO_DEV_ZERO};

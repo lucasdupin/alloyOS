@@ -47,7 +47,8 @@ must be connected before profile learning can work across reboots.
 | [`crates/metalos-keyboard`](crates/metalos-keyboard) | Reusable soft keyboard: transparent keys, tap feedback, slide/scroll behavior, typed actions, liquid displacement, and a standalone preview |
 | [`crates/metalos-js`](crates/metalos-js) | Embedded `#![no_std]` JavaScript engine (`V8Isolate` / `JsRuntime`), `MetalOS.*` bindings (zero shell access), and event/time scheduler (`scriptd`) |
 | [`crates/metalos-mcp`](crates/metalos-mcp) | Headless **Model Context Protocol (MCP)** developer app SDK, zero-UI capability sandbox, and built-in MCP servers |
-| [`crates/metalos-ai`](crates/metalos-ai) | Pluggable AI runtime (`Gemini`, `Claude`, `ChatGPT`), shell-free native OS tool registry, and agent-exclusive UI synthesizer |
+| [`crates/metalos-forge`](crates/metalos-forge) | Model gateway, resident Gemma inference, cloud provider adapters, and model selection |
+| [`crates/metalos-welder`](crates/metalos-welder) | Agent orchestration, conversation and setup, shell-free native tools, persistent console configuration, and agent-exclusive UI synthesis |
 | [`xtask`](xtask) | Build, QEMU (`-M virt -accel hvf`) runner, and headless E2E test harness |
 
 ## Filesystem

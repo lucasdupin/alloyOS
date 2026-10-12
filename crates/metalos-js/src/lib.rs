@@ -391,3 +391,23 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod forge_tests {
+    use super::*;
+    use alloc::{boxed::Box,string::ToString};
+    #[test]
+    fn local_forge_capability_is_opt_in_and_options_are_validated() {
+        let mut rt=JsRuntime::new();
+        let mut host=VirtualHostEnv::new();
+        assert!(rt.eval_with_host("MetalOS.forge('hello');",&mut host).is_err());
+        host.set_forge_handler(Box::new(|prompt,model,max_tokens| {
+            assert_eq!(prompt,"hello");assert_eq!(model,Some("test-model"));assert_eq!(max_tokens,4);
+            Ok("local result".to_string())
+        }));
+        assert_eq!(rt.eval_with_host("MetalOS.forge('hello', {model:'test-model', max_tokens:4});",&mut host).unwrap(),JsValue::String("local result".to_string()));
+        for script in ["MetalOS.forge('hello', {max_tokens:0});","MetalOS.forge('hello', {max_tokens:257});","MetalOS.forge('hello', {auth_token:'secret'});","MetalOS.forge(42);","MetalOS.forge('hello', false);"] {
+            assert!(rt.eval_with_host(script,&mut host).is_err());
+        }
+    }
+}

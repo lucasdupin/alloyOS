@@ -20,10 +20,12 @@ flowchart TD
     VirtIO --> Net["Network Stack (smoltcp TCP/IP + Hardware RNG + TLS 1.3)"]
     VirtIO --> Ferrofluid["Ferrofluid Display Server (ferrofluidd)"]
     Ferrofluid --> AIConsole["Agent-Owned UI & AI Console (Only the Agent Creates UI)"]
-    AIConsole --> AIRuntime["Pluggable AI Runtime (libmetal-ai)"]
-    AIRuntime --> Gemini["Google Gemini Provider"]
-    AIRuntime --> Claude["Anthropic Claude Provider"]
-    AIRuntime --> ChatGPT["OpenAI ChatGPT Provider"]
+    AIConsole --> AIRuntime["Welder Agent Runtime"]
+    AIRuntime --> Forge["Forge Model Gateway"]
+    Forge --> Gemma["Resident Gemma Model"]
+    Forge --> Gemini["Google Gemini Provider"]
+    Forge --> Claude["Anthropic Claude Provider"]
+    Forge --> ChatGPT["OpenAI ChatGPT Provider"]
     AIRuntime --> Tools["Native OS Capabilities (CobaltFS, System Telemetry, JS Script Management)"]
     AIRuntime -.-> Knowledge["Planned: /knowledge/ Markdown user profile on CobaltFS"]
     AIRuntime --> JSRuntime["Embedded JS Engine (V8 / JS Runtime)"]
@@ -122,7 +124,7 @@ compositor, widget library, font renderer, and simulated UI IPC were removed.
 
 Because metalOS is an **AI-first operating system**, there are very few traditional shell commands, and **the AI agent cannot see or execute shell commands**. Instead of wrapping a legacy POSIX shell, the Ferrofluid console is a pure conversational AI interface backed by structured OS capabilities and an embedded scripting engine.
 
-- [x] **Pluggable Provider Trait (`crates/metalos-ai`)**
+- [x] **Pluggable Provider Trait (`crates/metalos-forge`)**
   - Unified `AiModelProvider` interface supporting streaming token generation, conversation history, system prompts, and tool/function calling:
     ```rust
     pub trait AiModelProvider {
@@ -219,17 +221,20 @@ for the design. This phase is planned, not implemented.
 
 ## Forge & Welder: Resident Local Intelligence
 
-**Forge** is the always-on, on-device inference subsystem. It owns a pluggable
-model registry and resident model lifetimes, rather than being a Gemma-specific
-wrapper. Gemma 2 2B instruction-tuned is the first default model; other local
-models can be loaded and selected through the same interfaces. Model weights
-stay in device memory once loaded. Cloud providers remain explicit alternatives.
+**Forge** is the always-on model gateway. It owns every local and cloud model
+adapter, model discovery/selection, credentials, and model network transport.
+Its local models retain weights in device memory once loaded. Gemma 2 2B
+instruction-tuned is the initial default; other resident models and cloud
+providers use the same inference interface. Forge is not Gemma-specific.
 
 **Welder** is the on-device agent harness. It owns the bounded agent loop,
 decides when to use Forge's resident Gemma model or an explicitly configured
-cloud provider, executes authorized tools, and feeds results back to the model.
-Forge is inference; Welder is orchestration. Forge is the default, and cloud
-routing follows explicit policy, availability, and local credential configuration.
+cloud model exposed by Forge, executes authorized tools, and feeds results back
+to Forge. Welder has no direct web access, credentials, or provider transports.
+It owns first-boot setup, asking about the user's preferences, conversation and
+context management, and connecting apps through their MCP and skill broker.
+Forge is the model gateway; Welder is orchestration. Local inference is the
+default, and cloud selection follows explicit policy and model availability.
 Neither component substitutes canned responses for unavailable backends.
 
 Host-side QEMU launch, inference endpoints, model download, and test utilities
@@ -243,6 +248,10 @@ interfaces through a versioned transport.
 - [ ] Build Welder's local/cloud routing policy and bounded model/tool loop,
   preserving script capability boundaries, streaming/error semantics, and
   explicit failure when a real cloud transport is unavailable.
+- [ ] Persist first-boot/setup state and explicit profile answers locally;
+  maintain bounded conversation history and app context. Discover MCP tools
+  and skills when connecting an app, keeping skill text untrusted and tool
+  authorization separate from discovery. Model calls always go through Forge.
 - [ ] Add host-side launch, readiness, inference endpoint, and integration
   tools separately, preserving existing QEMU and screenshot test workflows.
 - [ ] Add a host download script for Gemma, with explicit model/revision,
@@ -270,7 +279,7 @@ Gemma model; completion requires real weights and actual model execution.
 | **M2: Connected Metal** | VirtIO-Net, TCP/IP, DNS, TLS 1.3, HTTPS SSE client | `metalos-kernel`, `metalos-user` | Complete |
 | **M3: Liquid Boot** | VirtIO-GPU framebuffer + NEON dripping liquid-metal animation | `metalos-boot`, `metalos-kernel` | Complete |
 | **M4: Ferrofluid System UI** | Slint window, Quicksand font, bare-metal platform adapter, native input method with voice input | `metalos-ferrofluid`, `metalos-kernel` | UI bring-up complete; AI bridge and voice input pending |
-| **M5: Pluggable AI OS** | Gemini, Claude & ChatGPT providers + shell-free native OS tools | `metalos-ai`, `metalos-user` | Runtime implemented; filesystem persistence pending |
+| **M5: Pluggable AI OS** | Gemini, Claude & ChatGPT providers + shell-free native OS tools | `metalos-welder`, `metalos-forge`, `metalos-user` | Runtime implemented; filesystem persistence pending |
 | **M6: JS Engine & Scheduler** | Embedded V8/JS runtime for model-authored scripts + time/event scheduling | `metalos-js`, `metalos-user` | Complete |
-| **M7: MCP Apps & Agent UI** | Headless MCP-only developer app SDK + agent-exclusive UI synthesis | `metalos-mcp`, `metalos-ferrofluid`, `metalos-ai` | Core implemented; app skills and Slint view transport pending |
-| **M8: User Knowledge** | Local Markdown profile, learning, retrieval, and user controls | `metalos-ai`, `metalos-kernel`, `metalos-ferrofluid` | Planned |
+| **M7: MCP Apps & Agent UI** | Headless MCP-only developer app SDK + agent-exclusive UI synthesis | `metalos-mcp`, `metalos-ferrofluid`, `metalos-welder` | Core implemented; app skills and Slint view transport pending |
+| **M8: User Knowledge** | Local Markdown profile, learning, retrieval, and user controls | `metalos-welder`, `metalos-kernel`, `metalos-ferrofluid` | Planned |

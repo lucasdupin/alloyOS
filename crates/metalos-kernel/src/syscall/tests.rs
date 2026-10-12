@@ -1,4 +1,4 @@
-#[cfg(any(test, feature = "host-tests"))]
+#[cfg(test)]
 pub mod tests {
     use core::mem::MaybeUninit;
     use metalos_proto::SyscallNo;

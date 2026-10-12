@@ -1,0 +1,58 @@
+# Local Forge model assets
+
+`python3 scripts/download_gemma.py` downloads the initial default model from
+Google's official [`google/gemma-2-2b-it-GGUF`](https://huggingface.co/google/gemma-2-2b-it-GGUF)
+repository. Accept the Gemma license on Hugging Face first. The script pins
+revision `67803c710cb0c89bae2047a5f50a2481c9339d24`, file `2b_it_v2.gguf`,
+size 10,463,413,632 bytes, and the published LFS SHA-256. This full precision
+artifact needs a 16 GiB guest and approximately 21 GB host disk space for weights
+plus the packaged image.
+
+Pass only a credential reference:
+
+```sh
+python3 scripts/download_gemma.py --auth-env HF_TOKEN
+python3 scripts/download_gemma.py --auth-file /private/path/hf-token
+```
+
+The token file contains just the Hugging Face token. Store it outside the
+repository or under ignored `.secrets/`, with `chmod 600`. Do not type tokens
+into shell command arguments. The default environment reference is `HF_TOKEN`.
+Token values never appear in subprocess arguments, output, model metadata, or
+the image. Redirected downloads do not forward credentials to CDN hosts.
+
+Interrupted downloads retain `.part` and resume with HTTP Range. Servers that
+ignore Range trigger a fresh download. SHA-256, pinned size, and GGUF magic are
+verified before atomically installing the file. Errors are intentionally generic
+to avoid printing credentials or signed download URLs. `--package-only` rebuilds
+the image from an already verified local download.
+
+Outputs live under ignored `.local/models/gemma-2-2b-it/`:
+
+- `2b_it_v2.gguf`: verified weights.
+- `model.img`: read-only boot model image, loaded into guest RAM by Welder.
+- `manifest.json`: public provenance and integrity metadata, no credentials.
+
+The image starts with a 4096-byte header: `FGMODEL1`, little-endian u64 payload
+length at byte 8, SHA-256 at byte 16, zero-padded model ID at byte 48 (64-byte
+field), then the GGUF payload at byte 4096. Sector alignment adds zero padding
+at the end. Boot loading borrows the resident payload without copying it to the
+small kernel heap. This model image is separate from the writable CobaltFS image.
+
+Welder launch authentication uses environment variable names or private files
+containing `NAME=VALUE` lines; unlike the downloader's token file, launch files
+can carry multiple credentials. QEMU receives a private transient `fw_cfg` file
+named `opt/metalos/auth`, containing NUL-delimited entries. The guest reads it
+into volatile RAM; no persistent guest filesystem receives it. Normal shutdown
+and Ctrl-C remove the temporary file. Abrupt termination cannot guarantee
+cleanup of files in the host temporary directory. Local process/memory inspection
+remains outside this credential channel's threat boundary.
+
+Fixture and redaction checks require no network or gated weights:
+
+```sh
+python3 -m unittest discover -s scripts -p 'test_*.py'
+```
+
+Passing these checks validates acquisition and image structure; it does not
+claim that real Gemma weights were downloaded or generation succeeded.

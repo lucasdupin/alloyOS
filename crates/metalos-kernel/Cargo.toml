@@ -12,7 +12,8 @@ metalos-user = { path = "../metalos-user" }
 metalos-ferrofluid = { path = "../metalos-ferrofluid" }
 metalos-js = { path = "../metalos-js" }
 metalos-mcp = { path = "../metalos-mcp" }
-metalos-ai = { path = "../metalos-ai" }
+metalos-forge = { path = "../metalos-forge" }
+metalos-welder = { path = "../metalos-welder" }
 
 [dev-dependencies]
 metalos-boot = { path = "../metalos-boot" }
@@ -21,6 +22,7 @@ metalos-boot = { path = "../metalos-boot" }
 default = []
 host-tests = []
 debug-shell = []
+forge = []
 
 [lib]
 name = "metalos_kernel"

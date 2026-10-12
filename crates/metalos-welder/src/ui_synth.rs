@@ -3,9 +3,7 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::provider::{
-    extract_json_string_field, json_escape, AiError,
-};
+use metalos_forge::provider::{extract_json_string_field, json_escape, AiError};
 use metalos_proto::DirtyRect;
 
 /// Exclusive view archetypes synthesized by the metalOS AI agent for Ferrofluid (`ferrofluidd`).
@@ -46,7 +44,7 @@ impl ViewKind {
 /// Caller identity checked by the UI synthesizer to enforce Phase 7 Zero App-Owned UI rules.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiCallerOrigin {
-    /// The privileged metalOS AI runtime (`libmetal-ai`).
+    /// The privileged metalOS AI runtime (Welder).
     AiAgent,
     /// A third-party MCP application (strictly forbidden from creating UI directly).
     ThirdPartyMcpApp(String),
@@ -289,12 +287,7 @@ impl AgentUiSynthesizer {
             .unwrap_or_else(|| format!("{} :: {}", app_id, tool_or_resource_name));
         let summary = extract_json_string_field(mcp_output_json, "summary")
             .or_else(|| extract_json_string_field(mcp_output_json, "status"))
-            .unwrap_or_else(|| {
-                format!(
-                    "Agent-synthesized view for headless MCP app '{}'",
-                    app_id
-                )
-            });
+            .unwrap_or_else(|| format!("Agent-synthesized view for headless MCP app '{}'", app_id));
 
         let mut metrics = Vec::new();
         if let Some(cpu) = extract_json_string_field(mcp_output_json, "cpu_usage") {

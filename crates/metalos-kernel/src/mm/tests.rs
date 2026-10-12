@@ -1,4 +1,4 @@
-#[cfg(any(test, feature = "host-tests"))]
+#[cfg(test)]
 pub mod tests {
     use crate::mm::frame_allocator::BitmapFrameAllocator;
     use crate::mm::paging::FrameAllocator;

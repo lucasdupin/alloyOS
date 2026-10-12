@@ -7,6 +7,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use core::ptr::{read_volatile, write_volatile};
+#[cfg(target_os = "none")]
 use core::sync::atomic::{fence, Ordering};
 use metalos_proto::{DirtyRect, FramebufferInfo};
 use spin::Mutex;
@@ -59,10 +60,12 @@ const STATUS_DRIVER: u32 = 2;
 const STATUS_DRIVER_OK: u32 = 4;
 const STATUS_FEATURES_OK: u32 = 8;
 
+#[cfg(target_os = "none")]
 const QUEUE_SIZE: usize = 16;
 const VRING_DESC_F_NEXT: u16 = 1;
 const VRING_DESC_F_WRITE: u16 = 2;
 
+#[cfg(target_os = "none")]
 #[repr(C, align(16))]
 #[derive(Clone, Copy)]
 struct VirtqDesc {
@@ -72,6 +75,7 @@ struct VirtqDesc {
     next: u16,
 }
 
+#[cfg(target_os = "none")]
 #[repr(C, align(2))]
 struct VirtqAvail {
     flags: u16,
@@ -80,6 +84,7 @@ struct VirtqAvail {
     used_event: u16,
 }
 
+#[cfg(target_os = "none")]
 #[repr(C, align(4))]
 #[derive(Clone, Copy)]
 struct VirtqUsedElem {
@@ -87,6 +92,7 @@ struct VirtqUsedElem {
     len: u32,
 }
 
+#[cfg(target_os = "none")]
 #[repr(C, align(4))]
 struct VirtqUsed {
     flags: u16,
@@ -95,6 +101,7 @@ struct VirtqUsed {
     avail_event: u16,
 }
 
+#[cfg(target_os = "none")]
 #[repr(C, align(4096))]
 struct VirtQueueMemory {
     desc: [VirtqDesc; QUEUE_SIZE],
@@ -103,6 +110,7 @@ struct VirtQueueMemory {
     used: VirtqUsed,
 }
 
+#[cfg(target_os = "none")]
 static mut GPU_VIRTQ_MEM: VirtQueueMemory = VirtQueueMemory {
     desc: [VirtqDesc {
         addr: 0,
@@ -125,12 +133,14 @@ static mut GPU_VIRTQ_MEM: VirtQueueMemory = VirtQueueMemory {
     },
 };
 
+#[cfg(target_os = "none")]
 #[repr(C, align(64))]
 struct GpuCmdScratch {
     req: [u8; 128],
     resp: VirtioGpuCtrlHdr,
 }
 
+#[cfg(target_os = "none")]
 static mut GPU_CMD_SCRATCH: GpuCmdScratch = GpuCmdScratch {
     req: [0; 128],
     resp: VirtioGpuCtrlHdr {
@@ -274,11 +284,13 @@ impl VirtIoGpuDevice {
         dev
     }
 
+    #[cfg(target_os = "none")]
     #[inline]
     unsafe fn read_reg(base: usize, offset: usize) -> u32 {
         read_volatile((base + offset) as *const u32)
     }
 
+    #[cfg(target_os = "none")]
     #[inline]
     unsafe fn write_reg(base: usize, offset: usize, val: u32) {
         write_volatile((base + offset) as *mut u32, val);

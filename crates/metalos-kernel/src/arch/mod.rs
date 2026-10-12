@@ -3,7 +3,7 @@ pub mod idt;
 pub mod mmu;
 pub mod psci;
 
-#[cfg(any(test, feature = "host-tests"))]
+#[cfg(test)]
 pub mod tests;
 
 pub fn init() {

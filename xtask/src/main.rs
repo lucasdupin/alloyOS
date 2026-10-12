@@ -31,6 +31,16 @@ enum Commands {
         #[arg(long)]
         debug_shell: bool,
     },
+    /// Launches the host development bridge and its loopback Forge endpoint
+    ForgeBridge {
+        #[arg(long)] release: bool,
+        #[arg(long, default_value = "127.0.0.1:7070")] bind: std::net::SocketAddr,
+        #[arg(long, default_value = "16G")] memory: String,
+        #[arg(long, default_value = "120")] timeout: u64,
+        #[arg(long)] auth_env: Vec<String>,
+        #[arg(long)] auth_file: Vec<PathBuf>,
+        #[arg(long)] model_image: Option<PathBuf>,
+    },
     /// Runs headless E2E QEMU tests
     Test {
         #[arg(long, default_value = "60")]
@@ -321,6 +331,10 @@ fn ensure_cobaltfs_image(path: &Path) -> Result<()> {
 }
 
 fn build_crates(release: bool, debug_shell: bool) -> Result<PathBuf> {
+    build_crates_mode(release, debug_shell, false)
+}
+
+fn build_crates_mode(release: bool, debug_shell: bool, forge: bool) -> Result<PathBuf> {
     let workspace_root = get_workspace_root()?;
 
     println!("[xtask] Building kernel crate for aarch64-unknown-none...");
@@ -335,6 +349,7 @@ fn build_crates(release: bool, debug_shell: bool) -> Result<PathBuf> {
     if debug_shell {
         kernel_cmd.args(["--features", "debug-shell"]);
     }
+    if forge { kernel_cmd.args(["--features", "forge"]); }
     if release {
         kernel_cmd.arg("--release");
     }
@@ -481,7 +496,7 @@ fn run_e2e_tests(kernel_image: &Path, _overall_timeout: Duration) -> Result<()> 
     println!("[xtask] [TEST 2/10] e2e_memory_init...");
     harness
         .expect_output(
-            "[mm] Frame allocator and 4 MiB kernel heap online.",
+            "[mm] Frame allocator and 64 MiB kernel heap online.",
             Duration::from_secs(10),
         )
         .context("e2e_memory_init failed")?;
@@ -520,7 +535,7 @@ fn run_e2e_tests(kernel_image: &Path, _overall_timeout: Duration) -> Result<()> 
         .context("e2e_mcp_init failed")?;
     harness
         .expect_output(
-            "[ai] Pluggable AI runtime online (active=gemini, shell-access=disabled).",
+            "[welder] Agent runtime online (active=forge, shell-access=disabled).",
             Duration::from_secs(10),
         )
         .context("e2e_ai_init failed")?;
@@ -624,9 +639,37 @@ fn run_ci() -> Result<()> {
         return Err(anyhow!("cargo test --workspace failed"));
     }
 
+    println!("[xtask] Checking model asset tooling (offline)...");
+    let assets = Command::new("python3").current_dir(&workspace_root).args(["-m", "unittest", "discover", "-s", "scripts", "-p", "test_model_assets.py"]).status().context("Failed to run model asset tests")?;
+    if !assets.success() { return Err(anyhow!("model asset tests failed")); }
     println!("[xtask] Step 2: Building metalOS (aarch64) and executing E2E tests...");
     let kernel_image = build_crates(false, true)?;
     run_e2e_tests(&kernel_image, Duration::from_secs(60))?;
+    Ok(())
+}
+
+fn validate_forge_launch(memory: &str, image: Option<&Path>, timeout: u64) -> Result<()> {
+    if timeout == 0 || timeout > 3600 { return Err(anyhow!("timeout must be 1..3600 seconds")); }
+    let (digits, unit) = memory.split_at(memory.len().saturating_sub(1));
+    let scale = match unit { "M" | "m" => 1u64 << 20, "G" | "g" => 1u64 << 30, _ => return Err(anyhow!("RAM must be a positive integer followed by M or G")) };
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) { return Err(anyhow!("invalid RAM size")); }
+    let bytes = digits.parse::<u64>().ok().and_then(|n| n.checked_mul(scale)).filter(|n| *n > 0).ok_or_else(|| anyhow!("invalid RAM size"))?;
+    let minimum = if image.is_some() { 16u64 << 30 } else { 4u64 << 30 };
+    if bytes < minimum || bytes > 31u64 << 30 { return Err(anyhow!("Forge RAM must be {}..31 GiB", minimum >> 30)); }
+    if let Some(path) = image {
+        if path.to_string_lossy().contains(',') { return Err(anyhow!("model image path must not contain commas")); }
+        let mut file = std::fs::File::open(path).context("cannot open model image")?;
+        let length = file.metadata()?.len();
+        let mut header = [0u8; 4096];
+        std::io::Read::read_exact(&mut file, &mut header).context("model image header truncated")?;
+        if &header[..8] != b"FGMODEL1" { return Err(anyhow!("invalid model image magic")); }
+        let weights = u64::from_le_bytes(header[8..16].try_into().unwrap());
+        let expected = weights.checked_add(4096).and_then(|n| n.checked_add(511)).map(|n| n & !511).ok_or_else(|| anyhow!("model image length overflow"))?;
+        if weights < 24 || length != expected { return Err(anyhow!("model image declared size does not match file size")); }
+        if length > bytes - (2u64 << 30) { return Err(anyhow!("model image does not fit guest RAM")); }
+        let mut magic = [0u8; 4]; std::io::Read::read_exact(&mut file, &mut magic)?;
+        if &magic != b"GGUF" { return Err(anyhow!("model payload is not GGUF")); }
+    }
     Ok(())
 }
 
@@ -650,6 +693,30 @@ fn main() -> Result<()> {
             };
             run_e2e_tests(&image, Duration::from_secs(timeout))
         }
+        Commands::ForgeBridge { release, bind, memory, timeout, auth_env, auth_file, model_image } => {
+            if !bind.ip().is_loopback() { return Err(anyhow!("ForgeBridge must bind to loopback")); }
+            validate_forge_launch(&memory, model_image.as_deref(), timeout)?;
+            let kernel = build_crates_mode(release, false, true)?;
+            let root = get_workspace_root()?;
+            let disk = get_cobaltfs_image_path(&root, release);
+            ensure_cobaltfs_image(&disk)?;
+            let mut command = Command::new("qemu-system-aarch64");
+            command.args(["-M", "virt", "-accel", "hvf", "-cpu", "host", "-display", "none", "-serial", "stdio", "-monitor", "none", "-no-reboot", "-m"])
+                .arg(memory).arg("-kernel").arg(kernel)
+                .arg("-drive").arg(format!("file={},if=none,format=raw,id=hd0", disk.display()))
+                .args(["-device", "virtio-blk-device,drive=hd0"]);
+            if let Some(image) = model_image {
+                if image.to_string_lossy().contains(',') { return Err(anyhow!("model image path must not contain commas")); }
+                command.arg("-device").arg(format!("loader,file={},addr=0x80000000,force-raw=on", image.display()));
+            }
+            metalos_dev_harness::install_shutdown_handler();
+            let _credentials = metalos_dev_harness::credentials::attach(&mut command, &auth_env, &auth_file).map_err(|e| anyhow!(e))?;
+            let mut guest = metalos_dev_harness::Guest::launch(&mut command, Duration::from_secs(timeout)).map_err(|e| anyhow!(e))?;
+            // A status response confirms the guest transport. Model readiness is reported in its JSON.
+            let status = guest.wait_ready().map_err(|e| anyhow!(e))?;
+            println!("Forge status: {status}");
+            metalos_dev_harness::serve(bind, guest).map_err(|e| anyhow!(e))
+        },
         Commands::Ci => run_ci(),
     }
 }
@@ -665,6 +732,34 @@ mod tests {
 
         let args_debug = Cli::parse_from(["xtask", "build"]);
         assert_eq!(args_debug.command, Commands::Build { release: false, debug_shell: false });
+    }
+
+    #[test]
+    fn forge_launch_checks_ram_and_model_header() {
+        for memory in ["", "G", "0G", "3G", "32G", "4MG", "-4G", "999999999999999999999G"] { assert!(validate_forge_launch(memory, None, 120).is_err(), "{memory}"); }
+        assert!(validate_forge_launch("4096M", None, 120).is_ok());
+        assert!(validate_forge_launch("16G", None, 0).is_err());
+        let path = std::env::temp_dir().join(format!("metalos-welder-image-test-{}", std::process::id()));
+        let mut image = vec![0u8; 4608]; image[..8].copy_from_slice(b"FGMODEL1"); image[8..16].copy_from_slice(&24u64.to_le_bytes()); image[4096..4100].copy_from_slice(b"GGUF");
+        std::fs::write(&path, &image).unwrap();
+        assert!(validate_forge_launch("16G", Some(&path), 120).is_ok());
+        assert!(validate_forge_launch("4G", Some(&path), 120).is_err());
+        image[8..16].copy_from_slice(&1024u64.to_le_bytes()); std::fs::write(&path, &image).unwrap();
+        assert!(validate_forge_launch("16G", Some(&path), 120).is_err());
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn parse_welder_uses_references_and_resident_memory() {
+        let cli = Cli::parse_from(["xtask", "forge-bridge", "--auth-env", "HF_TOKEN", "--auth-file", "/private/auth.env"]);
+        match cli.command {
+            Commands::ForgeBridge {memory, auth_env, auth_file, bind, ..} => {
+                assert_eq!(memory, "16G");
+                assert_eq!(auth_env, vec!["HF_TOKEN"]);
+                assert_eq!(auth_file, vec![PathBuf::from("/private/auth.env")]);
+                assert!(bind.ip().is_loopback());
+            }
+            _ => panic!("expected ForgeBridge command"),
+        }
     }
 
     #[test]

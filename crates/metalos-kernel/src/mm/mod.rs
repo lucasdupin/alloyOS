@@ -2,7 +2,7 @@ pub mod frame_allocator;
 pub mod heap;
 pub mod paging;
 
-#[cfg(any(test, feature = "host-tests"))]
+#[cfg(test)]
 pub mod tests;
 
 use metalos_proto::BootInfo;

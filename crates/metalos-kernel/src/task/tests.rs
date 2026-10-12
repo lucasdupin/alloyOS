@@ -1,4 +1,4 @@
-#[cfg(any(test, feature = "host-tests"))]
+#[cfg(test)]
 pub mod tests {
     use crate::task::pcb::{Task, TaskState};
     use crate::task::scheduler::Scheduler;

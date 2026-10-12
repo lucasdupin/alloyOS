@@ -2270,17 +2270,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "metalos-ai"
+name = "metalos-boot"
 version = "0.1.0"
 dependencies = [
  "metalos-proto",
 ]
 
 [[package]]
-name = "metalos-boot"
+name = "metalos-dev-harness"
 version = "0.1.0"
 dependencies = [
- "metalos-proto",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2292,6 +2293,13 @@ dependencies = [
  "png",
  "slint",
  "slint-build",
+]
+
+[[package]]
+name = "metalos-forge"
+version = "0.1.0"
+dependencies = [
+ "libm",
 ]
 
 [[package]]
@@ -2307,13 +2315,14 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.13.2",
  "linked_list_allocator",
- "metalos-ai",
  "metalos-boot",
  "metalos-ferrofluid",
+ "metalos-forge",
  "metalos-js",
  "metalos-mcp",
  "metalos-proto",
  "metalos-user",
+ "metalos-welder",
  "spin",
 ]
 
@@ -2343,6 +2352,16 @@ name = "metalos-user"
 version = "0.1.0"
 dependencies = [
  "metalos-proto",
+]
+
+[[package]]
+name = "metalos-welder"
+version = "0.1.0"
+dependencies = [
+ "metalos-forge",
+ "metalos-proto",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -4935,6 +4954,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "metalos-dev-harness",
  "metalos-proto",
 ]
 

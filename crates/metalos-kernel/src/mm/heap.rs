@@ -2,7 +2,12 @@
 use linked_list_allocator::LockedHeap;
 use crate::mm::paging::{FrameAllocator, OffsetPageTable, Size4KiB};
 
-pub const HEAP_SIZE: usize = 64 * 1024 * 1024; // 64 MiB, including high-resolution scanout
+#[cfg(not(feature = "forge"))]
+pub const HEAP_SIZE: usize = 64 * 1024 * 1024;
+// Weights are borrowed from the reserved loader region, not copied into this
+// heap. This budget covers model metadata, bounded KV cache, and working memory.
+#[cfg(feature = "forge")]
+pub const HEAP_SIZE: usize = 256 * 1024 * 1024;
 
 #[cfg(target_os = "none")]
 #[global_allocator]

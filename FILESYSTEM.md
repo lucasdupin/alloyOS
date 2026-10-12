@@ -64,7 +64,7 @@ Populated during [`Vfs::with_root`](crates/metalos-kernel/src/fs/vfs.rs) initial
 - `/proc/version`: Kernel release string (`metalOS version 0.1.0 (rustc nightly aarch64)`).
 
 ### `/etc` — System & AI Configuration
-Holds system-wide configuration files shared between the kernel, `metal-sh`, and the AI runtime ([`metalos-ai`](crates/metalos-ai)):
+Holds system-wide configuration files shared between the kernel, `metal-sh`, and the AI runtime ([`metalos-welder`](crates/metalos-welder)):
 - `/etc/motd`: Welcome banner (`Welcome to metalOS v0.1.0 (aarch64 POSIX-compliant Rust kernel)`).
 - `/etc/ai.conf`: Default AI operator settings (`provider=gemini`, `model=gemini-2.5-pro`, `shell_access=disabled`).
 - `/etc/schedules.conf`: Registry of time- and event-triggered JavaScript jobs managed by `script_schedule`.
@@ -114,7 +114,7 @@ Userland processes interact with the VFS through [`libmetal::fs`](crates/metalos
 - `SyscallNo::Close (3)`: Closes an open file descriptor.
 - `SyscallNo::Stat (4)`: Resolves a path in the VFS and returns `1` for `InodeKind::Directory`, `0` for `InodeKind::File` / `InodeKind::CharDevice`, or `ENOENT (-2)` if not found.
 
-### 2. Structured AI Tools ([`metalos-ai`](crates/metalos-ai/src/tools.rs))
+### 2. Structured AI Tools ([`metalos-welder`](crates/metalos-welder/src/tools.rs))
 Because the AI agent operates under a strict shell-free policy, it accesses the filesystem exclusively through native structured tools:
 
 These interfaces currently use an in-memory map in `NativeToolRegistry`.

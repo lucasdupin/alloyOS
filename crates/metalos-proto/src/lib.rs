@@ -70,17 +70,25 @@ pub enum SyscallNo {
     Munmap = 11,
     Brk = 12,
     Yield = 24,
+    ShmGet = 29,
+    ShmAt = 30,
     Getpid = 39,
+    Socket = 41,
+    Connect = 42,
+    Send = 44,
+    Recv = 45,
     Fork = 57,
     Execve = 59,
     Exit = 60,
     Waitpid = 61,
     Kill = 62,
     Uname = 63,
+    ClockGettime = 228,
+    GetRandom = 318,
 }
 
 impl SyscallNo {
-    pub const ALL: [SyscallNo; 20] = [
+    pub const ALL: [SyscallNo; 28] = [
         SyscallNo::Read,
         SyscallNo::Write,
         SyscallNo::Open,
@@ -94,13 +102,21 @@ impl SyscallNo {
         SyscallNo::Munmap,
         SyscallNo::Brk,
         SyscallNo::Yield,
+        SyscallNo::ShmGet,
+        SyscallNo::ShmAt,
         SyscallNo::Getpid,
+        SyscallNo::Socket,
+        SyscallNo::Connect,
+        SyscallNo::Send,
+        SyscallNo::Recv,
         SyscallNo::Fork,
         SyscallNo::Execve,
         SyscallNo::Exit,
         SyscallNo::Waitpid,
         SyscallNo::Kill,
         SyscallNo::Uname,
+        SyscallNo::ClockGettime,
+        SyscallNo::GetRandom,
     ];
 
     pub const fn as_u64(self) -> u64 {
@@ -122,16 +138,96 @@ impl SyscallNo {
             11 => Ok(Self::Munmap),
             12 => Ok(Self::Brk),
             24 => Ok(Self::Yield),
+            29 => Ok(Self::ShmGet),
+            30 => Ok(Self::ShmAt),
             39 => Ok(Self::Getpid),
+            41 => Ok(Self::Socket),
+            42 => Ok(Self::Connect),
+            44 => Ok(Self::Send),
+            45 => Ok(Self::Recv),
             57 => Ok(Self::Fork),
             59 => Ok(Self::Execve),
             60 => Ok(Self::Exit),
             61 => Ok(Self::Waitpid),
             62 => Ok(Self::Kill),
             63 => Ok(Self::Uname),
+            228 => Ok(Self::ClockGettime),
+            318 => Ok(Self::GetRandom),
             other => Err(other),
         }
     }
+}
+
+/// IPv4 socket endpoint passed across the syscall boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(C)]
+pub struct SocketAddrV4 {
+    pub ip: [u8; 4],
+    pub port: u16,
+}
+
+impl SocketAddrV4 {
+    pub const fn new(ip: [u8; 4], port: u16) -> Self {
+        Self { ip, port }
+    }
+}
+
+/// Socket domain constants.
+pub const AF_INET: u64 = 2;
+/// Socket type constants.
+pub const SOCK_STREAM: u64 = 1;
+pub const SOCK_DGRAM: u64 = 2;
+
+/// Linear framebuffer geometry and pixel format metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct FramebufferInfo {
+    pub width: u32,
+    pub height: u32,
+    pub stride_bytes: u32,
+    pub bytes_per_pixel: u32,
+}
+
+/// Rectangular damage region for framebuffer updates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct DirtyRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl DirtyRect {
+    pub const fn new(x: u32, y: u32, width: u32, height: u32) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+}
+
+/// Hardware input event type from VirtIO-Input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum InputEventKind {
+    KeyDown = 1,
+    KeyUp = 2,
+    PointerMove = 3,
+    PointerButtonDown = 4,
+    PointerButtonUp = 5,
+}
+
+/// Hardware input event delivered to Mercury (`mercuryd`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct InputEvent {
+    pub kind: InputEventKind,
+    pub code: u16,
+    pub x: i32,
+    pub y: i32,
 }
 
 #[cfg(test)]
@@ -176,3 +272,4 @@ mod tests {
         assert_eq!(boot_info.rsdp_addr, Some(0x7FFE_0000));
     }
 }
+

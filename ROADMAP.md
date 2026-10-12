@@ -6,6 +6,7 @@
 - **Single-User by Design**: Personal devices are single-owner devices. metalOS intentionally omits multi-user support (no UIDs/GIDs, user session switching, `/home/<user>` hierarchies, or cross-user permission matrices). Security and isolation boundaries exist strictly between **the AI Agent** and **capability-scoped JS isolates / headless MCP apps**, eliminating an entire class of state-synchronization and permission bugs.
 - **No Shell for the AI**: The AI agent cannot see or execute shell commands (`sh`, `exec`, `spawn`). It interacts with the OS exclusively through typed native tools, local JavaScript (`metalos-js`), and MCP servers.
 - **Agent-Exclusive UI**: Third-party developer apps are strictly headless MCP servers (`metalos-mcp`). Only the AI agent is permitted to create and update UI surfaces in **Ferrofluid (`ferrofluidd`)**.
+- **Agent-Owned User Knowledge**: The main agent maintains local user context under `/knowledge/`, with source tracking and user correction/deletion controls. Skills are supplied by `/apps/`, independently of knowledge; no top-level `/skills/` directory is planned.
 
 ---
 
@@ -24,9 +25,12 @@ flowchart TD
     AIRuntime --> Claude["Anthropic Claude Provider"]
     AIRuntime --> ChatGPT["OpenAI ChatGPT Provider"]
     AIRuntime --> Tools["Native OS Capabilities (CobaltFS, System Telemetry, JS Script Management)"]
+    AIRuntime -.-> Knowledge["Planned: /knowledge/ Markdown user profile on CobaltFS"]
     AIRuntime --> JSRuntime["Embedded JS Engine (V8 / JS Runtime)"]
     Scheduler["Event & Time Scheduler (Timers, Cron, FS/Net/OS Events)"] --> JSRuntime
     MCPApps["Third-Party Developer Apps (Headless MCP Servers Only)"] -->|"Model Context Protocol (MCP)"| AIRuntime
+    MCPApps -.-> AppSkills["Planned: app-provided skills under /apps/"]
+    AppSkills -.-> AIRuntime
 ```
 
 ---
@@ -134,7 +138,7 @@ Because metalOS is an **AI-first operating system**, there are very few traditio
   - Runtime hot-swapping via slash commands (`/model gemini`, `/model claude`, `/model chatgpt`) and persistent config in CobaltFS (`/etc/ai.conf`)
 - [x] **Shell-Free Native OS Tool-Use**
   - The AI agent has **no access to `sh` or raw shell execution**. Instead, it interacts with metalOS exclusively through strongly-typed native OS tools, MCP servers, and JavaScript automation:
-    - `fs_read` / `fs_write` / `fs_list` (direct CobaltFS & VFS operations)
+    - `fs_read` / `fs_write` / `fs_list` (currently an in-memory tool map; kernel VFS persistence pending)
     - `sys_status` (inspect memory allocation, active tasks, network interfaces, and uptime)
     - `script_create` / `script_run` / `script_schedule` (author, execute, and schedule local JavaScript programs)
     - `mcp_list_tools` / `mcp_call_tool` / `mcp_read_resource` / `ui_render_view`
@@ -171,9 +175,39 @@ In metalOS, third-party developers can build and distribute applications, but **
 - [x] **Zero App-Owned UI Enforcement**
   - `validate_app_manifest` and `RuntimeCapabilityGuard` reject any app requesting `CreateWindow`, `DirectFramebuffer`, `RawInputCapture`, or `ShellExecution`
   - Developer apps have no access to `ferrofluidd` window surfaces, framebuffers, or direct user input streams
+- [ ] **App-Provided Skills**
+  - Discover skills and task instructions from installed applications under `/apps/`
+  - Keep app instructions separate from user context in `/knowledge/`; no standalone profile skill
 - [x] **Agent-Synthesized Generative UI**
   - **Only the AI agent can create, compose, and update UI** inside **Ferrofluid (`ferrofluidd`)**
   - When a user interacts with one or more apps, the agent invokes their MCP tools/resources and dynamically synthesizes the appropriate visual presentation, interactive controls, or data views tailored to the user's immediate intent
+
+---
+
+## Phase 8: Local User Knowledge & Profile Learning
+
+The main agent learns durable user context from conversation and maintains a
+local Markdown repository under `/knowledge/`. See [KNOWLEDGE.md](KNOWLEDGE.md)
+for the design. This phase is planned, not implemented.
+
+- [ ] **Persistent knowledge storage**
+  - Connect the AI's current in-memory filesystem tool map to the kernel VFS
+  - Store explicit facts, scoped preferences, interests, tentative observations,
+    and project context on CobaltFS; distinguish volatile RamFS fallback
+  - Validate updates and protect against interrupted writes; verify across reboot
+- [ ] **Conversation-driven learning**
+  - Connect Ferrofluid input to the main agent before extracting profile updates
+  - Merge durable information after relevant turns with source and timestamp tracking
+  - Keep inferred observations distinct from explicit user statements
+- [ ] **Bounded retrieval and agent tools**
+  - Add `knowledge_search`, `knowledge_upsert`, and `knowledge_forget`
+  - Load a compact summary and retrieve relevant details on demand
+  - Treat stored context as data; current user instructions take precedence
+- [ ] **User controls and app boundaries**
+  - Inspect, correct, delete, and pause learning through Ferrofluid
+  - Remove forgotten records from summaries and retrieval results
+  - Apps supply context through the main agent; they cannot freely rewrite the profile
+  - Keep user data on the device except relevant context needed for model requests
 
 ---
 
@@ -185,6 +219,7 @@ In metalOS, third-party developers can build and distribute applications, but **
 | **M2: Connected Metal** | VirtIO-Net, TCP/IP, DNS, TLS 1.3, HTTPS SSE client | `metalos-kernel`, `metalos-user` | Complete |
 | **M3: Liquid Boot** | VirtIO-GPU framebuffer + NEON dripping liquid-metal animation | `metalos-boot`, `metalos-kernel` | Complete |
 | **M4: Ferrofluid System UI** | Slint window, Quicksand font, bare-metal platform adapter | `metalos-ferrofluid`, `metalos-kernel` | UI bring-up complete; AI bridge pending |
-| **M5: Pluggable AI OS** | Gemini, Claude & ChatGPT providers + shell-free native OS tools | `metalos-ai`, `metalos-user` | Complete |
+| **M5: Pluggable AI OS** | Gemini, Claude & ChatGPT providers + shell-free native OS tools | `metalos-ai`, `metalos-user` | Runtime implemented; filesystem persistence pending |
 | **M6: JS Engine & Scheduler** | Embedded V8/JS runtime for model-authored scripts + time/event scheduling | `metalos-js`, `metalos-user` | Complete |
-| **M7: MCP Apps & Agent UI** | Headless MCP-only developer app SDK + agent-exclusive UI synthesis | `metalos-mcp`, `metalos-ferrofluid`, `metalos-ai` | Complete |
+| **M7: MCP Apps & Agent UI** | Headless MCP-only developer app SDK + agent-exclusive UI synthesis | `metalos-mcp`, `metalos-ferrofluid`, `metalos-ai` | Core implemented; app skills and Slint view transport pending |
+| **M8: User Knowledge** | Local Markdown profile, learning, retrieval, and user controls | `metalos-ai`, `metalos-kernel`, `metalos-ferrofluid` | Planned |

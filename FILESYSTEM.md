@@ -28,7 +28,13 @@ metalOS exposes a unified POSIX-inspired hierarchy managed by the kernel's Virtu
 ├── tmp/                    # Scratch directory for temporary files
 ├── scripts/                # Local JavaScript ES modules executed by scriptd (metalos-js)
 │   └── heartbeat.js        # Default system telemetry heartbeat script
-└── apps/                   # Headless Model Context Protocol (MCP) developer applications
+├── apps/                   # Headless MCP apps; app-provided skills are planned
+└── knowledge/              # Planned local user context; not seeded yet
+    ├── profile.md          # Explicit user facts
+    ├── preferences.md      # Scoped communication, visual, and workflow preferences
+    ├── interests.md        # Interests and ongoing goals
+    ├── observations.md     # Tentative inferred patterns
+    └── projects/           # Project-specific context
 ```
 
 ---
@@ -70,6 +76,19 @@ Stores sandboxed JavaScript scripts executed by `scriptd` via the `MetalOS.*` ho
 ### `/apps` — Headless MCP Applications ([`metalos-mcp`](crates/metalos-mcp))
 Mount point and package directory for headless Model Context Protocol (MCP) developer applications (`notes`, `sysmon`, `fetch`). MCP apps expose tools, resources, and prompt templates to the AI operator and are strictly forbidden from creating their own UI windows or invoking a shell.
 
+Apps will also provide skills and task instructions from `/apps/`. Skill
+discovery is planned; no separate top-level `/skills/` directory is introduced.
+
+### `/knowledge` — Local User Context (Planned)
+
+The main agent will read and maintain Markdown records of user facts,
+preferences, interests, tentative observations, and project context. This is
+runtime user data, not a folder of personal information in the source checkout.
+Apps contribute context through the agent rather than rewriting the profile.
+See [KNOWLEDGE.md](KNOWLEDGE.md) for provenance, retrieval, and user controls.
+The directory is not currently seeded. Persistence requires CobaltFS; records
+on the RamFS fallback are lost on reboot.
+
 ### `/tmp` — Temporary Storage
 General-purpose scratch directory for transient files created during runtime or E2E testing.
 
@@ -97,6 +116,11 @@ Userland processes interact with the VFS through [`libmetal::fs`](crates/metalos
 
 ### 2. Structured AI Tools ([`metalos-ai`](crates/metalos-ai/src/tools.rs))
 Because the AI agent operates under a strict shell-free policy, it accesses the filesystem exclusively through native structured tools:
+
+These interfaces currently use an in-memory map in `NativeToolRegistry`.
+Connecting them to the kernel VFS and CobaltFS is pending; their current writes
+do not survive reboot. The intended persistent interfaces are:
+
 - `fs_read(path)` — Read UTF-8 file contents from CobaltFS/VFS.
 - `fs_write(path, content)` — Persist UTF-8 file contents to CobaltFS/VFS.
 - `fs_list(path)` — List entries under a directory prefix.

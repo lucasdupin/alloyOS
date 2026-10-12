@@ -21,6 +21,20 @@
 
 See **[ROADMAP.md](ROADMAP.md)** for the full architecture and milestone plan.
 
+## User Knowledge (Planned)
+
+The main agent will maintain a local Markdown repository under `/knowledge/`
+to learn durable user facts, preferences, interests, and project context from
+conversation. Entries track their source and scope, with inferred observations
+kept separate from explicit statements. The user can inspect, correct, delete,
+or pause learning.
+
+Knowledge is user context; skills are supplied by applications under `/apps/`.
+There is no separate `/skills/` directory or profile skill. See
+[KNOWLEDGE.md](KNOWLEDGE.md) for the design and implementation sequence.
+This is planned: the UI-to-agent bridge and persistent AI filesystem tools
+must be connected before profile learning can work across reboots.
+
 ## Workspace Structure
 
 | Crate | Description |

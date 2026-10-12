@@ -5,6 +5,7 @@ use crate::fs::vfs::{FileSystem, FsError, Inode, InodeKind};
 pub const INO_DEV_NULL: u64 = 10;
 pub const INO_DEV_ZERO: u64 = 11;
 pub const INO_DEV_SERIAL: u64 = 12;
+pub const INO_DEV_URANDOM: u64 = 13;
 
 pub struct DevFS;
 
@@ -29,6 +30,11 @@ impl FileSystem for DevFS {
             }),
             "/dev/serial" => Ok(Inode {
                 ino: INO_DEV_SERIAL,
+                kind: InodeKind::CharDevice,
+                size: 0,
+            }),
+            "/dev/urandom" | "/dev/random" => Ok(Inode {
+                ino: INO_DEV_URANDOM,
                 kind: InodeKind::CharDevice,
                 size: 0,
             }),
@@ -57,13 +63,17 @@ impl FileSystem for DevFS {
                 }
                 Ok(0)
             }
+            INO_DEV_URANDOM => {
+                crate::drivers::rng::fill_random_bytes(buf);
+                Ok(buf.len())
+            }
             _ => Err(FsError::NotFound),
         }
     }
 
     fn write(&self, ino: u64, _offset: usize, buf: &[u8]) -> Result<usize, FsError> {
         match ino {
-            INO_DEV_NULL | INO_DEV_ZERO => Ok(buf.len()),
+            INO_DEV_NULL | INO_DEV_ZERO | INO_DEV_URANDOM => Ok(buf.len()),
             INO_DEV_SERIAL => {
                 if let Ok(s) = core::str::from_utf8(buf) {
                     crate::serial_print!("{}", s);
@@ -79,6 +89,7 @@ impl FileSystem for DevFS {
         list.push(String::from("null"));
         list.push(String::from("zero"));
         list.push(String::from("serial"));
+        list.push(String::from("urandom"));
         Ok(list)
     }
 

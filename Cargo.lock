@@ -141,7 +141,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "metalos-ai"
+version = "0.1.0"
+dependencies = [
+ "metalos-proto",
+]
+
+[[package]]
 name = "metalos-boot"
+version = "0.1.0"
+dependencies = [
+ "metalos-proto",
+]
+
+[[package]]
+name = "metalos-js"
 version = "0.1.0"
 dependencies = [
  "metalos-proto",
@@ -153,9 +167,28 @@ version = "0.1.0"
 dependencies = [
  "bitflags",
  "linked_list_allocator",
+ "metalos-ai",
+ "metalos-boot",
+ "metalos-js",
+ "metalos-mcp",
+ "metalos-mercury",
  "metalos-proto",
  "metalos-user",
  "spin",
+]
+
+[[package]]
+name = "metalos-mcp"
+version = "0.1.0"
+dependencies = [
+ "metalos-proto",
+]
+
+[[package]]
+name = "metalos-mercury"
+version = "0.1.0"
+dependencies = [
+ "metalos-proto",
 ]
 
 [[package]]

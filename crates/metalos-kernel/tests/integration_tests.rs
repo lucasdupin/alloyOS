@@ -89,3 +89,177 @@ fn integration_scheduler_lifecycle() {
     sched.tick();
     assert_eq!(sched.current_task().unwrap().pid, 10);
 }
+
+#[test]
+fn integration_full_ai_os_stack_e2e() {
+    use metalos_ai::{AiRuntime, ToolCall, UiCallerOrigin};
+    use metalos_boot::splash::LiquidSplashAnimation;
+    use metalos_js::{
+        CalendarTime, CronExpr, EventPattern, MetalOsHost, OsEvent, ScheduleTrigger,
+        ScriptScheduler, VirtualHostEnv,
+    };
+    use metalos_mcp::{
+        register_builtin_apps, validate_app_manifest, AppCapability, AppManifest, McpRegistry,
+        McpValue,
+    };
+    use metalos_mercury::{CallerPrincipal, MercuryError, MercuryServer, MercuryWidget};
+
+    // 1. Phase 3: Boot Splash & Liquid Metal Drip Animation coalescing into Mercury border
+    let mut splash = LiquidSplashAnimation::new(320, 200);
+    for _ in 0..20 {
+        splash.step_frame(100);
+    }
+    assert_eq!(splash.coalesce_progress, 100);
+
+    // 2. Phase 4 & 7: Mercury Display Server enforces Agent-Exclusive UI (MCP apps cannot create UI)
+    let mut mercury = MercuryServer::new(320, 200);
+    let agent_token = mercury.agent_token();
+    let rogue_app_caller = CallerPrincipal::DeveloperMcpApp {
+        app_id: "notes".to_string(),
+    };
+    let ui_err = mercury.submit_widgets(
+        &rogue_app_caller,
+        None,
+        vec![MercuryWidget::StatusBanner {
+            status: "Unauthorized UI".to_string(),
+            active_mcp_apps: 1,
+            scheduled_scripts: 0,
+        }],
+    );
+    assert_eq!(ui_err, Err(MercuryError::UiCreationForbiddenForApp));
+
+    // 3. Phase 7: Headless MCP Apps expose tools & resources, validated against UI/Shell capabilities
+    let bad_manifest = AppManifest::new(
+        "bad_ui_app",
+        "Bad UI App",
+        "0.1.0",
+        vec![AppCapability::ExposeMcpTools, AppCapability::CreateWindow],
+    );
+    assert!(validate_app_manifest(&bad_manifest).is_err());
+
+    let mut mcp = McpRegistry::new();
+    register_builtin_apps(&mut mcp).expect("builtin MCP apps must pass sandbox check");
+    assert_eq!(mcp.app_count(), 3);
+
+    // Call `notes.create` via MCP
+    let mut args = std::collections::BTreeMap::new();
+    args.insert(
+        "title".to_string(),
+        McpValue::Text("Architecture".to_string()),
+    );
+    args.insert(
+        "body".to_string(),
+        McpValue::Text("MCP-only apps + V8 scheduled scripts".to_string()),
+    );
+    let mcp_res = mcp
+        .call_tool("notes.create", &args)
+        .expect("MCP notes.create should succeed");
+    assert!(mcp_res.to_json().contains("Architecture"));
+
+    // 4. Phase 6: Model writes local JS script & schedules it on both FS events and Cron time
+    let mut js_host = VirtualHostEnv::new();
+    let mut scheduler = ScriptScheduler::new();
+
+    scheduler.register_script_source(
+        "/scripts/on_note_sync.js",
+        r#"
+            const data = MetalOS.fs.read(EVENT.path);
+            MetalOS.fs.write("/synced/latest.txt", "SYNC:" + data);
+            MetalOS.ui.notify("Synced " + EVENT.path);
+        "#,
+    );
+    scheduler.schedule_script(
+        "evt_sync",
+        "/scripts/on_note_sync.js",
+        ScheduleTrigger::OnEvent(EventPattern::FsCreated("/notes/*".to_string())),
+    );
+
+    scheduler.register_script_source(
+        "/scripts/cron_telemetry.js",
+        r#"
+            const st = MetalOS.sys.status();
+            MetalOS.fs.write("/var/heartbeat.txt", "uptime=" + st.uptimeMs);
+        "#,
+    );
+    let cron = CronExpr::parse("*/5 * * * *").expect("valid cron");
+    scheduler.schedule_script(
+        "cron_5m",
+        "/scripts/cron_telemetry.js",
+        ScheduleTrigger::Cron(cron),
+    );
+
+    // Trigger FS event
+    js_host
+        .fs_write("/notes/design.md", "AI-First OS")
+        .unwrap();
+    let evt_reports = scheduler.dispatch_event(
+        &OsEvent::FsCreated {
+            path: "/notes/design.md".to_string(),
+        },
+        &mut js_host,
+    );
+    assert_eq!(evt_reports.len(), 1);
+    assert!(evt_reports[0].result.is_ok());
+    assert_eq!(
+        js_host.fs_read("/synced/latest.txt").as_deref(),
+        Some("SYNC:AI-First OS")
+    );
+
+    // Trigger Cron tick at minute=10
+    let cal = CalendarTime {
+        year: 2026,
+        month: 10,
+        day: 12,
+        hour: 9,
+        minute: 10,
+        day_of_week: 1,
+    };
+    let cron_reports = scheduler.tick_time(60_000, Some(cal), &mut js_host);
+    assert_eq!(cron_reports.len(), 1);
+    assert!(cron_reports[0].result.is_ok());
+    assert!(js_host
+        .fs_read("/var/heartbeat.txt")
+        .unwrap()
+        .starts_with("uptime="));
+
+    // 5. Phase 5: Pluggable AI Runtime blocks shell commands and synthesizes UI exclusively
+    let mut ai = AiRuntime::new();
+    assert!(ai.handle_console_input("!ls /", &mut |_| {}).is_err());
+    let forbidden_call = ToolCall::new("tc_1", "sh_exec", "{\"cmd\":\"ls\"}");
+    assert!(ai
+        .tool_registry
+        .execute_tool(&forbidden_call, &mut ai.ui_synthesizer)
+        .is_err());
+
+    ai.handle_console_input("/model claude", &mut |_| {})
+        .unwrap();
+    assert_eq!(ai.active_provider_name(), "claude");
+
+    // Agent synthesizes UI view and renders it to Mercury using its exclusive token
+    let view = ai
+        .ui_synthesizer
+        .synthesize_from_mcp_output(
+            &UiCallerOrigin::AiAgent,
+            "notes",
+            "notes.create",
+            &mcp_res.to_json(),
+        )
+        .expect("Agent is allowed to synthesize UI");
+    assert_eq!(view.title, "Architecture");
+    assert_eq!(view.source_app.as_deref(), Some("notes"));
+
+    let agent_caller = mercury.agent_principal();
+    let dirty = mercury
+        .submit_widgets(
+            &agent_caller,
+            Some(&agent_token),
+            vec![MercuryWidget::StatusBanner {
+                status: "Agent UI Active".to_string(),
+                active_mcp_apps: mcp.app_count(),
+                scheduled_scripts: scheduler.schedules().len(),
+            }],
+        )
+        .expect("Agent with valid token can submit UI widgets to Mercury");
+    assert!(dirty.width > 0 && dirty.height > 0);
+}
+

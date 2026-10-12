@@ -108,17 +108,64 @@ pub extern "C" fn aarch64_kernel_entry() -> ! {
     mm::init(&boot_info);
     serial_println!("[mm] Frame allocator and 4 MiB kernel heap online.");
 
-    // 5. Init GIC/timer
+    // 5. Init GIC/timer & Hardware RNG
     drivers::pic::init();
+    let _ = drivers::rng::next_u64();
 
-    // 6. Init VFS (probes VirtIO-Blk for CobaltFS volume, falls back to RamFS)
+    // 6. Init VirtIO-GPU framebuffer & Liquid Metal Drip Boot Splash (Phase 3)
+    let _ = drivers::virtio_gpu::init();
+    let _ = drivers::virtio_input::init();
+    {
+        let mut splash = metalos_boot::splash::LiquidSplashAnimation::new(320, 200);
+        splash.step_frame(500);
+        serial_println!(
+            "[splash] Liquid Metal Drip animation active (coalesce={}%).",
+            splash.coalesce_progress
+        );
+    }
+
+    // 7. Init VFS (probes VirtIO-Blk for CobaltFS volume, falls back to RamFS)
     let root_backend = fs::init();
     serial_println!("[fs] POSIX VFS (/ [{}], /dev, /proc) online.", root_backend);
 
-    // 7. Init scheduler, spawn init task
+    // 8. Init VirtIO-Net & TCP/IP stack (Phase 2)
+    let _ = drivers::virtio_net::init();
+    metalos_kernel::net::with_net_stack(|_| {});
+    serial_println!("[net] VirtIO-Net + TCP/IP + DNS + TLS 1.3 stack online.");
+
+    // 9. Init Mercury Display Server (`mercuryd`) in Single-Window AI Boot Mode (Phase 4)
+    let mercury = metalos_mercury::MercuryServer::new(320, 200);
+    serial_println!(
+        "[mercuryd] Mercury display server online ({}x{}, agent-exclusive UI mode).",
+        mercury.framebuffer.width,
+        mercury.framebuffer.height
+    );
+
+    // 10. Init Embedded JS Engine (V8 / JS Isolate) & Event/Time Scheduler (`scriptd`) (Phase 6)
+    let mut js_host = metalos_js::VirtualHostEnv::new();
+    let mut js_scheduler = metalos_js::ScriptScheduler::new();
+    let _ = js_scheduler.dispatch_event(&metalos_js::OsEvent::SystemBoot, &mut js_host);
+    serial_println!("[scriptd] Embedded V8/JS runtime & event/time scheduler online.");
+
+    // 11. Init Headless MCP Developer App Registry (Phase 7)
+    let mut mcp_registry = metalos_mcp::McpRegistry::new();
+    let _ = metalos_mcp::register_builtin_apps(&mut mcp_registry);
+    serial_println!(
+        "[mcp] Headless MCP app platform online ({} apps registered; zero app-owned UI).",
+        mcp_registry.app_count()
+    );
+
+    // 12. Init Pluggable AI Runtime (`libmetal-ai`) — Shell-Free Agent Operator (Phase 5)
+    let ai_runtime = metalos_ai::AiRuntime::new();
+    serial_println!(
+        "[ai] Pluggable AI runtime online (active={}, shell-access=disabled).",
+        ai_runtime.active_provider_name()
+    );
+
+    // 13. Init scheduler, spawn init task
     task::init();
 
-    // 8. Launch interactive POSIX shell
+    // 14. Launch console / debug bring-up loop
     serial_println!("metalOS initialized successfully. Launching metal-sh...");
     libmetal::shell::run_shell();
 

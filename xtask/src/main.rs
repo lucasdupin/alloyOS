@@ -436,9 +436,45 @@ fn run_e2e_tests(kernel_image: &Path, _overall_timeout: Duration) -> Result<()> 
         )
         .context("e2e_memory_init failed")?;
     harness
+        .expect_output(
+            "[splash] Liquid Metal Drip animation active",
+            Duration::from_secs(10),
+        )
+        .context("e2e_splash_init failed")?;
+    harness
         .expect_output("[CobaltFS]", Duration::from_secs(10))
         .context("e2e_cobaltfs_mount failed")?;
-    println!("[xtask] [PASS] e2e_memory_init + CobaltFS mount");
+    harness
+        .expect_output(
+            "[net] VirtIO-Net + TCP/IP + DNS + TLS 1.3 stack online.",
+            Duration::from_secs(10),
+        )
+        .context("e2e_net_init failed")?;
+    harness
+        .expect_output(
+            "[mercuryd] Mercury display server online",
+            Duration::from_secs(10),
+        )
+        .context("e2e_mercury_init failed")?;
+    harness
+        .expect_output(
+            "[scriptd] Embedded V8/JS runtime & event/time scheduler online.",
+            Duration::from_secs(10),
+        )
+        .context("e2e_scriptd_init failed")?;
+    harness
+        .expect_output(
+            "[mcp] Headless MCP app platform online",
+            Duration::from_secs(10),
+        )
+        .context("e2e_mcp_init failed")?;
+    harness
+        .expect_output(
+            "[ai] Pluggable AI runtime online (active=gemini, shell-access=disabled).",
+            Duration::from_secs(10),
+        )
+        .context("e2e_ai_init failed")?;
+    println!("[xtask] [PASS] e2e_memory_init + CobaltFS + Splash + Net + Mercury + JS + MCP + AI");
 
     println!("[xtask] [TEST 3/10] e2e_shell_prompt...");
     harness

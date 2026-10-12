@@ -8,7 +8,12 @@ spin = "0.9"
 linked_list_allocator = "0.10"
 bitflags = "2"
 metalos-proto = { path = "../metalos-proto" }
+metalos-boot = { path = "../metalos-boot" }
 metalos-user = { path = "../metalos-user" }
+metalos-mercury = { path = "../metalos-mercury" }
+metalos-js = { path = "../metalos-js" }
+metalos-mcp = { path = "../metalos-mcp" }
+metalos-ai = { path = "../metalos-ai" }
 
 [features]
 default = []

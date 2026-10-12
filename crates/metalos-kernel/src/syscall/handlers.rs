@@ -1,6 +1,8 @@
 use alloc::string::String;
 use core::slice;
+use metalos_proto::SocketAddrV4;
 use crate::fs::vfs::{FileHandle, FsError, InodeKind, GLOBAL_FD_TABLE, VFS};
+use crate::net::{with_net_stack, NetworkStack};
 use crate::task::scheduler;
 
 pub const EPERM: i64 = -1;
@@ -12,6 +14,13 @@ pub const EBADF: i64 = -9;
 pub const EFAULT: i64 = -14;
 pub const EINVAL: i64 = -22;
 pub const ENOSYS: i64 = -38;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimeSpec {
+    pub tv_sec: i64,
+    pub tv_nsec: i64,
+}
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -54,6 +63,10 @@ pub fn sys_read(fd: u64, buf_ptr: u64, len: u64) -> i64 {
         return EFAULT;
     }
 
+    if (fd as usize) >= NetworkStack::SOCKET_FD_BASE {
+        return sys_recv(fd, buf_ptr, len);
+    }
+
     let mut fd_table_guard = GLOBAL_FD_TABLE.lock();
     let fd_table = match fd_table_guard.as_mut() {
         Some(t) => t,
@@ -83,6 +96,10 @@ pub fn sys_read(fd: u64, buf_ptr: u64, len: u64) -> i64 {
 pub fn sys_write(fd: u64, buf_ptr: u64, len: u64) -> i64 {
     if buf_ptr == 0 {
         return EFAULT;
+    }
+
+    if (fd as usize) >= NetworkStack::SOCKET_FD_BASE {
+        return sys_send(fd, buf_ptr, len);
     }
 
     let mut fd_table_guard = GLOBAL_FD_TABLE.lock();
@@ -173,6 +190,11 @@ pub fn sys_open(path_ptr: u64, _flags: u64, mode: u64) -> i64 {
 }
 
 pub fn sys_close(fd: u64) -> i64 {
+    if (fd as usize) >= NetworkStack::SOCKET_FD_BASE {
+        let closed = with_net_stack(|net| net.close_socket(fd as usize));
+        return if closed { 0 } else { EBADF };
+    }
+
     let mut fd_table_guard = GLOBAL_FD_TABLE.lock();
     let fd_table = match fd_table_guard.as_mut() {
         Some(t) => t,
@@ -183,6 +205,73 @@ pub fn sys_close(fd: u64) -> i64 {
         Ok(()) => 0,
         Err(_) => EBADF,
     }
+}
+
+pub fn sys_socket(domain: u64, sock_type: u64, _protocol: u64) -> i64 {
+    with_net_stack(|net| match net.create_socket(domain, sock_type) {
+        Ok(fd) => fd as i64,
+        Err(err) => err,
+    })
+}
+
+pub fn sys_connect(fd: u64, addr_ptr: u64, addr_len: u64) -> i64 {
+    if addr_ptr == 0 {
+        return EFAULT;
+    }
+    if (addr_len as usize) < core::mem::size_of::<SocketAddrV4>() {
+        return EINVAL;
+    }
+    let addr = unsafe { *(addr_ptr as *const SocketAddrV4) };
+    with_net_stack(|net| match net.connect_socket(fd as usize, addr) {
+        Ok(()) => 0,
+        Err(err) => err,
+    })
+}
+
+pub fn sys_send(fd: u64, buf_ptr: u64, len: u64) -> i64 {
+    if buf_ptr == 0 {
+        return EFAULT;
+    }
+    let data = unsafe { slice::from_raw_parts(buf_ptr as *const u8, len as usize) };
+    with_net_stack(|net| match net.send_socket(fd as usize, data) {
+        Ok(n) => n as i64,
+        Err(err) => err,
+    })
+}
+
+pub fn sys_recv(fd: u64, buf_ptr: u64, len: u64) -> i64 {
+    if buf_ptr == 0 {
+        return EFAULT;
+    }
+    let out = unsafe { slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize) };
+    with_net_stack(|net| match net.recv_socket(fd as usize, out) {
+        Ok(n) => n as i64,
+        Err(err) => err,
+    })
+}
+
+pub fn sys_clock_gettime(_clk_id: u64, tp_ptr: u64) -> i64 {
+    if tp_ptr == 0 {
+        return EFAULT;
+    }
+    let ns = crate::drivers::rng::monotonic_time_ns();
+    let ts = TimeSpec {
+        tv_sec: (ns / 1_000_000_000) as i64,
+        tv_nsec: (ns % 1_000_000_000) as i64,
+    };
+    unsafe {
+        (tp_ptr as *mut TimeSpec).write(ts);
+    }
+    0
+}
+
+pub fn sys_getrandom(buf_ptr: u64, len: u64, _flags: u64) -> i64 {
+    if buf_ptr == 0 {
+        return EFAULT;
+    }
+    let buf = unsafe { slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize) };
+    crate::drivers::rng::fill_random_bytes(buf);
+    len as i64
 }
 
 pub fn sys_exit(code: i32) -> ! {

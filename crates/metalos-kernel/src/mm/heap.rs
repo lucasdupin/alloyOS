@@ -2,7 +2,7 @@
 use linked_list_allocator::LockedHeap;
 use crate::mm::paging::{FrameAllocator, OffsetPageTable, Size4KiB};
 
-pub const HEAP_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
+pub const HEAP_SIZE: usize = 16 * 1024 * 1024; // 16 MiB
 
 #[cfg(target_os = "none")]
 #[global_allocator]

@@ -1,6 +1,7 @@
 //! ARM PrimeCell PL011 UART driver (`0x0900_0000` on QEMU `-M virt`).
 
 use core::fmt;
+#[cfg(all(target_arch = "aarch64", target_os = "none"))]
 use core::ptr::{read_volatile, write_volatile};
 use spin::Mutex;
 

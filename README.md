@@ -12,10 +12,14 @@ See **[ROADMAP.md](ROADMAP.md)** for the full architecture and milestone plan.
 
 | Crate | Description |
 |---|---|
-| [`crates/metalos-kernel`](crates/metalos-kernel) | Core `aarch64` kernel: ARMv8 MMU (`TTBR0_EL1`), `VBAR_EL1` exceptions, heap allocator, round-robin scheduler, syscalls (`svc #0`), PL011 UART, VirtIO-Blk, VFS, and **CobaltFS** |
-| [`crates/metalos-boot`](crates/metalos-boot) | Boot configuration and physical memory map validation |
-| [`crates/metalos-proto`](crates/metalos-proto) | Shared ABI/syscall definitions between kernel and userland |
-| [`crates/metalos-user`](crates/metalos-user) | Userland standard library (`libmetal`) and interactive shell (`sh`) |
+| [`crates/metalos-kernel`](crates/metalos-kernel) | Core `aarch64` kernel: ARMv8 MMU (`TTBR0_EL1`), `VBAR_EL1` exceptions, heap allocator, round-robin scheduler, syscalls (`svc #0`), PL011 UART, VirtIO-Blk/Net/GPU/Input, Hardware RNG, TCP/IP stack, VFS, and **CobaltFS** |
+| [`crates/metalos-boot`](crates/metalos-boot) | Boot configuration, physical memory map validation, and **Liquid Metal Drip** metaball/surface-tension splash engine |
+| [`crates/metalos-proto`](crates/metalos-proto) | Shared ABI/syscall definitions (`Socket`, `ShmGet`, `GetRandom`, `DirtyRect`, `InputEvent`) between kernel and userland |
+| [`crates/metalos-user`](crates/metalos-user) | Userland standard library (`libmetal`), TLS 1.3 + HTTPS SSE streaming client, and bring-up console |
+| [`crates/metalos-mercury`](crates/metalos-mercury) | **Mercury (`mercuryd`)** GUI display server, double-buffered compositor, agent-exclusive UI security gate, and generative UI widgets |
+| [`crates/metalos-js`](crates/metalos-js) | Embedded `#![no_std]` JavaScript engine (`V8Isolate` / `JsRuntime`), `MetalOS.*` bindings (zero shell access), and event/time scheduler (`scriptd`) |
+| [`crates/metalos-mcp`](crates/metalos-mcp) | Headless **Model Context Protocol (MCP)** developer app SDK, zero-UI capability sandbox, and built-in MCP servers |
+| [`crates/metalos-ai`](crates/metalos-ai) | Pluggable AI runtime (`Gemini`, `Claude`, `ChatGPT`), shell-free native OS tool registry, and agent-exclusive UI synthesizer |
 | [`xtask`](xtask) | Build, QEMU (`-M virt -accel hvf`) runner, and headless E2E test harness |
 
 ## Filesystem
@@ -23,7 +27,7 @@ See **[ROADMAP.md](ROADMAP.md)** for the full architecture and milestone plan.
 metalOS uses a Virtual Filesystem Switch ([`vfs.rs`](crates/metalos-kernel/src/fs/vfs.rs)) supporting:
 - **[CobaltFS](crates/metalos-kernel/src/fs/cobaltfs/README.md)** — Persistent on-disk filesystem based on the ext2 specification, implemented from scratch in Rust and backed by VirtIO-Blk.
 - **RamFS** — In-memory filesystem for transient storage.
-- **DevFS** — Device nodes (`/dev/null`, `/dev/zero`, `/dev/serial`).
+- **DevFS** — Device nodes (`/dev/null`, `/dev/zero`, `/dev/serial`, `/dev/urandom`).
 
 ## Building & Running
 

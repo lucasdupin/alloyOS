@@ -225,17 +225,26 @@ wrapper. Gemma 2 2B instruction-tuned is the first default model; other local
 models can be loaded and selected through the same interfaces. Model weights
 stay in device memory once loaded. Cloud providers remain explicit alternatives.
 
-**Welder** is the host-side development and test harness. It launches and
-controls QEMU, exposes a local endpoint for inference requests to Forge, and
-reports model readiness and errors. It must exercise actual generation rather
-than substituting canned responses for unavailable weights or backends.
+**Welder** is the on-device agent harness. It owns the bounded agent loop,
+decides when to use Forge's resident Gemma model or an explicitly configured
+cloud provider, executes authorized tools, and feeds results back to the model.
+Forge is inference; Welder is orchestration. Forge is the default, and cloud
+routing follows explicit policy, availability, and local credential configuration.
+Neither component substitutes canned responses for unavailable backends.
+
+Host-side QEMU launch, inference endpoints, model download, and test utilities
+are separate development tools, not Welder. They invoke the same device-side
+interfaces through a versioned transport.
 
 - [ ] Implement Forge's multi-model registry, inference backend, bounded
   requests, resident lifecycle, and default-model selection.
 - [ ] Expose a capability-scoped `MetalOS.forge(...)` JavaScript function and
   a versioned request/response transport that Welder can invoke.
-- [ ] Build Welder's launch, readiness, inference endpoint, and integration
-  tests, preserving existing QEMU and screenshot test workflows.
+- [ ] Build Welder's local/cloud routing policy and bounded model/tool loop,
+  preserving script capability boundaries, streaming/error semantics, and
+  explicit failure when a real cloud transport is unavailable.
+- [ ] Add host-side launch, readiness, inference endpoint, and integration
+  tools separately, preserving existing QEMU and screenshot test workflows.
 - [ ] Add a host download script for Gemma, with explicit model/revision,
   authentication from local environment or files, integrity verification,
   resumable/atomic downloads, and inclusion of weights in a local system image.

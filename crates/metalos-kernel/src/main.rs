@@ -114,10 +114,13 @@ pub extern "C" fn aarch64_kernel_entry() -> ! {
 
     // 6. Init VirtIO-GPU framebuffer & Liquid Metal Drip Boot Splash (Phase 3)
     let _ = drivers::virtio_gpu::init();
-    let _ = drivers::virtio_input::init();
+    drivers::virtio_input::init();
     {
-        let mut splash = metalos_boot::splash::LiquidSplashAnimation::new(320, 200);
-        splash.step_frame(500);
+        let mut splash = metalos_boot::splash::LiquidSplashAnimation::new(240, 432);
+        for dt in [160u32, 180, 160] {
+            splash.step_frame(dt);
+            drivers::virtio_gpu::present_splash_frame(&splash);
+        }
         serial_println!(
             "[splash] Liquid Metal Drip animation active (coalesce={}%).",
             splash.coalesce_progress
@@ -134,11 +137,11 @@ pub extern "C" fn aarch64_kernel_entry() -> ! {
     serial_println!("[net] VirtIO-Net + TCP/IP + DNS + TLS 1.3 stack online.");
 
     // 9. Init Mercury Display Server (`mercuryd`) in Single-Window AI Boot Mode (Phase 4)
-    let mercury = metalos_mercury::MercuryServer::new(320, 200);
+    let (mw, mh) = drivers::virtio_gpu::init_mercury_console();
     serial_println!(
         "[mercuryd] Mercury display server online ({}x{}, agent-exclusive UI mode).",
-        mercury.framebuffer.width,
-        mercury.framebuffer.height
+        mw,
+        mh
     );
 
     // 10. Init Embedded JS Engine (V8 / JS Isolate) & Event/Time Scheduler (`scriptd`) (Phase 6)

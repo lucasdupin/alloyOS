@@ -65,6 +65,20 @@ impl Pl011Uart {
         }
     }
 
+    pub fn try_receive(&mut self) -> Option<u8> {
+        #[cfg(all(target_arch = "aarch64", target_os = "none"))]
+        unsafe {
+            if (read_volatile((self.base + UARTFR) as *const u32) & FR_RXFE) == 0 {
+                return Some((read_volatile((self.base + UARTDR) as *const u32) & 0xFF) as u8);
+            }
+            None
+        }
+        #[cfg(not(all(target_arch = "aarch64", target_os = "none")))]
+        {
+            None
+        }
+    }
+
     pub fn receive(&mut self) -> u8 {
         #[cfg(all(target_arch = "aarch64", target_os = "none"))]
         unsafe {

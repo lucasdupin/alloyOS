@@ -57,8 +57,17 @@ impl FileSystem for DevFS {
                 #[cfg(target_os = "none")]
                 {
                     if !buf.is_empty() {
-                        buf[0] = crate::drivers::serial::SERIAL1.lock().receive();
-                        return Ok(1);
+                        loop {
+                            if let Some(b) = crate::drivers::virtio_input::poll_ascii() {
+                                buf[0] = b;
+                                return Ok(1);
+                            }
+                            if let Some(b) = crate::drivers::serial::SERIAL1.lock().try_receive() {
+                                buf[0] = b;
+                                return Ok(1);
+                            }
+                            core::hint::spin_loop();
+                        }
                     }
                 }
                 Ok(0)
@@ -78,6 +87,7 @@ impl FileSystem for DevFS {
                 if let Ok(s) = core::str::from_utf8(buf) {
                     crate::serial_print!("{}", s);
                 }
+                crate::drivers::virtio_gpu::console_write_bytes(buf);
                 Ok(buf.len())
             }
             _ => Err(FsError::NotFound),

@@ -67,6 +67,12 @@ impl QemuHarness {
             ))
             .arg("-device")
             .arg("virtio-blk-device,drive=hd0")
+            .arg("-device")
+            .arg("virtio-gpu-device,xres=480,yres=864")
+            .arg("-device")
+            .arg("virtio-keyboard-device")
+            .arg("-device")
+            .arg("virtio-tablet-device")
             .arg("-serial")
             .arg("stdio")
             .arg("-display")
@@ -378,6 +384,11 @@ fn run_qemu(release: bool) -> Result<()> {
         kernel_image.display(),
         cobalt_image.display()
     );
+    #[cfg(target_os = "macos")]
+    let display_arg = "cocoa,show-cursor=on";
+    #[cfg(not(target_os = "macos"))]
+    let display_arg = "default,show-cursor=on";
+
     let status = Command::new("qemu-system-aarch64")
         .arg("-M")
         .arg("virt")
@@ -394,10 +405,16 @@ fn run_qemu(release: bool) -> Result<()> {
         ))
         .arg("-device")
         .arg("virtio-blk-device,drive=hd0")
+        .arg("-device")
+        .arg("virtio-gpu-device,xres=480,yres=864")
+        .arg("-device")
+        .arg("virtio-keyboard-device")
+        .arg("-device")
+        .arg("virtio-tablet-device")
         .arg("-serial")
         .arg("stdio")
         .arg("-display")
-        .arg("none")
+        .arg(display_arg)
         .arg("-m")
         .arg("256M")
         .arg("-no-reboot")

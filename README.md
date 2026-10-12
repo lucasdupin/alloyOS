@@ -62,6 +62,27 @@ metalOS uses a Virtual Filesystem Switch ([`vfs.rs`](crates/metalos-kernel/src/f
 
 ## Building & Running
 
+Run the UI with resident Gemma using the root launcher:
+
+```sh
+./run.sh
+# Or use a private token file for the first download:
+./run.sh --auth-file /private/path/hf-token
+```
+
+In a terminal, the launcher guides you through build tools, optional Claude,
+Gemini, or OpenAI API credentials, Gemma access, and launch. Pasted keys are
+hidden; optional saved keys live in ignored `.secrets/` files with mode 600.
+Cloud credentials are preparation only: Forge cloud transports are not yet
+implemented, and the current launch uses Gemma.
+
+For automation, use `./run.sh --non-interactive` (as the first option).
+The launcher downloads and packages missing weights, then builds and runs in
+release mode with 16 GiB guest RAM. Accept the Gemma license on Hugging Face
+first; authentication defaults to the local `HF_TOKEN` environment variable.
+Allow approximately 21 GB disk space. Subsequent launches reuse the model image.
+See [scripts/README.md](scripts/README.md) for token storage and download details.
+
 The graphical boot now opens **Ferrofluid System UI**, a Slint window with a
 Ferrofluid-owned bare-metal adapter. See [its integration notes](crates/metalos-ferrofluid/README.md)
 for architecture, the host preview, and current limitations. Use `run --debug-shell`

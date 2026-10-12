@@ -54,6 +54,38 @@ class ModelAssetsTests(unittest.TestCase):
             self.assertEqual(assets.main(),1)
         self.assertNotIn('fixture-secret',error.getvalue())
 
+    def test_missing_token_explains_fix_without_network(self):
+        error = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory, mock.patch('sys.argv', ['download_gemma', '--output-dir', directory]), mock.patch.dict('os.environ', {'HF_TOKEN': ''}), mock.patch.object(assets, 'download') as download, contextlib.redirect_stderr(error):
+            self.assertEqual(assets.main(), 1)
+        download.assert_not_called()
+        self.assertIn('No Hugging Face token found', error.getvalue())
+        self.assertIn('--auth-file', error.getvalue())
+        self.assertIn('Gemma license', error.getvalue())
+
+    def test_http_diagnostics_redact_response_details(self):
+        for code, expected in [(401, 'valid read token'), (403, 'Accept the Gemma license'), (404, 'pinned model file'), (429, 'Wait and rerun'), (503, 'HTTP 503')]:
+            with self.subTest(code=code):
+                failure = assets.urllib.error.HTTPError('https://example.com/?token=fixture-secret', code, 'fixture-secret', {'Authorization': 'fixture-secret'}, None)
+                message = assets.failure_message(failure)
+                failure.close()
+                self.assertIn(expected, message)
+                self.assertNotIn('fixture-secret', message)
+                self.assertNotIn('example.com', message)
+
+    def test_local_and_network_diagnostics(self):
+        cases = [
+            (OSError(assets.errno.ENOSPC, 'fixture-secret'), '21 GB'),
+            (OSError(assets.errno.EACCES, 'fixture-secret'), 'Permission denied'),
+            (FileNotFoundError(assets.errno.ENOENT, 'fixture-secret'), '--auth-file'),
+            (TimeoutError('fixture-secret'), 'timed out'),
+            (assets.urllib.error.URLError('fixture-secret'), 'HTTPS certificates'),
+        ]
+        for failure, expected in cases:
+            message = assets.failure_message(failure)
+            self.assertIn(expected, message)
+            self.assertNotIn('fixture-secret', message)
+
     def test_redirect_strips_auth(self):
         request = assets.urllib.request.Request('https://huggingface.co/model',headers={'Authorization':'Bearer fixture-secret'})
         redirected = assets.SafeRedirect().redirect_request(request,None,302,'',{},'https://cdn.example/model')

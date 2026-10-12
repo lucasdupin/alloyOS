@@ -33,6 +33,16 @@ Outputs live under ignored `.local/models/gemma-2-2b-it/`:
 - `model.img`: read-only boot model image, loaded into guest RAM by Welder.
 - `manifest.json`: public provenance and integrity metadata, no credentials.
 
+After downloading, launch the UI with the model attached:
+
+```sh
+cargo run -p xtask -- run --release --model-image .local/models/gemma-2-2b-it/model.img
+```
+
+Attaching a model enables the Forge kernel backend and defaults guest RAM to
+16 GiB. Use `--memory 16G` or a larger supported size to override it. A normal
+launch without `--model-image` has no resident weights.
+
 The image starts with a 4096-byte header: `FGMODEL1`, little-endian u64 payload
 length at byte 8, SHA-256 at byte 16, zero-padded model ID at byte 48 (64-byte
 field), then the GGUF payload at byte 4096. Sector alignment adds zero padding

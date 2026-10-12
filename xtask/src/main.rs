@@ -30,6 +30,12 @@ enum Commands {
         release: bool,
         #[arg(long)]
         debug_shell: bool,
+        /// Attach a packaged Forge model to the UI guest
+        #[arg(long)]
+        model_image: Option<PathBuf>,
+        /// Guest RAM; defaults to 16G with a model, otherwise 256M
+        #[arg(long)]
+        memory: Option<String>,
     },
     /// Launches the host development bridge and its loopback Forge endpoint
     ForgeBridge {
@@ -395,9 +401,13 @@ fn build_crates_mode(release: bool, debug_shell: bool, forge: bool) -> Result<Pa
     Ok(kernel_bin)
 }
 
-fn run_qemu(release: bool, debug_shell: bool) -> Result<()> {
+fn run_qemu(release: bool, debug_shell: bool, model_image: Option<PathBuf>, memory: Option<String>) -> Result<()> {
+    let memory = memory.unwrap_or_else(|| if model_image.is_some() { "16G" } else { "256M" }.into());
+    if model_image.is_some() {
+        validate_forge_launch(&memory, model_image.as_deref(), 120)?;
+    }
     let workspace_root = get_workspace_root()?;
-    let kernel_image = build_crates(release, debug_shell)?;
+    let kernel_image = build_crates_mode(release, debug_shell, model_image.is_some())?;
     let cobalt_image = get_cobaltfs_image_path(&workspace_root, release);
     ensure_cobaltfs_image(&cobalt_image)?;
 
@@ -414,6 +424,9 @@ fn run_qemu(release: bool, debug_shell: bool) -> Result<()> {
     let display_arg = "default,show-cursor=on";
 
     let mut qemu = Command::new("qemu-system-aarch64");
+    if let Some(image) = model_image {
+        qemu.arg("-device").arg(format!("loader,file={},addr=0x80000000,force-raw=on", image.display()));
+    }
     #[cfg(target_os = "macos")]
     {
         let helper = workspace_root.join("target/cocoa_window.dylib");
@@ -460,7 +473,7 @@ fn run_qemu(release: bool, debug_shell: bool) -> Result<()> {
         .arg("-display")
         .arg(display_arg)
         .arg("-m")
-        .arg("256M")
+        .arg(memory)
         .arg("-no-reboot")
         .status()
         .context("Failed to execute qemu-system-aarch64")?;
@@ -640,7 +653,7 @@ fn run_ci() -> Result<()> {
     }
 
     println!("[xtask] Checking model asset tooling (offline)...");
-    let assets = Command::new("python3").current_dir(&workspace_root).args(["-m", "unittest", "discover", "-s", "scripts", "-p", "test_model_assets.py"]).status().context("Failed to run model asset tests")?;
+    let assets = Command::new("python3").current_dir(&workspace_root).args(["-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py"]).status().context("Failed to run model asset and launcher tests")?;
     if !assets.success() { return Err(anyhow!("model asset tests failed")); }
     println!("[xtask] Step 2: Building metalOS (aarch64) and executing E2E tests...");
     let kernel_image = build_crates(false, true)?;
@@ -681,7 +694,7 @@ fn main() -> Result<()> {
             println!("[xtask] Kernel built: {}", image.display());
             Ok(())
         }
-        Commands::Run { release, debug_shell } => run_qemu(release, debug_shell),
+        Commands::Run { release, debug_shell, model_image, memory } => run_qemu(release, debug_shell, model_image, memory),
         Commands::Test {
             timeout,
             release,
@@ -765,9 +778,11 @@ mod tests {
     #[test]
     fn parse_run_command() {
         let args = Cli::parse_from(["xtask", "run"]);
-        assert_eq!(args.command, Commands::Run { release: false, debug_shell: false });
+        assert_eq!(args.command, Commands::Run { release: false, debug_shell: false, model_image: None, memory: None });
         let debug = Cli::parse_from(["xtask", "run", "--debug-shell"]);
-        assert_eq!(debug.command, Commands::Run { release: false, debug_shell: true });
+        assert_eq!(debug.command, Commands::Run { release: false, debug_shell: true, model_image: None, memory: None });
+        let model = Cli::parse_from(["xtask", "run", "--model-image", "model.img", "--memory", "16G"]);
+        assert_eq!(model.command, Commands::Run { release: false, debug_shell: false, model_image: Some(PathBuf::from("model.img")), memory: Some("16G".into()) });
     }
 
     #[test]

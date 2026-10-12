@@ -111,6 +111,10 @@ compositor, widget library, font renderer, and simulated UI IPC were removed.
   - The current UI displays submitted messages locally and reports AI unavailable
 - [ ] **Interrupt-driven input/timer wakeups**
   - The initial UI loop polls at up to 60 Hz
+- [ ] **Native input method with voice input**
+  - Integrate voice dictation into the OS-owned native input method alongside keyboard input
+  - Add microphone capture and speech-to-text, inserting transcripts into the focused text field for editing and submission
+  - Provide start/stop controls and visible recording/transcription status in Ferrofluid
 
 ---
 
@@ -218,7 +222,7 @@ for the design. This phase is planned, not implemented.
 | **M1: ARM64 Core & VFS** | `aarch64` kernel (HVF), PL011, VirtIO-Blk, CobaltFS | `metalos-kernel`, `metalos-user` | Complete (Native M4 HVF) |
 | **M2: Connected Metal** | VirtIO-Net, TCP/IP, DNS, TLS 1.3, HTTPS SSE client | `metalos-kernel`, `metalos-user` | Complete |
 | **M3: Liquid Boot** | VirtIO-GPU framebuffer + NEON dripping liquid-metal animation | `metalos-boot`, `metalos-kernel` | Complete |
-| **M4: Ferrofluid System UI** | Slint window, Quicksand font, bare-metal platform adapter | `metalos-ferrofluid`, `metalos-kernel` | UI bring-up complete; AI bridge pending |
+| **M4: Ferrofluid System UI** | Slint window, Quicksand font, bare-metal platform adapter, native input method with voice input | `metalos-ferrofluid`, `metalos-kernel` | UI bring-up complete; AI bridge and voice input pending |
 | **M5: Pluggable AI OS** | Gemini, Claude & ChatGPT providers + shell-free native OS tools | `metalos-ai`, `metalos-user` | Runtime implemented; filesystem persistence pending |
 | **M6: JS Engine & Scheduler** | Embedded V8/JS runtime for model-authored scripts + time/event scheduling | `metalos-js`, `metalos-user` | Complete |
 | **M7: MCP Apps & Agent UI** | Headless MCP-only developer app SDK + agent-exclusive UI synthesis | `metalos-mcp`, `metalos-ferrofluid`, `metalos-ai` | Core implemented; app skills and Slint view transport pending |

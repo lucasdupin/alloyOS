@@ -1,6 +1,8 @@
 // TouchArea keeps editor focus while a soft key is pressed.
 component SoftKey inherits Rectangle {
     in property <string> label;
+    in property <image> icon;
+    in property <bool> icon-only: false;
     callback pressed();
     min-width: 0px;
     horizontal-stretch: 1;
@@ -10,7 +12,7 @@ component SoftKey inherits Rectangle {
     background: transparent;
     property <bool> tap-pulse: false;
     property <string> preview-label;
-    property <bool> preview-enabled: root.label != "Shift" && root.label != "SHIFT" && root.label != "Del" && root.label != "space" && root.label != "Send" && root.label != "123" && root.label != "ABC";
+    property <bool> preview-enabled: !root.icon-only && root.label != "Shift" && root.label != "SHIFT" && root.label != "Del" && root.label != "space" && root.label != "Send" && root.label != "123" && root.label != "ABC";
     property <float> preview-rise: root.preview-enabled && (touch.pressed || root.tap-pulse) ? 1 : 0;
     animate preview-rise { duration: 110ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
     property <float> press-scale: touch.pressed || root.tap-pulse ? 1.075 : 1;
@@ -21,11 +23,18 @@ component SoftKey inherits Rectangle {
         triggered => { root.tap-pulse = false; }
     }
     Text {
-        text: root.label;
+        text: root.icon-only ? "" : root.label;
         color: #ffffff;
         font-size: (root.label == "Shift" || root.label == "SHIFT" || root.label == "Del" ? 12px : 17px) * root.press-scale;
         horizontal-alignment: center;
         vertical-alignment: center;
+    }
+    if root.icon-only: Image {
+        source: root.icon;
+        width: 22px * root.press-scale;
+        height: 22px * root.press-scale;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
     }
     touch := TouchArea {
         pointer-event(event) => {
@@ -88,13 +97,7 @@ export component SoftKeyboard inherits Rectangle {
         HorizontalLayout {
             height: 22px;
             Text { text: ""; horizontal-stretch: 1; }
-            TouchArea {
-                width: 68px;
-                accessible-role: button;
-                accessible-label: "Hide keyboard";
-                clicked => { root.dismissed = true; root.dismiss(); }
-                Text { text: "Hide"; color: #ffffff; font-size: 12px; horizontal-alignment: center; }
-            }
+
         }
         HorizontalLayout {
             spacing: 4px;
@@ -114,20 +117,21 @@ export component SoftKeyboard inherits Rectangle {
         }
         HorizontalLayout {
             spacing: 4px;
-            SoftKey { label: root.shifted ? "SHIFT" : "Shift"; pressed => { root.shifted = !root.shifted; } }
+            SoftKey { label: root.shifted ? "SHIFT" : "Shift"; icon-only: true; icon: root.shifted ? @image-url("icons/shift-active.svg") : @image-url("icons/shift.svg"); pressed => { root.shifted = !root.shifted; } }
             for letter in (root.symbols ? ["*", "\"", "'", ":", ";", "!", "?"] : root.shifted ? ["Z", "X", "C", "V", "B", "N", "M"] : ["z", "x", "c", "v", "b", "n", "m"]): SoftKey {
                 label: letter;
                 pressed => { root.key(letter); root.shifted = false; }
             }
-            SoftKey { label: "Del"; pressed => { root.key("backspace"); } }
+            SoftKey { label: "Del"; icon-only: true; icon: @image-url("icons/delete.svg"); pressed => { root.key("backspace"); } }
         }
         HorizontalLayout {
             spacing: 5px;
+            SoftKey { label: "Hide keyboard"; icon-only: true; icon: @image-url("icons/hide.svg"); horizontal-stretch: 1; pressed => { root.dismissed = true; root.dismiss(); } }
             SoftKey { label: root.symbols ? "ABC" : "123"; horizontal-stretch: 1; pressed => { root.symbols = !root.symbols; } }
             SoftKey { label: ","; horizontal-stretch: 1; pressed => { root.key(","); } }
-            SoftKey { label: "space"; horizontal-stretch: 4; pressed => { root.key(" "); } }
+            SoftKey { label: "space"; icon-only: true; icon: @image-url("icons/space.svg"); horizontal-stretch: 4; pressed => { root.key(" "); } }
             SoftKey { label: "."; horizontal-stretch: 1; pressed => { root.key("."); } }
-            SoftKey { label: "Send"; horizontal-stretch: 2; pressed => { root.key("return"); } }
+            SoftKey { label: "Send"; icon-only: true; icon: @image-url("icons/send.svg"); horizontal-stretch: 2; pressed => { root.key("return"); } }
         }
     }
 }

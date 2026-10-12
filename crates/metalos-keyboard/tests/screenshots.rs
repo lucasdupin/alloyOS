@@ -111,7 +111,7 @@ fn keyboard_screenshots() {
         }
     }
     // Switch to the symbol page through its actual touch target.
-    let point = LogicalPosition::new(100.0 / PHONE_SCALE as f32, 2480.0 / PHONE_SCALE as f32);
+    let point = LogicalPosition::new(220.0 / PHONE_SCALE as f32, 2480.0 / PHONE_SCALE as f32);
     window.dispatch_event(WindowEvent::PointerPressed {
         position: point,
         button: PointerEventButton::Left,

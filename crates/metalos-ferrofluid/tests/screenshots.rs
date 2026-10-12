@@ -64,8 +64,8 @@ fn system_ui_screenshots() {
     for frame in 70..=100 {
         ui.render(Duration::from_millis(frame * 16));
     }
-    pointer(&mut ui, InputEventKind::PointerButtonDown, 1080, 1880);
-    pointer(&mut ui, InputEventKind::PointerButtonUp, 1080, 1880);
+    pointer(&mut ui, InputEventKind::PointerButtonDown, 80, 2480);
+    pointer(&mut ui, InputEventKind::PointerButtonUp, 80, 2480);
     for frame in 101..=160 {
         ui.render(Duration::from_millis(frame * 16));
     }

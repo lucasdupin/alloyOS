@@ -107,11 +107,11 @@ fn standalone_keyboard_types_switches_pages_and_dismisses() {
     render(992);
     tap(75.0, 2000.0); // Q
     render(1008);
-    tap(100.0, 2480.0); // 123
+    tap(220.0, 2480.0); // 123
     render(1024);
     tap(75.0, 2000.0); // 1
     assert_eq!(*actions.borrow(), vec!["q", "Q", "1"]);
-    tap(1080.0, 1880.0); // Hide
+    tap(80.0, 2480.0); // Hide
     render(1040);
     render(1520);
     assert_eq!(ui.get_reveal(), 0.0);

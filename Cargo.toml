@@ -11,21 +11,9 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-authors = ["metalOS Contributors"]
-license = "MIT"
 
 [workspace.dependencies]
-# Shared dependencies pinned at workspace level
 bootloader = "0.11"
-x86_64 = "0.15"
-uart_16550 = "0.3"
-pic8259 = "0.10"
-spin = "0.9"
-linked_list_allocator = "0.10"
-log = { version = "0.4", default-features = false }
-bitflags = "2"
-arrayvec = { version = "0.7", default-features = false }
-volatile = "0.5"
 
 [profile.dev]
 panic = "abort"

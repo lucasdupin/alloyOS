@@ -1,10 +1,13 @@
 use metalos_kernel::syscall::handlers::{sys_close, sys_open, sys_read, sys_write};
 use metalos_kernel::task::pcb::{Task, TaskState};
 use metalos_kernel::task::scheduler::Scheduler;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+static VFS_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn integration_vfs_and_syscall_io() {
+    let _guard = VFS_TEST_LOCK.lock().unwrap();
     // Initialize VFS and FD table
     metalos_kernel::fs::init();
 
@@ -36,6 +39,7 @@ fn integration_vfs_and_syscall_io() {
 
 #[test]
 fn integration_devfs_devices() {
+    let _guard = VFS_TEST_LOCK.lock().unwrap();
     metalos_kernel::fs::init();
 
     // /dev/zero

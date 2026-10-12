@@ -1,3 +1,4 @@
+pub mod ata;
 pub mod pic;
 pub mod serial;
 

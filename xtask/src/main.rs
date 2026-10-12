@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -50,10 +50,12 @@ pub struct QemuHarness {
 
 impl QemuHarness {
     /// Spawns a QEMU instance with stdio connected to serial port.
-    pub fn new(disk_image: &Path) -> Result<Self> {
+    pub fn new(disk_image: &Path, cobalt_image: &Path) -> Result<Self> {
         let mut child = Command::new("qemu-system-x86_64")
             .arg("-drive")
             .arg(format!("format=raw,file={}", disk_image.display()))
+            .arg("-drive")
+            .arg(format!("format=raw,file={}", cobalt_image.display()))
             .arg("-serial")
             .arg("stdio")
             .arg("-display")
@@ -80,15 +82,16 @@ impl QemuHarness {
         let buffer_clone = Arc::clone(&output_buffer);
 
         let reader_thread = thread::spawn(move || {
-            let mut reader = BufReader::new(stdout);
-            let mut line = String::new();
-            while let Ok(n) = reader.read_line(&mut line) {
+            use std::io::Read;
+            let mut reader = stdout;
+            let mut buf = [0u8; 256];
+            while let Ok(n) = reader.read(&mut buf) {
                 if n == 0 {
                     break;
                 }
+                let chunk = String::from_utf8_lossy(&buf[..n]);
                 let mut lock = buffer_clone.lock().unwrap();
-                lock.push_str(&line);
-                line.clear();
+                lock.push_str(&chunk);
             }
         });
 
@@ -184,6 +187,107 @@ fn get_disk_image_path(workspace_root: &Path, release: bool) -> PathBuf {
         .join("metalos-bios.img")
 }
 
+fn get_cobaltfs_image_path(workspace_root: &Path, release: bool) -> PathBuf {
+    let profile = if release { "release" } else { "debug" };
+    workspace_root
+        .join("target")
+        .join("x86_64-unknown-none")
+        .join(profile)
+        .join("cobaltfs.img")
+}
+
+/// Formats a fresh 4 MiB CobaltFS (ext2-compatible) disk image in pure Rust so
+/// no external `mkfs.ext2` binary is required on macOS.
+fn ensure_cobaltfs_image(path: &Path) -> Result<()> {
+    if path.exists() {
+        return Ok(());
+    }
+    println!("[xtask] Formatting new 4 MiB CobaltFS volume at {}...", path.display());
+
+    let bs = 1024usize;
+    let total_blocks = 4096u32; // 4 MiB
+    let inodes_count = 256u32;  // 256 * 128B = 32 KiB = 32 blocks (blocks 5..37)
+    let reserved_blocks = 38u32; // 0:boot, 1:SB, 2:BGD, 3:bmap, 4:imap, 5..37:itable, 37:root dir
+    let mut img = vec![0u8; bs * total_blocks as usize];
+
+    let w16 = |b: &mut [u8], o: usize, v: u16| {
+        let x = v.to_le_bytes();
+        b[o] = x[0];
+        b[o + 1] = x[1];
+    };
+    let w32 = |b: &mut [u8], o: usize, v: u32| {
+        let x = v.to_le_bytes();
+        b[o..o + 4].copy_from_slice(&x);
+    };
+
+    // Superblock at offset 1024 (Block 1)
+    {
+        let sb = &mut img[1024..2048];
+        w32(sb, 0, inodes_count);
+        w32(sb, 4, total_blocks);
+        w32(sb, 12, total_blocks - reserved_blocks);
+        w32(sb, 16, inodes_count - 11);
+        w32(sb, 20, 1); // first_data_block = 1
+        w32(sb, 24, 0); // log_block_size = 0 (1024 B)
+        w32(sb, 32, total_blocks);
+        w32(sb, 40, inodes_count);
+        w16(sb, 56, 0xEF53); // COBALTFS_MAGIC
+        w32(sb, 76, 0);      // rev 0
+    }
+
+    // Block Group Descriptor at Block 2 (offset 2048)
+    {
+        let bgd = &mut img[2048..2048 + 32];
+        w32(bgd, 0, 3); // block_bitmap = 3
+        w32(bgd, 4, 4); // inode_bitmap = 4
+        w32(bgd, 8, 5); // inode_table = 5
+        w16(bgd, 12, (total_blocks - reserved_blocks) as u16);
+        w16(bgd, 14, (inodes_count - 11) as u16);
+        w16(bgd, 16, 1); // used_dirs_count = 1 (root)
+    }
+
+    // Block bitmap at Block 3 (offset 3072): mark blocks 0..reserved_blocks used
+    for b in 0..reserved_blocks as usize {
+        img[3072 + b / 8] |= 1u8 << (b % 8);
+    }
+
+    // Inode bitmap at Block 4 (offset 4096): mark inodes 1..=11 used
+    img[4096] = 0xFF;
+    img[4097] = 0b0000_0111;
+
+    // Root inode (ino 2 -> index 1 in inode table at Block 5, offset 5120 + 128)
+    {
+        let root_off = 5120 + 128;
+        let ino = &mut img[root_off..root_off + 128];
+        w16(ino, 0, 0x4000 | 0o755); // S_IFDIR | 0755
+        w32(ino, 4, bs as u32);      // size_lo = 1024
+        w16(ino, 26, 2);             // links_count = 2
+        w32(ino, 28, 2);             // blocks_512 = 2
+        w32(ino, 40, 37);            // block[0] = 37
+    }
+
+    // Root directory data block at Block 37: "." and ".."
+    {
+        let dir = &mut img[37 * bs..38 * bs];
+        w32(dir, 0, 2);
+        w16(dir, 4, 12);
+        dir[6] = 1;
+        dir[7] = 2; // FT_DIR
+        dir[8] = b'.';
+
+        w32(dir, 12, 2);
+        w16(dir, 16, (bs - 12) as u16);
+        dir[18] = 2;
+        dir[19] = 2; // FT_DIR
+        dir[20] = b'.';
+        dir[21] = b'.';
+    }
+
+    std::fs::write(path, &img)
+        .with_context(|| format!("Failed to write CobaltFS image to {}", path.display()))?;
+    Ok(())
+}
+
 fn build_crates(release: bool) -> Result<PathBuf> {
     let workspace_root = get_workspace_root()?;
 
@@ -238,15 +342,24 @@ fn build_crates(release: bool) -> Result<PathBuf> {
         return Err(anyhow!("Kernel binary does not exist at {}", kernel_bin.display()));
     }
 
+    let cobalt_image = get_cobaltfs_image_path(&workspace_root, release);
+    ensure_cobaltfs_image(&cobalt_image)?;
+
     Ok(disk_image)
 }
 
 fn run_qemu(release: bool) -> Result<()> {
+    let workspace_root = get_workspace_root()?;
     let disk_image = build_crates(release)?;
-    println!("[xtask] Launching QEMU with image {}...", disk_image.display());
+    let cobalt_image = get_cobaltfs_image_path(&workspace_root, release);
+    ensure_cobaltfs_image(&cobalt_image)?;
+
+    println!("[xtask] Launching QEMU with image {} (CobaltFS: {})...", disk_image.display(), cobalt_image.display());
     let status = Command::new("qemu-system-x86_64")
         .arg("-drive")
         .arg(format!("format=raw,file={}", disk_image.display()))
+        .arg("-drive")
+        .arg(format!("format=raw,file={}", cobalt_image.display()))
         .arg("-serial")
         .arg("stdio")
         .arg("-display")
@@ -264,35 +377,90 @@ fn run_qemu(release: bool) -> Result<()> {
 }
 
 fn run_e2e_tests(disk_image: &Path, _overall_timeout: Duration) -> Result<()> {
-    println!("[xtask] Starting QEMU E2E test harness for {}...", disk_image.display());
-    let mut harness = QemuHarness::new(disk_image)?;
+    let workspace_root = get_workspace_root()?;
+    let cobalt_image = get_cobaltfs_image_path(&workspace_root, false);
+    ensure_cobaltfs_image(&cobalt_image)?;
 
-    println!("[xtask] [TEST 1/4] e2e_boot_banner...");
-    harness.expect_output("metalOS", Duration::from_secs(10))
+    println!("[xtask] Starting QEMU E2E test harness for {} (CobaltFS: {})...", disk_image.display(), cobalt_image.display());
+    let mut harness = QemuHarness::new(disk_image, &cobalt_image)?;
+
+    println!("[xtask] [TEST 1/10] e2e_boot_banner...");
+    harness
+        .expect_output("metalOS v0.1.0 booting...", Duration::from_secs(10))
         .context("e2e_boot_banner failed")?;
     println!("[xtask] [PASS] e2e_boot_banner");
 
-    println!("[xtask] [TEST 2/4] e2e_shell_prompt...");
-    harness.expect_output("metalos:/$", Duration::from_secs(10))
+    println!("[xtask] [TEST 2/10] e2e_memory_init...");
+    harness
+        .expect_output("[mm] Frame allocator and 4 MiB kernel heap online.", Duration::from_secs(10))
+        .context("e2e_memory_init failed")?;
+    harness
+        .expect_output("[CobaltFS]", Duration::from_secs(10))
+        .context("e2e_cobaltfs_mount failed")?;
+    println!("[xtask] [PASS] e2e_memory_init + CobaltFS mount");
+
+    println!("[xtask] [TEST 3/10] e2e_shell_prompt...");
+    harness
+        .expect_output("metalos:/$", Duration::from_secs(10))
         .context("e2e_shell_prompt failed")?;
     println!("[xtask] [PASS] e2e_shell_prompt");
 
-    println!("[xtask] [TEST 3/4] e2e_uname...");
+    println!("[xtask] [TEST 4/10] e2e_uname...");
     harness.send_command("uname -a");
-    harness.expect_output("x86_64", Duration::from_secs(5))
+    harness
+        .expect_output("metalOS metalos 0.1.0", Duration::from_secs(5))
         .context("e2e_uname failed")?;
+    harness
+        .expect_output("x86_64", Duration::from_secs(5))
+        .context("e2e_uname machine failed")?;
     println!("[xtask] [PASS] e2e_uname");
 
-    println!("[xtask] [TEST 4/4] e2e_shutdown...");
+    println!("[xtask] [TEST 5/10] e2e_ls_root...");
+    harness.send_command("ls /");
+    harness
+        .expect_output("dev/\nproc/", Duration::from_secs(5))
+        .context("e2e_ls_root failed")?;
+    println!("[xtask] [PASS] e2e_ls_root");
+
+    println!("[xtask] [TEST 6/10] e2e_echo_redirect_cat...");
+    harness.send_command("echo e2e_file_payload > /f && cat /f");
+    harness
+        .expect_output("e2e_file_payload\n", Duration::from_secs(5))
+        .context("e2e_echo_redirect_cat failed")?;
+    println!("[xtask] [PASS] e2e_echo_redirect_cat");
+
+    println!("[xtask] [TEST 7/10] e2e_ps_shows_pid1...");
+    harness.send_command("ps");
+    harness
+        .expect_output("1 tty0     00:00:00 sh", Duration::from_secs(5))
+        .context("e2e_ps_shows_pid1 failed")?;
+    println!("[xtask] [PASS] e2e_ps_shows_pid1");
+
+    println!("[xtask] [TEST 8/10] e2e_mem_command...");
+    harness.send_command("mem");
+    harness
+        .expect_output("MemTotal:", Duration::from_secs(5))
+        .context("e2e_mem_command failed")?;
+    println!("[xtask] [PASS] e2e_mem_command");
+
+    println!("[xtask] [TEST 9/10] e2e_bench_completes...");
+    harness.send_command("bench");
+    harness
+        .expect_output("VFS open/read/close", Duration::from_secs(10))
+        .context("e2e_bench_completes failed")?;
+    println!("[xtask] [PASS] e2e_bench_completes");
+
+    println!("[xtask] [TEST 10/10] e2e_shutdown...");
     harness.send_command("shutdown");
-    let exit_code = harness.wait_for_exit(Duration::from_secs(5))
+    let exit_code = harness
+        .wait_for_exit(Duration::from_secs(5))
         .context("e2e_shutdown failed")?;
     if exit_code != 0 {
         return Err(anyhow!("QEMU shutdown exited with code {}", exit_code));
     }
     println!("[xtask] [PASS] e2e_shutdown");
 
-    println!("[xtask] All E2E tests PASSED!");
+    println!("[xtask] All 10 E2E tests PASSED!");
     Ok(())
 }
 
@@ -303,6 +471,8 @@ fn run_ci() -> Result<()> {
         .current_dir(&workspace_root)
         .arg("test")
         .arg("--workspace")
+        .arg("--target")
+        .arg("x86_64-apple-darwin")
         .status()
         .context("Failed to run cargo test --workspace")?;
 

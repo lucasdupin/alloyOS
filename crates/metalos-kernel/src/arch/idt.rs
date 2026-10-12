@@ -114,7 +114,7 @@ pub fn init_syscall_msrs() {
         Msr::new(0xC000_0081).write(star_val);
 
         // IA32_LSTAR (0xC0000082): target RIP for syscall instruction
-        Msr::new(0xC000_0082).write(syscall_entry as usize as u64);
+        Msr::new(0xC000_0082).write(syscall_entry as *const () as usize as u64);
 
         // IA32_FMASK (0xC0000084): mask IF (0x200) on syscall entry
         Msr::new(0xC000_0084).write(0x200);

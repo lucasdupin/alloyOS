@@ -466,9 +466,9 @@ pub fn unknown_command_message(cmd: &str) -> TextBuffer {
 /// Port I/O instructs physical or emulated hardware. The port and value must be valid.
 #[inline]
 pub unsafe fn out16(port: u16, val: u16) {
-    #[cfg(all(not(test), target_arch = "x86_64"))]
+    #[cfg(all(not(test), target_arch = "x86_64", target_os = "none"))]
     core::arch::asm!("out dx, ax", in("dx") port, in("ax") val, options(nomem, nostack, preserves_flags));
-    #[cfg(any(test, not(target_arch = "x86_64")))]
+    #[cfg(any(test, not(all(target_arch = "x86_64", target_os = "none"))))]
     {
         let _ = (port, val);
     }
@@ -477,14 +477,14 @@ pub unsafe fn out16(port: u16, val: u16) {
 /// Read Time-Stamp Counter (rdtsc).
 #[inline]
 pub fn rdtsc() -> u64 {
-    #[cfg(all(not(test), target_arch = "x86_64"))]
+    #[cfg(all(not(test), target_arch = "x86_64", target_os = "none"))]
     unsafe {
         let rax: u64;
         let rdx: u64;
         core::arch::asm!("rdtsc", out("rax") rax, out("rdx") rdx, options(nomem, nostack, preserves_flags));
         (rdx << 32) | rax
     }
-    #[cfg(any(test, not(target_arch = "x86_64")))]
+    #[cfg(any(test, not(all(target_arch = "x86_64", target_os = "none"))))]
     {
         1_000_000
     }

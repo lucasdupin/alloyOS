@@ -1,6 +1,5 @@
 #[cfg(any(test, feature = "host-tests"))]
 pub mod tests {
-    use super::*;
     use alloc::vec::Vec;
     use core::fmt::Write;
 

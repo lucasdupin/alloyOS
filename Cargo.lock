@@ -387,9 +387,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 name = "metalos-boot"
 version = "0.1.0"
 dependencies = [
- "bootloader",
  "metalos-proto",
- "tempfile",
 ]
 
 [[package]]
@@ -399,12 +397,11 @@ dependencies = [
  "bitflags 2.13.2",
  "bootloader_api",
  "linked_list_allocator",
- "log",
  "metalos-proto",
+ "metalos-user",
  "pic8259",
  "spin",
  "uart_16550",
- "volatile 0.5.4",
  "x86_64 0.15.5",
 ]
 
@@ -694,12 +691,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "442887c63f2c839b346c192d047a7c87e73d0689c9157b00b53dcc27dd5ea793"
 
 [[package]]
-name = "volatile"
-version = "0.5.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f05a5337d258c4ef40d920ffcc5a729278951d57e6596f8b62ca7d4827613e77"
-
-[[package]]
 name = "wasm-bindgen"
 version = "0.2.129"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -788,7 +779,7 @@ dependencies = [
  "bit_field",
  "bitflags 2.13.2",
  "rustversion",
- "volatile 0.4.6",
+ "volatile",
 ]
 
 [[package]]
@@ -801,7 +792,7 @@ dependencies = [
  "bitflags 2.13.2",
  "const_fn",
  "rustversion",
- "volatile 0.4.6",
+ "volatile",
 ]
 
 [[package]]

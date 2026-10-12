@@ -4,8 +4,4 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-bootloader = "0.11"
 metalos-proto = { path = "../metalos-proto" }
-
-[dev-dependencies]
-tempfile = "3"

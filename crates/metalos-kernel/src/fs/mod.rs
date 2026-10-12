@@ -7,6 +7,6 @@ pub mod vfs;
 #[cfg(any(test, feature = "host-tests"))]
 pub mod tests;
 
-pub fn init() {
-    vfs::init();
+pub fn init() -> &'static str {
+    vfs::init()
 }

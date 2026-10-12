@@ -121,49 +121,56 @@ impl FileDescriptorTable {
 }
 
 pub struct Vfs {
-    pub root_fs: Arc<RamFS>,
+    pub root_fs: Arc<dyn FileSystem>,
     pub dev_fs: Arc<DevFS>,
+    pub backend_name: &'static str,
 }
 
 impl Vfs {
     pub fn new() -> Self {
-        let root_fs = Arc::new(RamFS::new());
+        Self::with_root(Arc::new(RamFS::new()), "RamFS")
+    }
+
+    pub fn with_root(root_fs: Arc<dyn FileSystem>, backend_name: &'static str) -> Self {
         let _ = root_fs.create("/dev", InodeKind::Directory);
         let _ = root_fs.create("/proc", InodeKind::Directory);
         let _ = root_fs.create("/tmp", InodeKind::Directory);
         let _ = root_fs.create("/etc", InodeKind::Directory);
         let _ = root_fs.create("/bin", InodeKind::Directory);
 
-        if let Ok(ino) = root_fs.create("/etc/motd", InodeKind::File) {
-            let _ = root_fs.write(
-                ino.ino,
-                0,
-                b"Welcome to metalOS v0.1.0 (x86_64 POSIX-compliant Rust kernel)\n",
-            );
+        if root_fs.lookup("/etc/motd").is_err() {
+            if let Ok(ino) = root_fs.create("/etc/motd", InodeKind::File) {
+                let _ = root_fs.write(
+                    ino.ino,
+                    0,
+                    b"Welcome to metalOS v0.1.0 (x86_64 POSIX-compliant Rust kernel)\n",
+                );
+            }
         }
-        if let Ok(ino) = root_fs.create("/proc/meminfo", InodeKind::File) {
-            let (total_f, used_f, free_f) = crate::mm::frame_allocator::memory_stats();
-            let total_kb = if total_f > 0 { total_f * 4 } else { 262144 };
-            let free_kb = if total_f > 0 { free_f * 4 } else { 258048 };
-            let used_kb = used_f * 4;
-            let info = alloc::format!(
-                "MemTotal:       {:>8} kB\nMemFree:        {:>8} kB\nMemUsed:        {:>8} kB\n",
-                total_kb,
-                free_kb,
-                used_kb
-            );
+        let (total_f, used_f, free_f) = crate::mm::frame_allocator::memory_stats();
+        let total_kb = if total_f > 0 { total_f * 4 } else { 262144 };
+        let free_kb = if total_f > 0 { free_f * 4 } else { 258048 };
+        let used_kb = used_f * 4;
+        let info = alloc::format!(
+            "MemTotal:       {:>8} kB\nMemFree:        {:>8} kB\nMemUsed:        {:>8} kB\n",
+            total_kb,
+            free_kb,
+            used_kb
+        );
+        if let Ok(ino) = root_fs.lookup("/proc/meminfo").or_else(|_| root_fs.create("/proc/meminfo", InodeKind::File)) {
             let _ = root_fs.write(ino.ino, 0, info.as_bytes());
         }
-        if let Ok(ino) = root_fs.create("/proc/uptime", InodeKind::File) {
+        if let Ok(ino) = root_fs.lookup("/proc/uptime").or_else(|_| root_fs.create("/proc/uptime", InodeKind::File)) {
             let _ = root_fs.write(ino.ino, 0, b"1.25 1.10\n");
         }
-        if let Ok(ino) = root_fs.create("/proc/version", InodeKind::File) {
+        if let Ok(ino) = root_fs.lookup("/proc/version").or_else(|_| root_fs.create("/proc/version", InodeKind::File)) {
             let _ = root_fs.write(ino.ino, 0, b"metalOS version 0.1.0 (rustc nightly x86_64)\n");
         }
 
         Self {
             root_fs,
             dev_fs: Arc::new(DevFS::new()),
+            backend_name,
         }
     }
 
@@ -222,10 +229,31 @@ impl Vfs {
 pub static VFS: Mutex<Option<Vfs>> = Mutex::new(None);
 pub static GLOBAL_FD_TABLE: Mutex<Option<FileDescriptorTable>> = Mutex::new(None);
 
-pub fn init() {
+pub fn init() -> &'static str {
+    let mounted_vfs = try_mount_cobaltfs().unwrap_or_else(Vfs::new);
+    let backend = mounted_vfs.backend_name;
+
     let mut vfs = Mutex::lock(&VFS);
-    *vfs = Some(Vfs::new());
+    *vfs = Some(mounted_vfs);
 
     let mut fd_table = Mutex::lock(&GLOBAL_FD_TABLE);
     *fd_table = Some(FileDescriptorTable::new());
+
+    backend
+}
+
+fn try_mount_cobaltfs() -> Option<Vfs> {
+    use crate::drivers::ata::AtaPio;
+    use crate::fs::cobaltfs::CobaltFS;
+
+    // Probe ATA Primary Slave (drive 1, attached data disk) first, then Primary Master (drive 0)
+    for drive in [1u8, 0u8] {
+        if let Some(ata) = AtaPio::probe(drive) {
+            let dev: Arc<dyn crate::fs::block::BlockDevice> = Arc::new(ata);
+            if let Ok(cobalt) = CobaltFS::mount(dev) {
+                return Some(Vfs::with_root(Arc::new(cobalt), "CobaltFS"));
+            }
+        }
+    }
+    None
 }

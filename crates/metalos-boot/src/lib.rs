@@ -1,4 +1,3 @@
-pub use bootloader as upstream_bootloader;
 pub use metalos_proto::{MemoryRegion, MemoryRegionKind};
 
 pub mod bootloader {

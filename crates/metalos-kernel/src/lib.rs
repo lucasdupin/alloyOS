@@ -1,7 +1,7 @@
 #![no_std]
-#![feature(abi_x86_interrupt, alloc_error_handler, naked_functions)]
+#![feature(abi_x86_interrupt)]
 
-#[cfg(any(test, feature = "host-tests"))]
+#[cfg(not(target_os = "none"))]
 extern crate std;
 
 extern crate alloc;

@@ -1,6 +1,6 @@
 #![no_std]
 #![cfg_attr(target_os = "none", no_main)]
-#![feature(abi_x86_interrupt, alloc_error_handler, naked_functions)]
+#![cfg_attr(target_os = "none", feature(alloc_error_handler))]
 
 #[cfg(not(target_os = "none"))]
 extern crate std;
@@ -11,12 +11,14 @@ extern crate alloc;
 use bootloader::BootloaderConfig;
 #[cfg(target_os = "none")]
 use bootloader::{entry_point, BootInfo};
+#[cfg(target_os = "none")]
 use metalos_kernel::{arch, drivers, fs, mm, serial_println, task};
 
 #[cfg(target_os = "none")]
 pub static BOOTLOADER_CONFIG: BootloaderConfig = {
     let mut config = BootloaderConfig::new_default();
     config.mappings.physical_memory = Some(bootloader::config::Mapping::Dynamic);
+    config.kernel_stack_size = 512 * 1024;
     config
 };
 
@@ -34,25 +36,28 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     // 3. Init GDT
     arch::gdt::init();
 
-    // 4. Init IDT
+    // 4. Init IDT and x86_64 syscall MSRs
     arch::idt::init();
 
-    // 5. Init memory (buddy allocator + heap)
+    // 5. Init memory (bitmap frame allocator + heap)
     mm::init(boot_info);
+    serial_println!("[mm] Frame allocator and 4 MiB kernel heap online.");
 
     // 6. Init PIC/timer
     drivers::pic::init();
 
-    // 7. Init VFS
-    fs::init();
+    // 7. Init VFS (probes ATA for CobaltFS volume, falls back to RamFS)
+    let root_backend = fs::init();
+    serial_println!("[fs] POSIX VFS (/ [{}], /dev, /proc) online.", root_backend);
 
     // 8. Init scheduler, spawn init task
     task::init();
 
-    // 9. Enable interrupts, enter scheduler loop
+    // 9. Enable interrupts, launch interactive POSIX shell
     x86_64::instructions::interrupts::enable();
 
-    serial_println!("metalOS initialized successfully. Entering scheduler loop.");
+    serial_println!("metalOS initialized successfully. Launching metal-sh...");
+    libmetal::shell::run_shell();
 
     loop {
         x86_64::instructions::hlt();

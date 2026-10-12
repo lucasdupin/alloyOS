@@ -1,3 +1,4 @@
+#[cfg(target_os = "none")]
 use linked_list_allocator::LockedHeap;
 use x86_64::structures::paging::{
     FrameAllocator, Mapper, OffsetPageTable, Page, PageTableFlags, Size4KiB,

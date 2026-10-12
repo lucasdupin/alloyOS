@@ -4,7 +4,7 @@ use x86_64::structures::paging::{
 };
 use x86_64::VirtAddr;
 
-pub const HEAP_START: usize = 0xFFFF_8800_0000_0000;
+pub const HEAP_START: usize = 0x_4444_4444_0000;
 pub const HEAP_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
 
 #[cfg(target_os = "none")]

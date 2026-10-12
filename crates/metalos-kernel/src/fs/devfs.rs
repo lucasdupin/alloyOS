@@ -47,7 +47,16 @@ impl FileSystem for DevFS {
                 buf.fill(0);
                 Ok(buf.len())
             }
-            INO_DEV_SERIAL => Ok(0),
+            INO_DEV_SERIAL => {
+                #[cfg(target_os = "none")]
+                {
+                    if !buf.is_empty() {
+                        buf[0] = crate::drivers::serial::SERIAL1.lock().receive();
+                        return Ok(1);
+                    }
+                }
+                Ok(0)
+            }
             _ => Err(FsError::NotFound),
         }
     }

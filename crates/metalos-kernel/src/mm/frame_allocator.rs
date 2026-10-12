@@ -1,7 +1,20 @@
+use spin::Mutex;
 use x86_64::structures::paging::{FrameAllocator, FrameDeallocator, PhysFrame, Size4KiB};
 use x86_64::PhysAddr;
 
 pub const MAX_BITMAP_WORDS: usize = 4096; // 4096 * 64 = 262,144 frames = 1 GiB capacity
+
+pub static FRAME_ALLOCATOR: Mutex<BitmapFrameAllocator> =
+    Mutex::new(BitmapFrameAllocator::new(0, 0));
+
+pub fn memory_stats() -> (usize, usize, usize) {
+    let alloc = FRAME_ALLOCATOR.lock();
+    (
+        alloc.total_frames(),
+        alloc.allocated_count(),
+        alloc.available_frames(),
+    )
+}
 
 pub struct BitmapFrameAllocator {
     bitmap: [u64; MAX_BITMAP_WORDS],
@@ -24,6 +37,19 @@ impl BitmapFrameAllocator {
             total_frames: frames,
             allocated_count: 0,
         }
+    }
+
+    pub fn init_in_place(&mut self, start_addr: u64, total_frames: usize) {
+        let max_frames = MAX_BITMAP_WORDS * 64;
+        let frames = if total_frames > max_frames {
+            max_frames
+        } else {
+            total_frames
+        };
+        self.bitmap.fill(0);
+        self.start_addr = start_addr;
+        self.total_frames = frames;
+        self.allocated_count = 0;
     }
 
     pub fn total_frames(&self) -> usize {
@@ -81,20 +107,38 @@ impl BitmapFrameAllocator {
         }
     }
 
-    pub fn init_from_bootloader_regions(
+    pub fn find_largest_usable_region(
         regions: &bootloader::info::MemoryRegions,
-    ) -> Option<Self> {
+    ) -> Option<(u64, usize)> {
+        let mut best: Option<(u64, usize)> = None;
         for region in regions.iter() {
             if region.kind == bootloader::info::MemoryRegionKind::Usable {
                 let start = (region.start + 0xFFF) & !0xFFF;
                 let end = region.end & !0xFFF;
                 if end > start {
-                    let total_frames = ((end - start) / 4096) as usize;
-                    return Some(Self::new(start, total_frames));
+                    let frames = ((end - start) / 4096) as usize;
+                    if best.map_or(true, |(_, best_frames)| frames > best_frames) {
+                        best = Some((start, frames));
+                    }
                 }
             }
         }
-        None
+        best
+    }
+
+    pub fn init_from_bootloader_regions(
+        regions: &bootloader::info::MemoryRegions,
+    ) -> Option<Self> {
+        let (start, total_frames) = Self::find_largest_usable_region(regions)?;
+        Some(Self::new(start, total_frames))
+    }
+
+    pub fn init_global_from_bootloader_regions(
+        regions: &bootloader::info::MemoryRegions,
+    ) -> Option<(u64, usize)> {
+        let (start, total_frames) = Self::find_largest_usable_region(regions)?;
+        FRAME_ALLOCATOR.lock().init_in_place(start, total_frames);
+        Some((start, total_frames))
     }
 }
 

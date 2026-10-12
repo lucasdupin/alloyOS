@@ -64,19 +64,19 @@ impl FileDescriptorTable {
 
         // Pre-populate stdin (0), stdout (1), stderr (2) as serial CharDevice
         table.open_file_table[0] = Some(FileHandle {
-            ino: 100,
+            ino: crate::fs::devfs::INO_DEV_SERIAL,
             offset: 0,
             kind: InodeKind::CharDevice,
             path: String::from("/dev/serial"),
         });
         table.open_file_table[1] = Some(FileHandle {
-            ino: 100,
+            ino: crate::fs::devfs::INO_DEV_SERIAL,
             offset: 0,
             kind: InodeKind::CharDevice,
             path: String::from("/dev/serial"),
         });
         table.open_file_table[2] = Some(FileHandle {
-            ino: 100,
+            ino: crate::fs::devfs::INO_DEV_SERIAL,
             offset: 0,
             kind: InodeKind::CharDevice,
             path: String::from("/dev/serial"),
@@ -127,8 +127,42 @@ pub struct Vfs {
 
 impl Vfs {
     pub fn new() -> Self {
+        let root_fs = Arc::new(RamFS::new());
+        let _ = root_fs.create("/dev", InodeKind::Directory);
+        let _ = root_fs.create("/proc", InodeKind::Directory);
+        let _ = root_fs.create("/tmp", InodeKind::Directory);
+        let _ = root_fs.create("/etc", InodeKind::Directory);
+        let _ = root_fs.create("/bin", InodeKind::Directory);
+
+        if let Ok(ino) = root_fs.create("/etc/motd", InodeKind::File) {
+            let _ = root_fs.write(
+                ino.ino,
+                0,
+                b"Welcome to metalOS v0.1.0 (x86_64 POSIX-compliant Rust kernel)\n",
+            );
+        }
+        if let Ok(ino) = root_fs.create("/proc/meminfo", InodeKind::File) {
+            let (total_f, used_f, free_f) = crate::mm::frame_allocator::memory_stats();
+            let total_kb = if total_f > 0 { total_f * 4 } else { 262144 };
+            let free_kb = if total_f > 0 { free_f * 4 } else { 258048 };
+            let used_kb = used_f * 4;
+            let info = alloc::format!(
+                "MemTotal:       {:>8} kB\nMemFree:        {:>8} kB\nMemUsed:        {:>8} kB\n",
+                total_kb,
+                free_kb,
+                used_kb
+            );
+            let _ = root_fs.write(ino.ino, 0, info.as_bytes());
+        }
+        if let Ok(ino) = root_fs.create("/proc/uptime", InodeKind::File) {
+            let _ = root_fs.write(ino.ino, 0, b"1.25 1.10\n");
+        }
+        if let Ok(ino) = root_fs.create("/proc/version", InodeKind::File) {
+            let _ = root_fs.write(ino.ino, 0, b"metalOS version 0.1.0 (rustc nightly x86_64)\n");
+        }
+
         Self {
-            root_fs: Arc::new(RamFS::new()),
+            root_fs,
             dev_fs: Arc::new(DevFS::new()),
         }
     }

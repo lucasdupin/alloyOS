@@ -61,9 +61,72 @@ pub fn create_idt() -> InterruptDescriptorTable {
 
 pub static IDT: Lazy<InterruptDescriptorTable> = Lazy::new(create_idt);
 
+extern "C" fn rust_syscall_handler(num: u64, a1: u64, a2: u64, a3: u64) -> i64 {
+    crate::syscall::dispatch::dispatch_syscall(num, a1, a2, a3, 0, 0, 0)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[unsafe(naked)]
+pub unsafe extern "C" fn syscall_entry() {
+    core::arch::naked_asm!(
+        "push rcx",
+        "push r11",
+        "push rbp",
+        "push rbx",
+        "push r12",
+        "push r13",
+        "push r14",
+        "push r15",
+        "mov rbp, rsp",
+        "and rsp, -16",
+        "mov rcx, rdx",
+        "mov rdx, rsi",
+        "mov rsi, rdi",
+        "mov rdi, rax",
+        "call {handler}",
+        "mov rsp, rbp",
+        "pop r15",
+        "pop r14",
+        "pop r13",
+        "pop r12",
+        "pop rbx",
+        "pop rbp",
+        "pop r11",
+        "pop rcx",
+        "push r11",
+        "popfq",
+        "jmp rcx",
+        handler = sym rust_syscall_handler,
+    );
+}
+
+pub fn init_syscall_msrs() {
+    #[cfg(all(not(test), target_arch = "x86_64"))]
+    unsafe {
+        use x86_64::registers::control::{Efer, EferFlags};
+        use x86_64::registers::model_specific::Msr;
+
+        // Enable SCE (System Call Extensions) in IA32_EFER
+        Efer::update(|flags| *flags |= EferFlags::SYSTEM_CALL_EXTENSIONS);
+
+        // IA32_STAR (0xC0000081): bits 47:32 = kernel CS (0x08), bits 63:48 = user base (0x18)
+        let star_val = (0x0018u64 << 48) | ((gdt::GDT.1.kernel_code.0 as u64) << 32);
+        Msr::new(0xC000_0081).write(star_val);
+
+        // IA32_LSTAR (0xC0000082): target RIP for syscall instruction
+        Msr::new(0xC000_0082).write(syscall_entry as usize as u64);
+
+        // IA32_FMASK (0xC0000084): mask IF (0x200) on syscall entry
+        Msr::new(0xC000_0084).write(0x200);
+    }
+}
+
 pub fn init() {
     #[cfg(not(test))]
-    IDT.load();
+    {
+        IDT.load();
+        init_syscall_msrs();
+    }
 }
 
 extern "x86-interrupt" fn divide_error_handler(stack_frame: InterruptStackFrame) {

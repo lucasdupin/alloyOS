@@ -25,18 +25,7 @@ fn main() {
 }
 
 pub fn main_loop() {
-    let mut history = History::new();
-    loop {
-        libmetal::io::print("metalos:/$ ");
-        let line_buf = readline();
-        let line_str = line_from_buf(&line_buf);
-        let trimmed = line_str.trim();
-        if !trimmed.is_empty() {
-            history.push(trimmed);
-        }
-        let cmd = parse_command(line_str);
-        execute_command(&cmd);
-    }
+    libmetal::shell::run_shell();
 }
 
 #[cfg(test)]

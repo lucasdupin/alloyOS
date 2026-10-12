@@ -15,10 +15,11 @@ pub fn init(boot_info: &'static mut BootInfo) {
         .expect("Physical memory offset missing from bootloader");
 
     let mut mapper = unsafe { paging::init(VirtAddr::new(phys_mem_offset)) };
-    let mut frame_allocator = frame_allocator::BitmapFrameAllocator::init_from_bootloader_regions(
+    frame_allocator::BitmapFrameAllocator::init_global_from_bootloader_regions(
         &boot_info.memory_regions,
     )
     .expect("No usable memory regions found");
 
-    heap::init_heap(&mut mapper, &mut frame_allocator).expect("Heap initialization failed");
+    let mut frame_allocator = frame_allocator::FRAME_ALLOCATOR.lock();
+    heap::init_heap(&mut mapper, &mut *frame_allocator).expect("Heap initialization failed");
 }

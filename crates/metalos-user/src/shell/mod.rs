@@ -588,7 +588,11 @@ pub fn execute_command(cmd: &Command<'_>) {
         }
         "echo" => {
             let out = echo(&cmd.args);
-            crate::io::print(&out);
+            if let Some(target_path) = cmd.redirect_stdout {
+                let _ = crate::fs::write_file(target_path, out.as_bytes());
+            } else {
+                crate::io::print(&out);
+            }
         }
         "uname" => {
             let all = cmd.args.as_slice().contains(&"-a");
@@ -598,11 +602,11 @@ pub fn execute_command(cmd: &Command<'_>) {
         "ls" => {
             let path = if cmd.args.is_empty() { "/" } else { cmd.args[0] };
             if path == "/dev" || path == "dev" {
-                crate::io::println("tty\nnull\nzero");
+                crate::io::println("tty\nnull\nzero\nserial");
             } else if path == "/proc" || path == "proc" {
                 crate::io::println("meminfo\nuptime\ncpuinfo\nversion");
             } else {
-                crate::io::println("bin/\ndev/\nproc/\netc/");
+                crate::io::println("bin/\ndev/\nproc/\netc/\ntmp/");
             }
         }
         "cat" => {
@@ -697,5 +701,44 @@ pub fn execute_command(cmd: &Command<'_>) {
             let msg = unknown_command_message(other);
             crate::io::print(&msg);
         }
+    }
+}
+
+/// Execute a command line supporting `&&` chaining and `|` pipelines.
+pub fn execute_line(line: &str) {
+    for segment in line.split("&&") {
+        let trimmed = segment.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let pipeline = parse_pipeline(trimmed);
+        if pipeline.has_pipe && pipeline.count == 2 {
+            let c1 = &pipeline.commands[0];
+            let c2 = &pipeline.commands[1];
+            if c1.name == "echo" && c2.name == "cat" {
+                let out = echo(&c1.args);
+                crate::io::print(&out);
+            } else {
+                execute_command(c1);
+                execute_command(c2);
+            }
+        } else {
+            execute_command(&pipeline.commands[0]);
+        }
+    }
+}
+
+/// Run the interactive `metal-sh` REPL loop.
+pub fn run_shell() {
+    let mut history = History::new();
+    loop {
+        crate::io::print("metalos:/$ ");
+        let line_buf = readline();
+        let line_str = line_from_buf(&line_buf);
+        let trimmed = line_str.trim();
+        if !trimmed.is_empty() {
+            history.push(trimmed);
+        }
+        execute_line(line_str);
     }
 }

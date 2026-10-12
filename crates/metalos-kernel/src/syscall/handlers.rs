@@ -21,7 +21,6 @@ pub struct UtsName {
     pub release: [u8; 65],
     pub version: [u8; 65],
     pub machine: [u8; 65],
-    pub domainname: [u8; 65],
 }
 
 impl UtsName {
@@ -32,7 +31,6 @@ impl UtsName {
             release: [0; 65],
             version: [0; 65],
             machine: [0; 65],
-            domainname: [0; 65],
         };
 
         Self::set_field(&mut uts.sysname, b"metalOS");
@@ -113,19 +111,25 @@ pub fn sys_write(fd: u64, buf_ptr: u64, len: u64) -> i64 {
     }
 }
 
-pub fn sys_open(path_ptr: u64, _flags: u64, _mode: u64) -> i64 {
+pub fn sys_open(path_ptr: u64, _flags: u64, mode: u64) -> i64 {
     if path_ptr == 0 {
         return EFAULT;
     }
 
-    // Read null-terminated path
-    let mut path_len = 0;
-    unsafe {
-        let ptr = path_ptr as *const u8;
-        while *ptr.add(path_len) != 0 && path_len < 4096 {
-            path_len += 1;
+    let path_len = if mode > 0 && mode <= 4096 {
+        let max_len = mode as usize;
+        let s = unsafe { slice::from_raw_parts(path_ptr as *const u8, max_len) };
+        s.iter().position(|&b| b == 0).unwrap_or(max_len)
+    } else {
+        let mut len = 0;
+        unsafe {
+            let ptr = path_ptr as *const u8;
+            while *ptr.add(len) != 0 && len < 4096 {
+                len += 1;
+            }
         }
-    }
+        len
+    };
 
     let path_str = match core::str::from_utf8(unsafe {
         slice::from_raw_parts(path_ptr as *const u8, path_len)

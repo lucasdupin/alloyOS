@@ -43,6 +43,23 @@ pub fn read_file(path: &str) -> Result<[u8; 4096], i64> {
     Ok(buf)
 }
 
+/// Open (or create), write `data` to, and close a file at `path`.
+pub fn write_file(path: &str, data: &[u8]) -> Result<usize, i64> {
+    let fd = open(path, O_WRONLY);
+    if fd < 0 {
+        return Err(fd);
+    }
+
+    let n = crate::io::write(fd as u32, data);
+    let _ = close(fd as u32);
+
+    if n < 0 {
+        return Err(n);
+    }
+
+    Ok(n as usize)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

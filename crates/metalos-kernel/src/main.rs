@@ -116,7 +116,10 @@ pub extern "C" fn aarch64_kernel_entry() -> ! {
     let _ = drivers::virtio_gpu::init();
     drivers::virtio_input::init();
     {
-        let mut splash = metalos_boot::splash::LiquidSplashAnimation::new(240, 432);
+        let mut splash = metalos_boot::splash::LiquidSplashAnimation::new(
+            drivers::virtio_gpu::UI_WIDTH / 2,
+            drivers::virtio_gpu::UI_HEIGHT / 2,
+        );
         for dt in [160u32, 180, 160] {
             splash.step_frame(dt);
             drivers::virtio_gpu::present_splash_frame(&splash);

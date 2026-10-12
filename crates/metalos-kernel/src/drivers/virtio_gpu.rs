@@ -1,6 +1,6 @@
 //! VirtIO-GPU 2D MMIO Driver (`VIRTIO_DEV_GPU = 16`) & Linear Framebuffer (`ramfb`) Manager.
 //!
-//! Manages a `480x864` portrait 32-bpp (`B8G8R8A8_UNORM` / `ARGB8888`) surface, supports partial
+//! Manages a `1206x2622` portrait 32-bpp (`B8G8R8A8_UNORM` / `ARGB8888`) surface, supports partial
 //! `DirtyRect` damage updates, and accelerates scanline blits using ARM64 NEON 128-bit SIMD
 //! loads/stores (`vld1q_u8` / `vst1q_u8`).
 
@@ -18,8 +18,11 @@ use crate::drivers::virtio_blk::{VIRTIO_MMIO_BASE, VIRTIO_MMIO_COUNT, VIRTIO_MMI
 const VIRTIO_MAGIC: u32 = 0x7472_6976;
 pub const VIRTIO_DEV_GPU: u32 = 16;
 
-pub const DEFAULT_FB_WIDTH: u32 = 480;
-pub const DEFAULT_FB_HEIGHT: u32 = 864;
+pub const DEFAULT_FB_WIDTH: u32 = 1206;
+pub const DEFAULT_FB_HEIGHT: u32 = 2622;
+// Render at phone logical dimensions, then scale 3x to the physical scanout.
+pub const UI_WIDTH: u32 = DEFAULT_FB_WIDTH / 3;
+pub const UI_HEIGHT: u32 = DEFAULT_FB_HEIGHT / 3;
 pub const DEFAULT_FB_BPP: u32 = 4;
 
 // VirtIO-GPU 2D command constants
@@ -710,10 +713,10 @@ pub fn present_splash_frame(splash: &metalos_boot::splash::LiquidSplashAnimation
     }
 }
 
-/// Initializes the interactive `FerrofluidServer` console (`480x864` portrait phone display)
+/// Initializes the interactive `FerrofluidServer` console (402x874 logical phone display)
 /// and presents the initial frame on the hardware VirtIO-GPU display.
 pub fn init_mercury_console() -> (u32, u32) {
-    let mut server = FerrofluidServer::new(DEFAULT_FB_WIDTH, DEFAULT_FB_HEIGHT);
+    let mut server = FerrofluidServer::new(UI_WIDTH, UI_HEIGHT);
     server.console.history.clear();
     server
         .console
@@ -767,7 +770,7 @@ pub fn console_write_bytes(buf: &[u8]) {
         return;
     };
 
-    const MAX_COLS: usize = 54;
+    const MAX_COLS: usize = ((UI_WIDTH - 32) / 8) as usize;
 
     if buf == b"\x08 \x08" {
         server.console.streaming_line.pop();

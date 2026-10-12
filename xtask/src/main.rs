@@ -68,7 +68,7 @@ impl QemuHarness {
             .arg("-device")
             .arg("virtio-blk-device,drive=hd0")
             .arg("-device")
-            .arg("virtio-gpu-device,xres=480,yres=864")
+            .arg("virtio-gpu-device,xres=1206,yres=2622")
             .arg("-device")
             .arg("virtio-keyboard-device")
             .arg("-device")
@@ -385,12 +385,34 @@ fn run_qemu(release: bool) -> Result<()> {
         cobalt_image.display()
     );
     #[cfg(target_os = "macos")]
-    let display_arg = "cocoa,show-cursor=on";
+    // Scale the portrait framebuffer into a resizable desktop window.
+    // Native macOS full-screen would move QEMU into a separate Space.
+    let display_arg = "cocoa,show-cursor=on,full-screen=off,zoom-to-fit=on";
     #[cfg(not(target_os = "macos"))]
     let display_arg = "default,show-cursor=on";
 
-    let status = Command::new("qemu-system-aarch64")
-        .arg("-M")
+    let mut qemu = Command::new("qemu-system-aarch64");
+    #[cfg(target_os = "macos")]
+    {
+        let helper = workspace_root.join("target/cocoa_window.dylib");
+        let compiled = Command::new("clang")
+            .args(["-dynamiclib", "-fobjc-arc", "-fblocks", "-framework", "Cocoa"])
+            .arg(workspace_root.join("xtask/cocoa_window.m"))
+            .arg("-o")
+            .arg(&helper)
+            .status()
+            .context("Failed to build the macOS window sizing helper")?;
+        if !compiled.success() {
+            return Err(anyhow!("macOS window sizing helper compilation failed"));
+        }
+        let mut libraries = helper.into_os_string();
+        if let Some(existing) = std::env::var_os("DYLD_INSERT_LIBRARIES") {
+            libraries.push(":");
+            libraries.push(existing);
+        }
+        qemu.env("DYLD_INSERT_LIBRARIES", libraries);
+    }
+    let status = qemu.arg("-M")
         .arg("virt")
         .arg("-accel")
         .arg("hvf")
@@ -406,7 +428,7 @@ fn run_qemu(release: bool) -> Result<()> {
         .arg("-device")
         .arg("virtio-blk-device,drive=hd0")
         .arg("-device")
-        .arg("virtio-gpu-device,xres=480,yres=864")
+        .arg("virtio-gpu-device,xres=1206,yres=2622")
         .arg("-device")
         .arg("virtio-keyboard-device")
         .arg("-device")

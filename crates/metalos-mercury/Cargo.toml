@@ -1,0 +1,11 @@
+[package]
+name = "metalos-mercury"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "metalos_mercury"
+path = "src/lib.rs"
+
+[dependencies]
+metalos-proto = { path = "../metalos-proto" }

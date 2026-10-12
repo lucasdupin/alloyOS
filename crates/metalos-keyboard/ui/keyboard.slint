@@ -1,0 +1,129 @@
+// TouchArea keeps editor focus while a soft key is pressed.
+component SoftKey inherits Rectangle {
+    in property <string> label;
+    callback pressed();
+    min-width: 0px;
+    horizontal-stretch: 1;
+    height: 44px;
+    // Keep the hit target fixed while the label swells.
+    border-width: 0px;
+    background: transparent;
+    property <bool> tap-pulse: false;
+    property <string> preview-label;
+    property <bool> preview-enabled: root.label != "Shift" && root.label != "SHIFT" && root.label != "Del" && root.label != "space" && root.label != "Send" && root.label != "123" && root.label != "ABC";
+    property <float> preview-rise: root.preview-enabled && (touch.pressed || root.tap-pulse) ? 1 : 0;
+    animate preview-rise { duration: 110ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
+    property <float> press-scale: touch.pressed || root.tap-pulse ? 1.075 : 1;
+    animate press-scale { duration: 180ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
+    Timer {
+        interval: 160ms;
+        running: root.tap-pulse;
+        triggered => { root.tap-pulse = false; }
+    }
+    Text {
+        text: root.label;
+        color: #ffffff;
+        font-size: (root.label == "Shift" || root.label == "SHIFT" || root.label == "Del" ? 12px : 17px) * root.press-scale;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                root.preview-label = root.label;
+                root.tap-pulse = true;
+            }
+        }
+        clicked => { root.pressed(); }
+        accessible-role: button;
+        accessible-label: root.label;
+    }
+    // A lifted character remains above the finger; it doesn't alter hit areas.
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: -14px - 40px * root.preview-rise;
+        width: 48px;
+        height: 52px;
+        opacity: root.preview-rise;
+        background: #15151b;
+        border-width: 0px;
+        border-radius: 18px;
+        Text {
+            text: root.preview-label;
+            color: #ffffff;
+            font-size: 32px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component SoftKeyboard inherits Rectangle {
+    // Host provides focus/scroll intent; this project owns reveal and dismissal.
+    in property <bool> requested: false;
+    in property <bool> suspended: false;
+    in property <length> scroll-offset: 0px;
+    in property <length> scroll-retreat: 156px;
+    property <bool> dismissed: false;
+    out property <bool> shown: root.requested && !root.dismissed && !root.suspended;
+    out property <length> reveal: root.shown ? root.height - min(root.scroll-retreat, max(0px, root.scroll-offset)) : 0px;
+    animate reveal { duration: 420ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+    changed requested => { root.dismissed = false; }
+    public function reopen() { root.dismissed = false; }
+    height: 260px;
+    callback key(string);
+    callback dismiss();
+    property <bool> shifted: false;
+    property <bool> symbols: false;
+    background: transparent;
+    border-width: 0px;
+    VerticalLayout {
+        padding: 8px;
+        spacing: 7px;
+        HorizontalLayout {
+            height: 22px;
+            Text { text: ""; horizontal-stretch: 1; }
+            TouchArea {
+                width: 68px;
+                accessible-role: button;
+                accessible-label: "Hide keyboard";
+                clicked => { root.dismissed = true; root.dismiss(); }
+                Text { text: "Hide"; color: #ffffff; font-size: 12px; horizontal-alignment: center; }
+            }
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            for letter in (root.symbols ? ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"] : root.shifted ? ["Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"] : ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"]): SoftKey {
+                label: letter;
+                pressed => { root.key(letter); root.shifted = false; }
+            }
+        }
+        HorizontalLayout {
+            padding-left: 14px;
+            padding-right: 14px;
+            spacing: 4px;
+            for letter in (root.symbols ? ["@", "#", "$", "%", "&", "-", "+", "(", ")"] : root.shifted ? ["A", "S", "D", "F", "G", "H", "J", "K", "L"] : ["a", "s", "d", "f", "g", "h", "j", "k", "l"]): SoftKey {
+                label: letter;
+                pressed => { root.key(letter); root.shifted = false; }
+            }
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            SoftKey { label: root.shifted ? "SHIFT" : "Shift"; pressed => { root.shifted = !root.shifted; } }
+            for letter in (root.symbols ? ["*", "\"", "'", ":", ";", "!", "?"] : root.shifted ? ["Z", "X", "C", "V", "B", "N", "M"] : ["z", "x", "c", "v", "b", "n", "m"]): SoftKey {
+                label: letter;
+                pressed => { root.key(letter); root.shifted = false; }
+            }
+            SoftKey { label: "Del"; pressed => { root.key("backspace"); } }
+        }
+        HorizontalLayout {
+            spacing: 5px;
+            SoftKey { label: root.symbols ? "ABC" : "123"; horizontal-stretch: 1; pressed => { root.symbols = !root.symbols; } }
+            SoftKey { label: ","; horizontal-stretch: 1; pressed => { root.key(","); } }
+            SoftKey { label: "space"; horizontal-stretch: 4; pressed => { root.key(" "); } }
+            SoftKey { label: "."; horizontal-stretch: 1; pressed => { root.key("."); } }
+            SoftKey { label: "Send"; horizontal-stretch: 2; pressed => { root.key("return"); } }
+        }
+    }
+}
+

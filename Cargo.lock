@@ -2287,6 +2287,7 @@ dependencies = [
 name = "metalos-ferrofluid"
 version = "0.1.0"
 dependencies = [
+ "metalos-keyboard",
  "metalos-proto",
  "slint",
  "slint-build",
@@ -2313,6 +2314,15 @@ dependencies = [
  "metalos-proto",
  "metalos-user",
  "spin",
+]
+
+[[package]]
+name = "metalos-keyboard"
+version = "0.1.0"
+dependencies = [
+ "metalos-proto",
+ "slint",
+ "slint-build",
 ]
 
 [[package]]

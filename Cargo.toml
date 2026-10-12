@@ -5,6 +5,7 @@ members = [
     "crates/metalos-kernel",
     "crates/metalos-user",
     "crates/metalos-ferrofluid",
+    "crates/metalos-keyboard",
     "crates/metalos-js",
     "crates/metalos-mcp",
     "crates/metalos-ai",

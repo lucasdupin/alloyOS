@@ -9,6 +9,7 @@ use core::{
     cell::{Cell, RefCell},
     time::Duration,
 };
+use metalos_keyboard::{LiquidDisplacement, SoftKey};
 use metalos_proto::{DirtyRect, InputEvent, InputEventKind};
 use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
 use slint::platform::{Key, Platform, PointerEventButton, WindowAdapter, WindowEvent};
@@ -49,6 +50,7 @@ pub struct FerrofluidSystemUi {
     size: PhysicalSize,
     scale: f32,
     keys: EvdevKeyboard,
+    liquid: LiquidDisplacement,
 }
 
 impl FerrofluidSystemUi {
@@ -86,6 +88,12 @@ impl FerrofluidSystemUi {
                 ui.set_draft(SharedString::default());
             }
         });
+        let soft_window = window.clone();
+        ui.on_soft_key(move |value| {
+            let text = SoftKey::from(value).into_slint_text();
+            soft_window.dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+            soft_window.dispatch_event(WindowEvent::KeyReleased { text });
+        });
         ui.show()?;
         window.dispatch_event(WindowEvent::WindowActiveChanged(true));
         Ok(Self {
@@ -98,6 +106,7 @@ impl FerrofluidSystemUi {
             size,
             scale,
             keys: EvdevKeyboard::default(),
+            liquid: LiquidDisplacement::new(width, height, scale),
         })
     }
 
@@ -126,8 +135,9 @@ impl FerrofluidSystemUi {
 
     /// Input coordinates are physical scanout pixels; Slint receives logical points.
     pub fn handle_input(&mut self, event: InputEvent) {
-        let position =
-            LogicalPosition::new(event.x as f32 / self.scale, event.y as f32 / self.scale);
+        // Inverse-map touches through the same field used for presentation.
+        let (x, y) = self.liquid.source(event.x as f32, event.y as f32);
+        let position = LogicalPosition::new(x / self.scale, y / self.scale);
         let translated = match event.kind {
             InputEventKind::PointerMove => Some(WindowEvent::PointerMoved { position }),
             InputEventKind::PointerButtonDown | InputEventKind::PointerButtonUp => {
@@ -167,6 +177,14 @@ impl FerrofluidSystemUi {
     pub fn render(&mut self, elapsed: Duration) -> Option<DirtyRect> {
         self.now.set(elapsed.max(self.now.get()));
         slint::platform::update_timers_and_animations();
+        let liquid_damage = self.liquid.advance(
+            self.now.get(),
+            self.ui.get_keyboard_reveal(),
+            self.ui.get_booting(),
+        );
+        if liquid_damage.is_some() {
+            self.window.request_redraw();
+        }
         let mut damage = None;
         self.window.draw_if_needed(|renderer| {
             let region = renderer.render(&mut self.rgb, self.size.width as usize);
@@ -175,11 +193,19 @@ impl FerrofluidSystemUi {
             if size.width == 0 || size.height == 0 {
                 return;
             }
-            let rect = DirtyRect::new(origin.x as u32, origin.y as u32, size.width, size.height);
+            let mut rect =
+                DirtyRect::new(origin.x as u32, origin.y as u32, size.width, size.height);
+            if let Some((top, bottom)) = liquid_damage {
+                let end = (rect.y + rect.height).max(bottom);
+                rect.y = rect.y.min(top);
+                rect.height = end - rect.y;
+                rect.x = 0;
+                rect.width = self.size.width;
+            }
             for y in rect.y..rect.y + rect.height {
                 for x in rect.x..rect.x + rect.width {
                     let i = y as usize * self.size.width as usize + x as usize;
-                    let p = self.rgb[i];
+                    let p = self.liquid.pixel(&self.rgb, x, y);
                     self.argb[i] = 0xff000000 | (p.r as u32) << 16 | (p.g as u32) << 8 | p.b as u32;
                 }
             }
@@ -362,8 +388,9 @@ mod tests {
     // Only one test owns Slint's process-wide, single-context platform.
     #[test]
     fn system_ui_renders_and_accepts_local_input() {
-        use metalos_proto::display::{PHONE_WIDTH, PHONE_HEIGHT, PHONE_SCALE};
-        let mut ui = FerrofluidSystemUi::new(PHONE_WIDTH, PHONE_HEIGHT, PHONE_SCALE as f32).unwrap();
+        use metalos_proto::display::{PHONE_HEIGHT, PHONE_SCALE, PHONE_WIDTH};
+        let mut ui =
+            FerrofluidSystemUi::new(PHONE_WIDTH, PHONE_HEIGHT, PHONE_SCALE as f32).unwrap();
         ui.set_booting(true);
         ui.render(Duration::ZERO).unwrap();
         assert_eq!(ui.pixels()[0], 0xff000000);
@@ -376,7 +403,10 @@ mod tests {
                 assert!(y > PHONE_HEIGHT / 2 - 100 && y < PHONE_HEIGHT / 2 + 100);
             }
         }
-        assert!(ui.render(Duration::from_millis(16)).is_none(), "boot is static");
+        assert!(
+            ui.render(Duration::from_millis(16)).is_none(),
+            "boot is static"
+        );
         ui.set_booting(false);
         let damage = ui.render(Duration::ZERO).unwrap();
         assert!(damage.width > 0 && damage.height > 0);
@@ -417,6 +447,113 @@ mod tests {
         assert_eq!(ui.take_submission().as_deref(), Some("d"));
         assert_eq!(ui.ui.get_draft().as_str(), "");
         assert!(ui.take_submission().is_none());
+        assert!(
+            ui.ui.get_keyboard_visible(),
+            "focused editor requests soft keys"
+        );
+        ui.render(Duration::from_millis(32));
+        ui.render(Duration::from_millis(560));
+        assert_eq!(ui.ui.get_keyboard_reveal(), 260.0);
+        // Tap Q through the real soft-key hit area; focus must stay in the editor.
+        for kind in [
+            InputEventKind::PointerButtonDown,
+            InputEventKind::PointerButtonUp,
+        ] {
+            ui.handle_input(InputEvent {
+                kind,
+                code: 0x110,
+                x: 75,
+                y: 2000,
+            });
+        }
+        assert_eq!(ui.ui.get_draft().as_str(), "q");
+        ui.ui.invoke_soft_key("backspace".into());
+        assert_eq!(ui.ui.get_draft().as_str(), "");
+        ui.ui.invoke_soft_key("é".into());
+        ui.ui.invoke_soft_key("return".into());
+        assert_eq!(ui.take_submission().as_deref(), Some("é"));
+        // Hide removes focus, allowing a subsequent composer tap to reopen it.
+        for kind in [
+            InputEventKind::PointerButtonDown,
+            InputEventKind::PointerButtonUp,
+        ] {
+            ui.handle_input(InputEvent {
+                kind,
+                code: 0x110,
+                x: 1080,
+                y: 1880,
+            });
+        }
+        assert!(!ui.ui.get_keyboard_visible());
+        ui.render(Duration::from_millis(576));
+        ui.render(Duration::from_millis(1120));
+        assert_eq!(ui.ui.get_keyboard_reveal(), 0.0);
+        ui.set_transcript(&"Scrollable transcript line\n".repeat(80));
+        for kind in [
+            InputEventKind::PointerButtonDown,
+            InputEventKind::PointerButtonUp,
+        ] {
+            ui.handle_input(InputEvent {
+                kind,
+                code: 0x110,
+                x: 300,
+                y: 2500,
+            });
+        }
+        ui.render(Duration::from_millis(1136));
+        ui.render(Duration::from_millis(1680));
+        assert!(ui.ui.get_keyboard_visible(), "composer reopens keyboard");
+        assert_eq!(ui.ui.get_keyboard_reveal(), 260.0);
+        ui.handle_input(InputEvent {
+            kind: InputEventKind::PointerButtonDown,
+            code: 0x110,
+            x: 400,
+            y: 1000,
+        });
+        // Render during the drag so scroll physics and keyboard reveal animate
+        // together. Batching every move before rendering missed a binding cycle.
+        for (frame, y) in [990, 980, 970, 960, 950, 900, 750, 600, 450]
+            .into_iter()
+            .enumerate()
+        {
+            ui.handle_input(InputEvent {
+                kind: InputEventKind::PointerMove,
+                code: 0,
+                x: 400,
+                y,
+            });
+            ui.render(Duration::from_millis(1680 + (frame as u64 + 1) * 16));
+        }
+        ui.handle_input(InputEvent {
+            kind: InputEventKind::PointerButtonUp,
+            code: 0x110,
+            x: 400,
+            y: 450,
+        });
+        ui.render(Duration::from_millis(1840));
+        ui.render(Duration::from_millis(2384));
+        assert!(
+            ui.ui.get_keyboard_reveal() < 260.0,
+            "scrolling retracts keyboard"
+        );
+        let key_y = 2000 + ((260.0 - ui.ui.get_keyboard_reveal()) * PHONE_SCALE as f32) as i32;
+        for kind in [
+            InputEventKind::PointerButtonDown,
+            InputEventKind::PointerButtonUp,
+        ] {
+            ui.handle_input(InputEvent {
+                kind,
+                code: 0x110,
+                x: 75,
+                y: key_y,
+            });
+        }
+        assert_eq!(
+            ui.ui.get_draft().as_str(),
+            "q",
+            "soft keys work after a flick"
+        );
+        ui.render(Duration::from_millis(2400));
         ui.set_transcript("A streamed response");
         assert!(ui.render(Duration::from_millis(20)).is_some());
         // Key releases retain the original character even if Shift changes.

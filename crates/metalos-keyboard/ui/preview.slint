@@ -1,0 +1,31 @@
+import { SoftKeyboard } from "keyboard.slint";
+import "../../../assets/fonts/Quicksand.ttf";
+
+export component KeyboardPreview inherits Window {
+    title: "metalOS · Keyboard";
+    background: #0a0a0c;
+    default-font-family: "Quicksand";
+    default-font-weight: 500;
+    default-font-size: 16px;
+    in property <bool> requested: false;
+    in property <length> scroll-offset: 0px;
+    out property <length> reveal: keyboard.reveal;
+    callback key(string);
+    Rectangle {
+        x: 24px;
+        y: parent.height - keyboard.reveal - 100px;
+        width: parent.width - 48px;
+        height: 60px;
+        background: #15151b;
+        border-radius: 16px;
+        Text { text: "Keyboard playground"; color: #ffffff; horizontal-alignment: center; vertical-alignment: center; }
+    }
+    keyboard := SoftKeyboard {
+        x: 4px;
+        y: parent.height - self.reveal;
+        width: parent.width - 8px;
+        requested: root.requested;
+        scroll-offset: root.scroll-offset;
+        key(value) => { root.key(value); }
+    }
+}

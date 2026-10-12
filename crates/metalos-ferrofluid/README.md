@@ -21,6 +21,15 @@ for the owner. The current kernel bridge displays submissions locally; cloud AI
 requests, streaming updates, and agent view commands are not connected yet.
 The loop polls at up to 60 Hz until timer and input interrupt wakeups are available.
 
+The soft keyboard lives in the independent [`metalos-keyboard`](../metalos-keyboard/README.md)
+project. System UI imports its Slint component and supplies editor focus, boot
+suspension, and transcript scroll position. The component owns key layout,
+press feedback, reveal/scroll policy, and dismissal. Typed actions are forwarded
+to the focused Slint editor; the keyboard crate's displacement map handles scene
+sampling and inverse-mapped touches. Ferrofluid owns scanout and repaints the
+map's returned damage band. See the keyboard project for independent tests and
+the standalone playground.
+
 Slint is the sole UI toolkit. The previous custom compositor, framebuffer, font
 renderer, widgets, and simulated UI IPC have been removed. `auth.rs` retains the
 agent capability gate independently of rendering. Debug-shell builds use serial
@@ -38,6 +47,13 @@ cargo test -p metalos-ferrofluid
 
 # Render the same bare-metal adapter to a PPM without a desktop backend
 cargo run -p metalos-ferrofluid --example system_ui_preview -- /tmp/system-ui.ppm
+
+# Preview the focused composer and soft keyboard
+cargo run -p metalos-ferrofluid --example system_ui_preview -- /tmp/keyboard.ppm --keyboard
+
+# Capture mid-slide displacement or an expanded key
+cargo run -p metalos-ferrofluid --example system_ui_preview -- /tmp/liquid.ppm --keyboard --liquid
+cargo run -p metalos-ferrofluid --example system_ui_preview -- /tmp/pressed.ppm --keyboard --pressed
 ```
 
 Slint is pinned to 1.18.1 with default features disabled. There is no desktop

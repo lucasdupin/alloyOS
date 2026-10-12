@@ -9,6 +9,34 @@ fn main() {
     ui.set_booting(std::env::args().any(|arg| arg == "--boot"));
     ui.set_status("Ready · AI unavailable");
     ui.render(Duration::ZERO).expect("initial frame");
+    if std::env::args().any(|arg| arg == "--keyboard") {
+        for kind in [
+            metalos_proto::InputEventKind::PointerButtonDown,
+            metalos_proto::InputEventKind::PointerButtonUp,
+        ] {
+            ui.handle_input(metalos_proto::InputEvent {
+                kind,
+                code: 0x110,
+                x: 300,
+                y: 2500,
+            });
+        }
+        let sliding = std::env::args().any(|arg| arg == "--liquid");
+        for frame in 1..=if sliding { 10 } else { 60 } {
+            ui.render(Duration::from_millis(frame * 16));
+        }
+        if std::env::args().any(|arg| arg == "--pressed") {
+            ui.handle_input(metalos_proto::InputEvent {
+                kind: metalos_proto::InputEventKind::PointerButtonDown,
+                code: 0x110,
+                x: 75,
+                y: 2000,
+            });
+            for frame in 61..=68 {
+                ui.render(Duration::from_millis(frame * 16));
+            }
+        }
+    }
     let path = std::env::args().nth(1).expect("Output PPM path");
     let mut file = std::fs::File::create(path).unwrap();
     writeln!(file, "P6\n{} {}\n255", PHONE_WIDTH, PHONE_HEIGHT).unwrap();

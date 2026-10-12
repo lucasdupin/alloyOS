@@ -1,0 +1,78 @@
+<svg viewBox="0 0 960 320" width="960" height="320" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Surface-tension physics filter for the Ferrofluid Crystal Emblem -->
+    <filter id="crystal-weld" x="-35%" y="-35%" width="170%" height="170%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="6" result="blur" />
+      <feColorMatrix in="blur" mode="matrix"
+        values="1 0 0 0 0
+                0 1 0 0 0
+                0 0 1 0 0
+                0 0 0 28 -11" result="liquid" />
+    </filter>
+
+    <!-- Surface-tension physics filter for Liquid Metal Typography (Mode 2: Viscous Meniscus Bridges) -->
+    <filter id="mercury-type" x="-15%" y="-25%" width="130%" height="150%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="4.8" result="blur" />
+      <feColorMatrix in="blur" mode="matrix"
+        values="1 0 0 0 0
+                0 1 0 0 0
+                0 0 1 0 0
+                0 0 0 30 -12" result="liquid" />
+    </filter>
+  </defs>
+
+  <!-- Solid Black Background -->
+  <rect width="960" height="320" fill="#000000" />
+
+  <!-- Liquid Metal Wordmark (Mode 2: Viscous Meniscus Bridges) -->
+  <g filter="url(#mercury-type)" fill="#FFFFFF">
+    <text x="52" y="204"
+          font-family="system-ui, -apple-system, 'Inter', 'Helvetica Neue', Arial, sans-serif"
+          font-weight="800"
+          font-size="122"
+          letter-spacing="-4"
+          fill="#FFFFFF">metalOS</text>
+
+    <!-- Viscous Meniscus Bridges between neighboring letters -->
+    <rect x="162" y="154" width="28" height="7" rx="3.5" />
+    <rect x="246" y="148" width="28" height="7" rx="3.5" />
+    <rect x="306" y="152" width="24" height="6" rx="3" />
+    <rect x="396" y="192" width="24" height="7" rx="3.5" />
+    <rect x="424" y="154" width="26" height="7" rx="3.5" />
+    <rect x="522" y="160" width="30" height="8" rx="4" />
+  </g>
+
+  <!-- Ferrofluid Metaball Crystal Emblem -->
+  <g transform="translate(775, 160)">
+    <!-- Overlapping cones welded together by surface tension filter -->
+    <g filter="url(#crystal-weld)" fill="#FFFFFF">
+      <polygon points="0,-148 22,0 0,148 -22,0" />
+      <polygon points="56,-98 14,12 -56,98 -14,-12" />
+      <polygon points="-56,-98 14,-12 56,98 -14,12" />
+      <polygon points="-102,0 0,-18 102,0 0,18" />
+      <polygon points="28,-118 12,0 -28,118 -12,0" />
+      <polygon points="-28,-118 12,0 28,118 -12,0" />
+      <polygon points="82,-42 0,14 -82,42 0,-14" />
+      <polygon points="-82,-42 0,-14 82,42 0,14" />
+    </g>
+    <!-- Crisp razor tips layered on top so spikes stay needle-sharp while valleys stay liquid-round -->
+    <g fill="#FFFFFF">
+      <polygon points="0,-152 6,-85 -6,-85" />
+      <polygon points="0,152 6,85 -6,85" />
+      <polygon points="106,0 55,5 55,-5" />
+      <polygon points="-106,0 -55,5 -55,-5" />
+      <polygon points="59,-102 28,-52 36,-46" />
+      <polygon points="-59,-102 -28,-52 -36,-46" />
+      <polygon points="59,102 28,52 36,46" />
+      <polygon points="-59,102 -28,52 -36,46" />
+      <polygon points="29,-120 12,-66 19,-63" />
+      <polygon points="-29,-120 -12,-66 -19,-63" />
+      <polygon points="29,120 12,66 19,63" />
+      <polygon points="-29,120 -12,66 -19,63" />
+      <polygon points="84,-43 44,-18 48,-25" />
+      <polygon points="-84,-43 -44,-18 -48,-25" />
+      <polygon points="84,43 44,18 48,25" />
+      <polygon points="-84,43 -44,18 -48,25" />
+    </g>
+  </g>
+</svg>

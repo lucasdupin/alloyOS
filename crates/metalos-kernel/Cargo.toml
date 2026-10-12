@@ -1,0 +1,30 @@
+[package]
+name = "metalos-kernel"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bootloader = { package = "bootloader_api", version = "0.11" }
+x86_64 = "0.15"
+uart_16550 = "0.3"
+pic8259 = "0.10"
+spin = "0.9"
+linked_list_allocator = "0.10"
+log = { version = "0.4", default-features = false }
+bitflags = "2"
+volatile = "0.5"
+metalos-proto = { path = "../metalos-proto" }
+
+[features]
+default = []
+host-tests = []
+
+[lib]
+name = "metalos_kernel"
+path = "src/lib.rs"
+
+[[bin]]
+name = "metalos-kernel"
+path = "src/main.rs"
+test = false
+

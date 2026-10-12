@@ -1,0 +1,22 @@
+[package]
+name = "metalos-user"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "libmetal"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sh"
+path = "src/bin/sh.rs"
+
+[dependencies]
+metalos-proto = { path = "../metalos-proto" }
+
+[dev-dependencies]
+# For integration tests we can use std
+
+[features]
+default = []
+host-tests = []

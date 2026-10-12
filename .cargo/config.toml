@@ -1,0 +1,5 @@
+[alias]
+xtask = "run --package xtask --"
+
+[build]
+# Default target for kernel crates only — do not set globally, use per-crate

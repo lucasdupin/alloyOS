@@ -1,4 +1,4 @@
-//! Raw system call interface for metalOS (x86_64 ABI).
+//! Raw system call interface for metalOS (`aarch64` ABI: `svc #0`, syscall number in `x8`, args in `x0..x2`, return in `x0`).
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SyscallRecord {
@@ -40,7 +40,7 @@ pub fn clear_mock_handler() {
 #[cfg(any(
     test,
     feature = "host-tests",
-    not(all(target_arch = "x86_64", target_os = "none"))
+    not(all(target_arch = "aarch64", target_os = "none"))
 ))]
 #[allow(unused_variables)]
 fn dispatch_mock(num: u64, a1: u64, a2: u64, a3: u64) -> i64 {
@@ -76,9 +76,9 @@ fn dispatch_mock(num: u64, a1: u64, a2: u64, a3: u64) -> i64 {
                 uts.nodename[..nodename.len()].copy_from_slice(nodename);
                 let release = b"0.1.0\0";
                 uts.release[..release.len()].copy_from_slice(release);
-                let version = b"metalOS 0.1.0 x86_64\0";
+                let version = b"metalOS 0.1.0 aarch64\0";
                 uts.version[..version.len()].copy_from_slice(version);
-                let machine = b"x86_64\0";
+                let machine = b"aarch64\0";
                 uts.machine[..machine.len()].copy_from_slice(machine);
             }
             0
@@ -92,14 +92,13 @@ fn dispatch_mock(num: u64, a1: u64, a2: u64, a3: u64) -> i64 {
 /// # Safety
 /// The caller must ensure that the given syscall number is valid and adheres to the kernel ABI.
 pub unsafe fn syscall0(num: u64) -> i64 {
-    #[cfg(all(not(test), target_arch = "x86_64", target_os = "none"))]
+    #[cfg(all(not(test), target_arch = "aarch64", target_os = "none"))]
     {
         let ret: i64;
         core::arch::asm!(
-            "syscall",
-            inlateout("rax") num as i64 => ret,
-            out("rcx") _,
-            out("r11") _,
+            "svc #0",
+            in("x8") num,
+            lateout("x0") ret,
             options(nostack, preserves_flags)
         );
         ret
@@ -107,7 +106,7 @@ pub unsafe fn syscall0(num: u64) -> i64 {
     #[cfg(any(
         test,
         feature = "host-tests",
-        not(all(target_arch = "x86_64", target_os = "none"))
+        not(all(target_arch = "aarch64", target_os = "none"))
     ))]
     {
         dispatch_mock(num, 0, 0, 0)
@@ -119,15 +118,13 @@ pub unsafe fn syscall0(num: u64) -> i64 {
 /// # Safety
 /// The caller must ensure that the given syscall number and argument are valid and memory pointers are dereferenceable.
 pub unsafe fn syscall1(num: u64, a1: u64) -> i64 {
-    #[cfg(all(not(test), target_arch = "x86_64", target_os = "none"))]
+    #[cfg(all(not(test), target_arch = "aarch64", target_os = "none"))]
     {
         let ret: i64;
         core::arch::asm!(
-            "syscall",
-            inlateout("rax") num as i64 => ret,
-            in("rdi") a1,
-            out("rcx") _,
-            out("r11") _,
+            "svc #0",
+            in("x8") num,
+            inlateout("x0") a1 as i64 => ret,
             options(nostack, preserves_flags)
         );
         ret
@@ -135,7 +132,7 @@ pub unsafe fn syscall1(num: u64, a1: u64) -> i64 {
     #[cfg(any(
         test,
         feature = "host-tests",
-        not(all(target_arch = "x86_64", target_os = "none"))
+        not(all(target_arch = "aarch64", target_os = "none"))
     ))]
     {
         dispatch_mock(num, a1, 0, 0)
@@ -147,16 +144,14 @@ pub unsafe fn syscall1(num: u64, a1: u64) -> i64 {
 /// # Safety
 /// The caller must ensure that the arguments conform to the requested system call specification.
 pub unsafe fn syscall2(num: u64, a1: u64, a2: u64) -> i64 {
-    #[cfg(all(not(test), target_arch = "x86_64", target_os = "none"))]
+    #[cfg(all(not(test), target_arch = "aarch64", target_os = "none"))]
     {
         let ret: i64;
         core::arch::asm!(
-            "syscall",
-            inlateout("rax") num as i64 => ret,
-            in("rdi") a1,
-            in("rsi") a2,
-            out("rcx") _,
-            out("r11") _,
+            "svc #0",
+            in("x8") num,
+            inlateout("x0") a1 as i64 => ret,
+            in("x1") a2,
             options(nostack, preserves_flags)
         );
         ret
@@ -164,7 +159,7 @@ pub unsafe fn syscall2(num: u64, a1: u64, a2: u64) -> i64 {
     #[cfg(any(
         test,
         feature = "host-tests",
-        not(all(target_arch = "x86_64", target_os = "none"))
+        not(all(target_arch = "aarch64", target_os = "none"))
     ))]
     {
         dispatch_mock(num, a1, a2, 0)
@@ -176,17 +171,15 @@ pub unsafe fn syscall2(num: u64, a1: u64, a2: u64) -> i64 {
 /// # Safety
 /// The caller must ensure that pointers, sizes, and file descriptors are valid.
 pub unsafe fn syscall3(num: u64, a1: u64, a2: u64, a3: u64) -> i64 {
-    #[cfg(all(not(test), target_arch = "x86_64", target_os = "none"))]
+    #[cfg(all(not(test), target_arch = "aarch64", target_os = "none"))]
     {
         let ret: i64;
         core::arch::asm!(
-            "syscall",
-            inlateout("rax") num as i64 => ret,
-            in("rdi") a1,
-            in("rsi") a2,
-            in("rdx") a3,
-            out("rcx") _,
-            out("r11") _,
+            "svc #0",
+            in("x8") num,
+            inlateout("x0") a1 as i64 => ret,
+            in("x1") a2,
+            in("x2") a3,
             options(nostack, preserves_flags)
         );
         ret
@@ -194,7 +187,7 @@ pub unsafe fn syscall3(num: u64, a1: u64, a2: u64, a3: u64) -> i64 {
     #[cfg(any(
         test,
         feature = "host-tests",
-        not(all(target_arch = "x86_64", target_os = "none"))
+        not(all(target_arch = "aarch64", target_os = "none"))
     ))]
     {
         dispatch_mock(num, a1, a2, a3)

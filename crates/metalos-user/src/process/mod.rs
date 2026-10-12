@@ -121,7 +121,7 @@ mod tests {
         assert_eq!(uts.nodename_str(), "metalos");
         assert_eq!(uts.release_str(), "0.1.0");
         assert!(uts.version_str().contains("metalOS"));
-        assert_eq!(uts.machine_str(), "x86_64");
+        assert_eq!(uts.machine_str(), "aarch64");
     }
 
     #[test]

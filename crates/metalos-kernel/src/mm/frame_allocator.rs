@@ -1,6 +1,6 @@
 use spin::Mutex;
-use x86_64::structures::paging::{FrameAllocator, FrameDeallocator, PhysFrame, Size4KiB};
-use x86_64::PhysAddr;
+use metalos_proto::{MemoryRegion, MemoryRegionKind};
+use crate::mm::paging::{FrameAllocator, FrameDeallocator, PhysAddr, PhysFrame, Size4KiB};
 
 pub const MAX_BITMAP_WORDS: usize = 4096; // 4096 * 64 = 262,144 frames = 1 GiB capacity
 
@@ -107,14 +107,12 @@ impl BitmapFrameAllocator {
         }
     }
 
-    pub fn find_largest_usable_region(
-        regions: &bootloader::info::MemoryRegions,
-    ) -> Option<(u64, usize)> {
+    pub fn find_largest_usable_region(regions: &[MemoryRegion]) -> Option<(u64, usize)> {
         let mut best: Option<(u64, usize)> = None;
         for region in regions.iter() {
-            if region.kind == bootloader::info::MemoryRegionKind::Usable {
+            if region.kind == MemoryRegionKind::Usable {
                 let start = (region.start + 0xFFF) & !0xFFF;
-                let end = region.end & !0xFFF;
+                let end = region.end() & !0xFFF;
                 if end > start {
                     let frames = ((end - start) / 4096) as usize;
                     if best.map_or(true, |(_, best_frames)| frames > best_frames) {
@@ -126,16 +124,12 @@ impl BitmapFrameAllocator {
         best
     }
 
-    pub fn init_from_bootloader_regions(
-        regions: &bootloader::info::MemoryRegions,
-    ) -> Option<Self> {
+    pub fn init_from_regions(regions: &[MemoryRegion]) -> Option<Self> {
         let (start, total_frames) = Self::find_largest_usable_region(regions)?;
         Some(Self::new(start, total_frames))
     }
 
-    pub fn init_global_from_bootloader_regions(
-        regions: &bootloader::info::MemoryRegions,
-    ) -> Option<(u64, usize)> {
+    pub fn init_global_from_regions(regions: &[MemoryRegion]) -> Option<(u64, usize)> {
         let (start, total_frames) = Self::find_largest_usable_region(regions)?;
         FRAME_ALLOCATOR.lock().init_in_place(start, total_frames);
         Some((start, total_frames))

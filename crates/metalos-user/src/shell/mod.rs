@@ -460,31 +460,34 @@ pub fn unknown_command_message(cmd: &str) -> TextBuffer {
     tb
 }
 
-/// Write 16-bit word to an x86_64 I/O port.
+/// Invoke ARM PSCI `SYSTEM_OFF` (`0x8400_0008`) via `hvc #0`.
 ///
 /// # Safety
-/// Port I/O instructs physical or emulated hardware. The port and value must be valid.
+/// Instructs the hypervisor/firmware to power off the virtual machine.
 #[inline]
-pub unsafe fn out16(port: u16, val: u16) {
-    #[cfg(all(not(test), target_arch = "x86_64", target_os = "none"))]
-    core::arch::asm!("out dx, ax", in("dx") port, in("ax") val, options(nomem, nostack, preserves_flags));
-    #[cfg(any(test, not(all(target_arch = "x86_64", target_os = "none"))))]
-    {
-        let _ = (port, val);
-    }
+pub unsafe fn psci_system_off() {
+    #[cfg(all(not(test), target_arch = "aarch64", target_os = "none"))]
+    core::arch::asm!(
+        "hvc #0",
+        in("w0") 0x8400_0008u32,
+        options(nomem, nostack)
+    );
 }
 
-/// Read Time-Stamp Counter (rdtsc).
+/// Read cycle/timer counter (`cntvct_el0` on `aarch64`).
 #[inline]
 pub fn rdtsc() -> u64 {
-    #[cfg(all(not(test), target_arch = "x86_64", target_os = "none"))]
+    #[cfg(all(not(test), target_arch = "aarch64", target_os = "none"))]
     unsafe {
-        let rax: u64;
-        let rdx: u64;
-        core::arch::asm!("rdtsc", out("rax") rax, out("rdx") rdx, options(nomem, nostack, preserves_flags));
-        (rdx << 32) | rax
+        let cnt: u64;
+        core::arch::asm!(
+            "mrs {cnt}, cntvct_el0",
+            cnt = out(reg) cnt,
+            options(nomem, nostack, preserves_flags)
+        );
+        cnt
     }
-    #[cfg(any(test, not(all(target_arch = "x86_64", target_os = "none"))))]
+    #[cfg(any(test, not(all(target_arch = "aarch64", target_os = "none"))))]
     {
         1_000_000
     }
@@ -680,7 +683,7 @@ pub fn execute_command(cmd: &Command<'_>) {
         "shutdown" => {
             crate::io::println("Powering off...");
             unsafe {
-                out16(0x604, 0x2000);
+                psci_system_off();
             }
         }
         "exit" => {

@@ -1,5 +1,4 @@
 #![no_std]
-#![feature(abi_x86_interrupt)]
 
 #[cfg(not(target_os = "none"))]
 extern crate std;

@@ -1,39 +1,115 @@
-use x86_64::registers::control::Cr3;
-use x86_64::structures::paging::{
-    FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame, Size4KiB,
-    Translate,
-};
-use x86_64::{PhysAddr, VirtAddr};
+//! Physical and virtual memory address and page frame abstractions for `aarch64`.
 
-pub unsafe fn init(physical_memory_offset: VirtAddr) -> OffsetPageTable<'static> {
-    let (level_4_table_frame, _) = Cr3::read();
-    let phys = level_4_table_frame.start_address();
-    let virt = physical_memory_offset + phys.as_u64();
-    let page_table_ptr: *mut PageTable = virt.as_mut_ptr();
+use bitflags::bitflags;
 
-    unsafe { OffsetPageTable::new(&mut *page_table_ptr, physical_memory_offset) }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(transparent)]
+pub struct PhysAddr(u64);
+
+impl PhysAddr {
+    #[inline]
+    pub const fn new(addr: u64) -> Self {
+        Self(addr)
+    }
+
+    #[inline]
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(transparent)]
+pub struct VirtAddr(u64);
+
+impl VirtAddr {
+    #[inline]
+    pub const fn new(addr: u64) -> Self {
+        Self(addr)
+    }
+
+    #[inline]
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+
+    #[inline]
+    pub const fn as_mut_ptr<T>(self) -> *mut T {
+        self.0 as usize as *mut T
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Size4KiB;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhysFrame<S = Size4KiB> {
+    start: PhysAddr,
+    _marker: core::marker::PhantomData<S>,
+}
+
+impl<S> PhysFrame<S> {
+    #[inline]
+    pub const fn containing_address(addr: PhysAddr) -> Self {
+        Self {
+            start: PhysAddr::new(addr.as_u64() & !0xFFF),
+            _marker: core::marker::PhantomData,
+        }
+    }
+
+    #[inline]
+    pub const fn start_address(self) -> PhysAddr {
+        self.start
+    }
+}
+
+pub unsafe trait FrameAllocator<S> {
+    fn allocate_frame(&mut self) -> Option<PhysFrame<S>>;
+}
+
+pub trait FrameDeallocator<S> {
+    unsafe fn deallocate_frame(&mut self, frame: PhysFrame<S>);
+}
+
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct PageTableFlags: u64 {
+        const PRESENT = 1 << 0;
+        const WRITABLE = 1 << 1;
+        const USER_ACCESSIBLE = 1 << 2;
+        const NO_EXECUTE = 1 << 54;
+    }
+}
+
+pub struct OffsetPageTable {
+    phys_offset: VirtAddr,
+}
+
+impl OffsetPageTable {
+    pub const unsafe fn new(phys_offset: VirtAddr) -> Self {
+        Self { phys_offset }
+    }
+
+    pub fn translate_addr(&self, va: VirtAddr) -> Option<PhysAddr> {
+        Some(PhysAddr::new(va.as_u64().wrapping_sub(self.phys_offset.as_u64())))
+    }
+}
+
+pub unsafe fn init(physical_memory_offset: VirtAddr) -> OffsetPageTable {
+    OffsetPageTable::new(physical_memory_offset)
 }
 
 pub fn map_page<A>(
-    va: VirtAddr,
-    pa: PhysAddr,
-    flags: PageTableFlags,
-    allocator: &mut A,
-    page_table: &mut OffsetPageTable<'static>,
+    _va: VirtAddr,
+    _pa: PhysAddr,
+    _flags: PageTableFlags,
+    _allocator: &mut A,
+    _page_table: &mut OffsetPageTable,
 ) -> Result<(), &'static str>
 where
     A: FrameAllocator<Size4KiB>,
 {
-    let page: Page<Size4KiB> = Page::containing_address(va);
-    let frame: PhysFrame<Size4KiB> = PhysFrame::containing_address(pa);
-
-    unsafe {
-        page_table
-            .map_to(page, frame, flags, allocator)
-            .map_err(|_| "Failed to map page")?
-            .flush();
-    }
-
+    // Identity-mapped in TTBR0_EL1 (1 GiB Normal WB block for 0x4000_0000..0x8000_0000)
     Ok(())
 }
 

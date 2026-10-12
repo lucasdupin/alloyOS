@@ -142,7 +142,7 @@ impl Vfs {
                 let _ = root_fs.write(
                     ino.ino,
                     0,
-                    b"Welcome to metalOS v0.1.0 (x86_64 POSIX-compliant Rust kernel)\n",
+                    b"Welcome to metalOS v0.1.0 (aarch64 POSIX-compliant Rust kernel)\n",
                 );
             }
         }
@@ -163,7 +163,7 @@ impl Vfs {
             let _ = root_fs.write(ino.ino, 0, b"1.25 1.10\n");
         }
         if let Ok(ino) = root_fs.lookup("/proc/version").or_else(|_| root_fs.create("/proc/version", InodeKind::File)) {
-            let _ = root_fs.write(ino.ino, 0, b"metalOS version 0.1.0 (rustc nightly x86_64)\n");
+            let _ = root_fs.write(ino.ino, 0, b"metalOS version 0.1.0 (rustc nightly aarch64)\n");
         }
 
         Self {

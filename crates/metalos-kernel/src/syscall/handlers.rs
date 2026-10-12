@@ -37,7 +37,7 @@ impl UtsName {
         Self::set_field(&mut uts.nodename, b"metalos");
         Self::set_field(&mut uts.release, b"0.1.0");
         Self::set_field(&mut uts.version, b"#1 nightly");
-        Self::set_field(&mut uts.machine, b"x86_64");
+        Self::set_field(&mut uts.machine, b"aarch64");
 
         uts
     }
@@ -191,7 +191,7 @@ pub fn sys_exit(code: i32) -> ! {
     }
     loop {
         #[cfg(not(test))]
-        x86_64::instructions::hlt();
+        crate::arch::wfi();
         #[cfg(test)]
         panic!("sys_exit called with code {}", code);
     }

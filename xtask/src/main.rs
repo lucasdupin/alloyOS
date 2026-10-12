@@ -17,12 +17,12 @@ struct Cli {
 
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 enum Commands {
-    /// Builds kernel, userland crates, and the bootable BIOS image
+    /// Builds kernel, userland crates, and the bootable AArch64 kernel image
     Build {
         #[arg(long)]
         release: bool,
     },
-    /// Builds then launches metalOS in QEMU
+    /// Builds then launches metalOS in QEMU (aarch64 virt)
     Run {
         #[arg(long)]
         release: bool,
@@ -40,7 +40,7 @@ enum Commands {
     Ci,
 }
 
-/// Harness for controlling and testing a headless QEMU virtual machine.
+/// Harness for controlling and testing a headless QEMU virtual machine (`qemu-system-aarch64`).
 pub struct QemuHarness {
     child: Child,
     stdin: ChildStdin,
@@ -49,13 +49,24 @@ pub struct QemuHarness {
 }
 
 impl QemuHarness {
-    /// Spawns a QEMU instance with stdio connected to serial port.
-    pub fn new(disk_image: &Path, cobalt_image: &Path) -> Result<Self> {
-        let mut child = Command::new("qemu-system-x86_64")
+    /// Spawns a `qemu-system-aarch64` instance on `-M virt` with stdio connected to PL011 UART0.
+    pub fn new(kernel_image: &Path, cobalt_image: &Path) -> Result<Self> {
+        let mut child = Command::new("qemu-system-aarch64")
+            .arg("-M")
+            .arg("virt")
+            .arg("-accel")
+            .arg("hvf")
+            .arg("-cpu")
+            .arg("host")
+            .arg("-kernel")
+            .arg(kernel_image)
             .arg("-drive")
-            .arg(format!("format=raw,file={}", disk_image.display()))
-            .arg("-drive")
-            .arg(format!("format=raw,file={}", cobalt_image.display()))
+            .arg(format!(
+                "file={},if=none,format=raw,id=hd0",
+                cobalt_image.display()
+            ))
+            .arg("-device")
+            .arg("virtio-blk-device,drive=hd0")
             .arg("-serial")
             .arg("stdio")
             .arg("-display")
@@ -67,7 +78,12 @@ impl QemuHarness {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .with_context(|| format!("Failed to spawn qemu-system-x86_64 for image {}", disk_image.display()))?;
+            .with_context(|| {
+                format!(
+                    "Failed to spawn qemu-system-aarch64 for kernel {}",
+                    kernel_image.display()
+                )
+            })?;
 
         let stdin = child
             .stdin
@@ -182,16 +198,16 @@ fn get_disk_image_path(workspace_root: &Path, release: bool) -> PathBuf {
     let profile = if release { "release" } else { "debug" };
     workspace_root
         .join("target")
-        .join("x86_64-unknown-none")
+        .join("aarch64-unknown-none")
         .join(profile)
-        .join("metalos-bios.img")
+        .join("metalos-kernel")
 }
 
 fn get_cobaltfs_image_path(workspace_root: &Path, release: bool) -> PathBuf {
     let profile = if release { "release" } else { "debug" };
     workspace_root
         .join("target")
-        .join("x86_64-unknown-none")
+        .join("aarch64-unknown-none")
         .join(profile)
         .join("cobaltfs.img")
 }
@@ -202,11 +218,17 @@ fn ensure_cobaltfs_image(path: &Path) -> Result<()> {
     if path.exists() {
         return Ok(());
     }
-    println!("[xtask] Formatting new 4 MiB CobaltFS volume at {}...", path.display());
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    println!(
+        "[xtask] Formatting new 4 MiB CobaltFS volume at {}...",
+        path.display()
+    );
 
     let bs = 1024usize;
     let total_blocks = 4096u32; // 4 MiB
-    let inodes_count = 256u32;  // 256 * 128B = 32 KiB = 32 blocks (blocks 5..37)
+    let inodes_count = 256u32; // 256 * 128B = 32 KiB = 32 blocks (blocks 5..37)
     let reserved_blocks = 38u32; // 0:boot, 1:SB, 2:BGD, 3:bmap, 4:imap, 5..37:itable, 37:root dir
     let mut img = vec![0u8; bs * total_blocks as usize];
 
@@ -232,7 +254,7 @@ fn ensure_cobaltfs_image(path: &Path) -> Result<()> {
         w32(sb, 32, total_blocks);
         w32(sb, 40, inodes_count);
         w16(sb, 56, 0xEF53); // COBALTFS_MAGIC
-        w32(sb, 76, 0);      // rev 0
+        w32(sb, 76, 0); // rev 0
     }
 
     // Block Group Descriptor at Block 2 (offset 2048)
@@ -260,10 +282,10 @@ fn ensure_cobaltfs_image(path: &Path) -> Result<()> {
         let root_off = 5120 + 128;
         let ino = &mut img[root_off..root_off + 128];
         w16(ino, 0, 0x4000 | 0o755); // S_IFDIR | 0755
-        w32(ino, 4, bs as u32);      // size_lo = 1024
-        w16(ino, 26, 2);             // links_count = 2
-        w32(ino, 28, 2);             // blocks_512 = 2
-        w32(ino, 40, 37);            // block[0] = 37
+        w32(ino, 4, bs as u32); // size_lo = 1024
+        w16(ino, 26, 2); // links_count = 2
+        w32(ino, 28, 2); // blocks_512 = 2
+        w32(ino, 40, 37); // block[0] = 37
     }
 
     // Root directory data block at Block 37: "." and ".."
@@ -291,7 +313,7 @@ fn ensure_cobaltfs_image(path: &Path) -> Result<()> {
 fn build_crates(release: bool) -> Result<PathBuf> {
     let workspace_root = get_workspace_root()?;
 
-    println!("[xtask] Building kernel crate for x86_64-unknown-none...");
+    println!("[xtask] Building kernel crate for aarch64-unknown-none...");
     let mut kernel_cmd = Command::new("cargo");
     kernel_cmd
         .current_dir(&workspace_root)
@@ -299,11 +321,13 @@ fn build_crates(release: bool) -> Result<PathBuf> {
         .arg("--package")
         .arg("metalos-kernel")
         .arg("--target")
-        .arg("x86_64-unknown-none");
+        .arg("aarch64-unknown-none");
     if release {
         kernel_cmd.arg("--release");
     }
-    let status = kernel_cmd.status().context("Failed to run cargo build for kernel")?;
+    let status = kernel_cmd
+        .status()
+        .context("Failed to run cargo build for kernel")?;
     if !status.success() {
         return Err(anyhow!("Kernel compilation failed with status {}", status));
     }
@@ -318,48 +342,58 @@ fn build_crates(release: bool) -> Result<PathBuf> {
     if release {
         user_cmd.arg("--release");
     }
-    let status = user_cmd.status().context("Failed to run cargo build for user")?;
+    let status = user_cmd
+        .status()
+        .context("Failed to run cargo build for user")?;
     if !status.success() {
         return Err(anyhow!("Userland compilation failed with status {}", status));
     }
 
-    let profile = if release { "release" } else { "debug" };
-    let kernel_bin = workspace_root
-        .join("target")
-        .join("x86_64-unknown-none")
-        .join(profile)
-        .join("metalos-kernel");
-
-    let disk_image = get_disk_image_path(&workspace_root, release);
-
-    if kernel_bin.exists() {
-        println!("[xtask] Generating bootable BIOS disk image: {}", disk_image.display());
-        let bios_boot = bootloader::BiosBoot::new(&kernel_bin);
-        bios_boot.create_disk_image(&disk_image)
-            .context("Failed to create BIOS disk image with bootloader")?;
-        println!("[xtask] Successfully created BIOS disk image!");
-    } else {
-        return Err(anyhow!("Kernel binary does not exist at {}", kernel_bin.display()));
+    let kernel_bin = get_disk_image_path(&workspace_root, release);
+    if !kernel_bin.exists() {
+        return Err(anyhow!(
+            "Kernel binary does not exist at {}",
+            kernel_bin.display()
+        ));
     }
+    println!(
+        "[xtask] Built bootable AArch64 kernel ELF: {}",
+        kernel_bin.display()
+    );
 
     let cobalt_image = get_cobaltfs_image_path(&workspace_root, release);
     ensure_cobaltfs_image(&cobalt_image)?;
 
-    Ok(disk_image)
+    Ok(kernel_bin)
 }
 
 fn run_qemu(release: bool) -> Result<()> {
     let workspace_root = get_workspace_root()?;
-    let disk_image = build_crates(release)?;
+    let kernel_image = build_crates(release)?;
     let cobalt_image = get_cobaltfs_image_path(&workspace_root, release);
     ensure_cobaltfs_image(&cobalt_image)?;
 
-    println!("[xtask] Launching QEMU with image {} (CobaltFS: {})...", disk_image.display(), cobalt_image.display());
-    let status = Command::new("qemu-system-x86_64")
+    println!(
+        "[xtask] Launching qemu-system-aarch64 with kernel {} (CobaltFS: {})...",
+        kernel_image.display(),
+        cobalt_image.display()
+    );
+    let status = Command::new("qemu-system-aarch64")
+        .arg("-M")
+        .arg("virt")
+        .arg("-accel")
+        .arg("hvf")
+        .arg("-cpu")
+        .arg("host")
+        .arg("-kernel")
+        .arg(&kernel_image)
         .arg("-drive")
-        .arg(format!("format=raw,file={}", disk_image.display()))
-        .arg("-drive")
-        .arg(format!("format=raw,file={}", cobalt_image.display()))
+        .arg(format!(
+            "file={},if=none,format=raw,id=hd0",
+            cobalt_image.display()
+        ))
+        .arg("-device")
+        .arg("virtio-blk-device,drive=hd0")
         .arg("-serial")
         .arg("stdio")
         .arg("-display")
@@ -368,7 +402,7 @@ fn run_qemu(release: bool) -> Result<()> {
         .arg("256M")
         .arg("-no-reboot")
         .status()
-        .context("Failed to execute qemu-system-x86_64")?;
+        .context("Failed to execute qemu-system-aarch64")?;
 
     if !status.success() {
         return Err(anyhow!("QEMU exited with error: {:?}", status.code()));
@@ -376,13 +410,17 @@ fn run_qemu(release: bool) -> Result<()> {
     Ok(())
 }
 
-fn run_e2e_tests(disk_image: &Path, _overall_timeout: Duration) -> Result<()> {
+fn run_e2e_tests(kernel_image: &Path, _overall_timeout: Duration) -> Result<()> {
     let workspace_root = get_workspace_root()?;
     let cobalt_image = get_cobaltfs_image_path(&workspace_root, false);
     ensure_cobaltfs_image(&cobalt_image)?;
 
-    println!("[xtask] Starting QEMU E2E test harness for {} (CobaltFS: {})...", disk_image.display(), cobalt_image.display());
-    let mut harness = QemuHarness::new(disk_image, &cobalt_image)?;
+    println!(
+        "[xtask] Starting QEMU AArch64 E2E test harness for {} (CobaltFS: {})...",
+        kernel_image.display(),
+        cobalt_image.display()
+    );
+    let mut harness = QemuHarness::new(kernel_image, &cobalt_image)?;
 
     println!("[xtask] [TEST 1/10] e2e_boot_banner...");
     harness
@@ -392,7 +430,10 @@ fn run_e2e_tests(disk_image: &Path, _overall_timeout: Duration) -> Result<()> {
 
     println!("[xtask] [TEST 2/10] e2e_memory_init...");
     harness
-        .expect_output("[mm] Frame allocator and 4 MiB kernel heap online.", Duration::from_secs(10))
+        .expect_output(
+            "[mm] Frame allocator and 4 MiB kernel heap online.",
+            Duration::from_secs(10),
+        )
         .context("e2e_memory_init failed")?;
     harness
         .expect_output("[CobaltFS]", Duration::from_secs(10))
@@ -411,7 +452,7 @@ fn run_e2e_tests(disk_image: &Path, _overall_timeout: Duration) -> Result<()> {
         .expect_output("metalOS metalos 0.1.0", Duration::from_secs(5))
         .context("e2e_uname failed")?;
     harness
-        .expect_output("x86_64", Duration::from_secs(5))
+        .expect_output("aarch64", Duration::from_secs(5))
         .context("e2e_uname machine failed")?;
     println!("[xtask] [PASS] e2e_uname");
 
@@ -471,8 +512,6 @@ fn run_ci() -> Result<()> {
         .current_dir(&workspace_root)
         .arg("test")
         .arg("--workspace")
-        .arg("--target")
-        .arg("x86_64-apple-darwin")
         .status()
         .context("Failed to run cargo test --workspace")?;
 
@@ -480,9 +519,9 @@ fn run_ci() -> Result<()> {
         return Err(anyhow!("cargo test --workspace failed"));
     }
 
-    println!("[xtask] Step 2: Building metalOS and executing E2E tests...");
-    let disk_image = build_crates(false)?;
-    run_e2e_tests(&disk_image, Duration::from_secs(60))?;
+    println!("[xtask] Step 2: Building metalOS (aarch64) and executing E2E tests...");
+    let kernel_image = build_crates(false)?;
+    run_e2e_tests(&kernel_image, Duration::from_secs(60))?;
     Ok(())
 }
 
@@ -491,7 +530,7 @@ fn main() -> Result<()> {
     match cli.command {
         Commands::Build { release } => {
             let image = build_crates(release)?;
-            println!("[xtask] Image built: {}", image.display());
+            println!("[xtask] Kernel built: {}", image.display());
             Ok(())
         }
         Commands::Run { release } => run_qemu(release),
@@ -567,12 +606,12 @@ mod tests {
         let debug_img = get_disk_image_path(root, false);
         assert_eq!(
             debug_img,
-            Path::new("/tmp/test_ws/target/x86_64-unknown-none/debug/metalos-bios.img")
+            Path::new("/tmp/test_ws/target/aarch64-unknown-none/debug/metalos-kernel")
         );
         let release_img = get_disk_image_path(root, true);
         assert_eq!(
             release_img,
-            Path::new("/tmp/test_ws/target/x86_64-unknown-none/release/metalos-bios.img")
+            Path::new("/tmp/test_ws/target/aarch64-unknown-none/release/metalos-kernel")
         );
     }
 }

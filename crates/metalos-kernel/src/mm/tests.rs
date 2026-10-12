@@ -1,9 +1,9 @@
 #[cfg(any(test, feature = "host-tests"))]
 pub mod tests {
     use crate::mm::frame_allocator::BitmapFrameAllocator;
+    use crate::mm::paging::FrameAllocator;
     use core::alloc::{GlobalAlloc, Layout};
     use linked_list_allocator::LockedHeap;
-    use x86_64::structures::paging::FrameAllocator;
 
     #[test]
     fn bitmap_alloc_first_frame() {

@@ -1,0 +1,11 @@
+[package]
+name = "metalos-mcp"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "metalos_mcp"
+path = "src/lib.rs"
+
+[dependencies]
+metalos-proto = { path = "../metalos-proto" }

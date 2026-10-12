@@ -209,3 +209,78 @@ fn rejects_bad_credentials_and_impossible_usage_counts() {
         Err(ForgeError::GenerationFailed)
     );
 }
+
+struct DelayedHttp {
+    polls: usize,
+    status: u16,
+    starts: Arc<Mutex<usize>>,
+}
+impl HttpsClient for DelayedHttp {
+    fn post(&mut self, _: &HttpRequest) -> Result<HttpResponse, ForgeError> {
+        panic!("cooperative calls must never use blocking post")
+    }
+    fn start_post(&mut self, _: &HttpRequest) -> std::task::Poll<Result<HttpResponse, ForgeError>> {
+        *self.starts.lock().unwrap() += 1;
+        std::task::Poll::Pending
+    }
+    fn poll_post(&mut self) -> std::task::Poll<Result<HttpResponse, ForgeError>> {
+        self.polls += 1;
+        if self.polls < 120 {
+            return std::task::Poll::Pending;
+        }
+        std::task::Poll::Ready(Ok(HttpResponse {
+            status: self.status,
+            body: reply(ApiProvider::OpenAi).to_string(),
+        }))
+    }
+}
+
+#[test]
+fn delayed_cloud_jobs_yield_without_resending_and_release_on_success_or_failure() {
+    use std::task::Poll;
+    for status in [200, 429] {
+        let starts = Arc::new(Mutex::new(0));
+        let mut forge = Forge::new(0);
+        forge
+            .connect_api(
+                ApiProvider::OpenAi,
+                ApiProvider::OpenAi.default_model(),
+                "fixture",
+                Box::new(DelayedHttp {
+                    polls: 0,
+                    status,
+                    starts: starts.clone(),
+                }),
+            )
+            .unwrap();
+        let request = GenerationRequest {
+            model: Some(ApiProvider::OpenAi.default_model().into()),
+            prompt: "Hello".into(),
+            max_tokens: 32,
+        };
+        let job = forge.start_generation(&request).unwrap();
+        assert!(matches!(
+            forge.start_generation(&request),
+            Err(ForgeError::Busy)
+        ));
+        assert!(matches!(
+            forge.poll_generation(job + 1),
+            Poll::Ready(Err(ForgeError::InvalidRequest))
+        ));
+        assert!(forge.has_pending_generation());
+        for _ in 0..119 {
+            assert!(forge.poll_generation(job).is_pending());
+        }
+        let Poll::Ready(result) = forge.poll_generation(job) else {
+            panic!("reply missing");
+        };
+        if status == 200 {
+            assert_eq!(result.unwrap().text, "Hello 東京");
+        } else {
+            assert!(matches!(result, Err(ForgeError::RateLimited)));
+        }
+        assert!(!forge.has_pending_generation());
+        assert_eq!(*starts.lock().unwrap(), 1);
+        assert!(forge.start_generation(&request).is_ok());
+    }
+}

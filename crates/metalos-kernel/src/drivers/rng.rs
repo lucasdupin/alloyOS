@@ -173,10 +173,20 @@ pub fn monotonic_time_ns() -> u64 {
     unsafe {
         let cnt: u64;
         let freq: u64;
-        core::arch::asm!("mrs {}, cntpct_el0", out(reg) cnt, options(nomem, nostack, preserves_flags));
-        core::arch::asm!("mrs {}, cntfrq_el0", out(reg) freq, options(nomem, nostack, preserves_flags));
-        let f = if freq == 0 { 62_500_000 } else { freq };
-        ((cnt as u128 * 1_000_000_000u128) / (f as u128)) as u64
+        // Guest virtual time avoids a physical-counter VM exit under HVF.
+        core::arch::asm!("mrs {}, cntvct_el0", out(reg) cnt, options(nomem, nostack, preserves_flags));
+        static FREQUENCY: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+        let cached = FREQUENCY.load(core::sync::atomic::Ordering::Relaxed);
+        let f = if cached == 0 {
+            core::arch::asm!("mrs {}, cntfrq_el0", out(reg) freq, options(nomem, nostack, preserves_flags));
+            let f = if freq == 0 { 62_500_000 } else { freq };
+            FREQUENCY.store(f, core::sync::atomic::Ordering::Relaxed);
+            f
+        } else { cached };
+        let remainder = cnt % f;
+        let nanos = remainder.checked_mul(1_000_000_000).map(|n| n / f)
+            .unwrap_or_else(|| ((remainder as u128 * 1_000_000_000u128) / f as u128) as u64);
+        (cnt / f).saturating_mul(1_000_000_000).saturating_add(nanos)
     }
 
     #[cfg(not(all(target_arch = "aarch64", target_os = "none")))]

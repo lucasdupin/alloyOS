@@ -253,6 +253,31 @@ impl TensorView<'_> {
             .map(|i| self.value(row * self.shape[0] + i))
             .collect()
     }
+    pub fn dot_range(&self, row: usize, x: &[f32], start: usize, end: usize) -> f32 {
+        assert!(start <= end && end <= x.len() && x.len() == self.shape[0] && row < self.shape[1]);
+        #[cfg(target_arch = "aarch64")]
+        if self.encoding == 0 {
+            // Unaligned NEON loads are valid; ranges are checked above.
+            unsafe {
+                use core::arch::aarch64::*;
+                let mut sum = vdupq_n_f32(0.0);
+                let mut i = start;
+                while i + 4 <= end {
+                    let weights = self.data.as_ptr().add((row * x.len() + i) * 4) as *const f32;
+                    sum = vfmaq_f32(sum, vld1q_f32(weights), vld1q_f32(x.as_ptr().add(i)));
+                    i += 4;
+                }
+                let mut result = vaddvq_f32(sum);
+                for i in i..end {
+                    result += self.value(row * x.len() + i) * x[i];
+                }
+                return result;
+            }
+        }
+        (start..end)
+            .map(|i| self.value(row * x.len() + i) * x[i])
+            .sum()
+    }
     pub fn matvec(&self, x: &[f32]) -> Vec<f32> {
         (0..self.shape[1])
             .map(|row| {

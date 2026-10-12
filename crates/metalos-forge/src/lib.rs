@@ -1,4 +1,5 @@
 #![no_std]
+#![feature(coroutines, coroutine_trait, stmt_expr_attributes)]
 extern crate alloc;
 use alloc::{
     boxed::Box,
@@ -6,7 +7,7 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-use core::fmt;
+use core::{fmt, task::Poll};
 
 pub const DEFAULT_MODEL: &str = "gemma-2-2b-it";
 pub const MAX_PROMPT_BYTES: usize = 8192;
@@ -26,6 +27,7 @@ pub enum ForgeError {
     HttpStatus(u16),
     TransportUnavailable,
     InvalidResponse,
+    Busy,
 }
 impl ForgeError {
     pub const fn code(&self) -> &'static str {
@@ -41,12 +43,17 @@ impl ForgeError {
             Self::HttpStatus(_) => "http_error",
             Self::TransportUnavailable => "https_transport_unavailable",
             Self::InvalidResponse => "invalid_api_response",
+            Self::Busy => "inference_busy",
         }
     }
 }
 impl fmt::Display for ForgeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Self::HttpStatus(status) = self { write!(f, "http_error_{status}") } else { f.write_str(self.code()) }
+        if let Self::HttpStatus(status) = self {
+            write!(f, "http_error_{status}")
+        } else {
+            f.write_str(self.code())
+        }
     }
 }
 
@@ -78,8 +85,21 @@ pub struct Generation {
 
 /// Forge owns every backend: resident local weights or an explicit cloud transport.
 pub trait InferenceBackend: Send {
+    fn partial_text(&self) -> Option<&str> {
+        None
+    }
     fn resident_bytes(&self) -> u64;
     fn generate(&mut self, request: &GenerationRequest) -> Result<Generation, ForgeError>;
+    /// Cooperative backends override these methods; legacy CPU backends complete inline.
+    fn start_generation(
+        &mut self,
+        request: &GenerationRequest,
+    ) -> Result<Option<Generation>, ForgeError> {
+        self.generate(request).map(Some)
+    }
+    fn poll_generation(&mut self) -> Poll<Result<Generation, ForgeError>> {
+        Poll::Ready(Err(ForgeError::InvalidRequest))
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelStatus {
@@ -132,6 +152,16 @@ pub trait CloudTransport: Send {
         model: &CloudModel,
         request: &GenerationRequest,
     ) -> Result<Generation, ForgeError>;
+    fn start_generation(
+        &mut self,
+        model: &CloudModel,
+        request: &GenerationRequest,
+    ) -> Result<Option<Generation>, ForgeError> {
+        self.generate(model, request).map(Some)
+    }
+    fn poll_generation(&mut self) -> Poll<Result<Generation, ForgeError>> {
+        Poll::Ready(Err(ForgeError::InvalidRequest))
+    }
 }
 struct CloudBackend {
     model: CloudModel,
@@ -144,6 +174,15 @@ impl InferenceBackend for CloudBackend {
     fn generate(&mut self, request: &GenerationRequest) -> Result<Generation, ForgeError> {
         self.transport.generate(&self.model, request)
     }
+    fn start_generation(
+        &mut self,
+        request: &GenerationRequest,
+    ) -> Result<Option<Generation>, ForgeError> {
+        self.transport.start_generation(&self.model, request)
+    }
+    fn poll_generation(&mut self) -> Poll<Result<Generation, ForgeError>> {
+        self.transport.poll_generation()
+    }
 }
 struct Model {
     source: ModelSource,
@@ -151,12 +190,21 @@ struct Model {
     error: Option<&'static str>,
     backend: Option<Box<dyn InferenceBackend>>,
 }
+struct PendingGeneration {
+    id: u64,
+    model: String,
+    max_tokens: u32,
+    immediate: Option<Generation>,
+}
+
 /// Long-lived service; registrations and loaded weights survive individual requests.
 pub struct Forge {
     models: BTreeMap<String, Model>,
     default_model: String,
     budget: u64,
     resident: u64,
+    next_job: u64,
+    pending: Option<PendingGeneration>,
 }
 impl Forge {
     pub fn new(memory_budget: u64) -> Self {
@@ -165,6 +213,8 @@ impl Forge {
             default_model: DEFAULT_MODEL.to_string(),
             budget: memory_budget,
             resident: 0,
+            next_job: 0,
+            pending: None,
         };
         service
             .register(DEFAULT_MODEL)
@@ -194,7 +244,12 @@ impl Forge {
     }
     /// Register a cloud model without pretending that a real transport is ready.
     pub fn register_cloud(&mut self, model: &CloudModel) -> Result<(), ForgeError> {
-        CloudModel::new(&model.id, &model.provider, &model.remote_model, &model.credential_reference)?;
+        CloudModel::new(
+            &model.id,
+            &model.provider,
+            &model.remote_model,
+            &model.credential_reference,
+        )?;
         self.register(&model.id)?;
         let entry = self
             .models
@@ -284,7 +339,109 @@ impl Forge {
             .error = Some(error.code());
         Ok(())
     }
+    pub fn transform_backends(&mut self, mut wrap: impl FnMut(&str, Box<dyn InferenceBackend>) -> Box<dyn InferenceBackend>) {
+        for (id, model) in &mut self.models {
+            if let Some(backend) = model.backend.take() { model.backend = Some(wrap(id, backend)); }
+        }
+    }
+    pub fn partial_text(&self, id: u64) -> Option<&str> {
+        let job = self.pending.as_ref().filter(|job| job.id == id)?;
+        self.models
+            .get(&job.model)?
+            .backend
+            .as_ref()?
+            .partial_text()
+    }
+
+    pub fn pending_uses_transport(&self) -> bool {
+        self.pending
+            .as_ref()
+            .and_then(|job| self.models.get(&job.model))
+            .is_some_and(|model| matches!(model.source, ModelSource::Cloud { .. }))
+    }
+
+    pub fn has_pending_generation(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// Start once, then release the service borrow between bounded polls.
+    pub fn start_generation(&mut self, request: &GenerationRequest) -> Result<u64, ForgeError> {
+        if self.pending.is_some() {
+            return Err(ForgeError::Busy);
+        }
+        request.validate()?;
+        let id = self
+            .next_job
+            .checked_add(1)
+            .ok_or(ForgeError::InvalidRequest)?;
+        let model_id = request
+            .model
+            .as_deref()
+            .unwrap_or(&self.default_model)
+            .to_string();
+        let model = self
+            .models
+            .get_mut(&model_id)
+            .ok_or(ForgeError::UnknownModel)?;
+        let backend = model
+            .backend
+            .as_mut()
+            .ok_or(if model.state == "backend_unavailable" {
+                ForgeError::BackendUnavailable
+            } else {
+                ForgeError::WeightsMissing
+            })?;
+        let immediate = backend.start_generation(request)?;
+        self.next_job = id;
+        self.pending = Some(PendingGeneration {
+            id,
+            model: model_id,
+            max_tokens: request.max_tokens,
+            immediate,
+        });
+        Ok(id)
+    }
+    pub fn poll_generation(&mut self, id: u64) -> Poll<Result<Generation, ForgeError>> {
+        let Some(job) = self.pending.as_mut() else {
+            return Poll::Ready(Err(ForgeError::InvalidRequest));
+        };
+        if job.id != id {
+            return Poll::Ready(Err(ForgeError::InvalidRequest));
+        }
+        let result = if let Some(output) = job.immediate.take() {
+            Poll::Ready(Ok(output))
+        } else {
+            match self
+                .models
+                .get_mut(&job.model)
+                .and_then(|m| m.backend.as_mut())
+            {
+                Some(backend) => backend.poll_generation(),
+                None => Poll::Ready(Err(ForgeError::BackendUnavailable)),
+            }
+        };
+        match result {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(result) => {
+                let job = self.pending.take().expect("pending job");
+                Poll::Ready(result.and_then(|output| {
+                    if output.model != job.model
+                        || output.generated_tokens > job.max_tokens
+                        || output.text.len() > MAX_FRAME_BYTES / 2
+                    {
+                        Err(ForgeError::GenerationFailed)
+                    } else {
+                        Ok(output)
+                    }
+                }))
+            }
+        }
+    }
+
     pub fn generate(&mut self, request: &GenerationRequest) -> Result<Generation, ForgeError> {
+        if self.pending.is_some() {
+            return Err(ForgeError::Busy);
+        }
         request.validate()?;
         let id = request.model.as_deref().unwrap_or(&self.default_model);
         let model = self.models.get_mut(id).ok_or(ForgeError::UnknownModel)?;
@@ -313,10 +470,10 @@ pub mod protocol;
 pub mod tokenizer;
 pub use gemma2::Gemma2;
 
+pub mod gateway;
+pub mod policy;
 pub mod provider;
 pub mod providers;
-pub mod policy;
-pub mod gateway;
 pub use gateway::{ActiveProvider, ModelGateway};
 
 #[cfg(test)]

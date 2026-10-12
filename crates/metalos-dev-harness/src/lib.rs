@@ -1,6 +1,7 @@
 //! The development harness's bounded, loopback-only development endpoint and guest serial transport.
 pub mod credentials;
 pub mod https;
+pub mod model_loader;
 use serde::Deserialize;
 use std::{
     io::{BufRead, BufReader, Read, Write},

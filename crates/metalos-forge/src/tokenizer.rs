@@ -39,6 +39,37 @@ impl Tokenizer {
                 .collect::<Result<Vec<_>, _>>()?,
             _ => return Err(LoadError::MissingMetadata),
         };
+        Self::from_parts(g, tokens, scores)
+    }
+    /// Move the large vocabulary out of GGUF metadata instead of cloning and
+    /// freeing hundreds of thousands of strings during boot.
+    pub fn load_owned(g: &mut Gguf) -> Result<Self, LoadError> {
+        if g.text("tokenizer.ggml.model")? != "llama" {
+            return Err(LoadError::InvalidFormat);
+        }
+        let tokens = match g.metadata.remove("tokenizer.ggml.tokens") {
+            Some(Value::Array(values)) => values
+                .into_iter()
+                .map(|value| match value {
+                    Value::Text(text) => Ok(text),
+                    _ => Err(LoadError::InvalidFormat),
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            _ => return Err(LoadError::MissingMetadata),
+        };
+        let scores = match g.metadata.remove("tokenizer.ggml.scores") {
+            Some(Value::Array(values)) => values
+                .into_iter()
+                .map(|value| match value {
+                    Value::Float(score) => Ok(score as f32),
+                    _ => Err(LoadError::InvalidFormat),
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            _ => return Err(LoadError::MissingMetadata),
+        };
+        Self::from_parts(g, tokens, scores)
+    }
+    fn from_parts(g: &Gguf, tokens: Vec<String>, scores: Vec<f32>) -> Result<Self, LoadError> {
         if tokens.len() != scores.len() || tokens.is_empty() || scores.iter().any(|s| s.is_nan()) {
             return Err(LoadError::InvalidFormat);
         }

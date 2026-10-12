@@ -1,7 +1,7 @@
+use crate::sync::IrqMutex as Mutex;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
-use spin::Mutex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskState {
@@ -19,6 +19,7 @@ pub fn allocate_pid() -> u64 {
 
 pub struct Task {
     pub pid: u64,
+    pub kernel_context: bool,
     pub parent_pid: Option<u64>,
     pub state: Mutex<TaskState>,
     pub kernel_stack: Vec<u8>,
@@ -30,11 +31,13 @@ impl Task {
     pub const DEFAULT_STACK_SIZE: usize = 16 * 1024; // 16 KiB
 
     pub fn new(pid: u64, parent_pid: Option<u64>) -> Self {
+        NEXT_PID.fetch_max(pid.saturating_add(1), Ordering::Relaxed);
         let stack = vec![0u8; Self::DEFAULT_STACK_SIZE];
         let stack_top = stack.as_ptr() as u64 + Self::DEFAULT_STACK_SIZE as u64;
 
         Self {
             pid,
+            kernel_context: false,
             parent_pid,
             state: Mutex::new(TaskState::Ready),
             kernel_stack: stack,
@@ -43,6 +46,21 @@ impl Task {
         }
     }
 
+    pub fn kernel_thread(pid: u64, entry: extern "C" fn() -> !) -> Self {
+        let mut task = Self::new(pid, Some(1));
+        task.kernel_stack = vec![0u8; 256 * 1024];
+        let top = (task.kernel_stack.as_ptr() as usize + task.kernel_stack.len()) & !15;
+        let address = top - crate::arch::idt::IRQ_FRAME_SIZE;
+        unsafe {
+            core::ptr::write_bytes(address as *mut u8, 0, crate::arch::idt::IRQ_FRAME_SIZE);
+            let frame = address as *mut crate::arch::idt::TrapFrame;
+            (*frame).elr = entry as usize as u64;
+            (*frame).spsr = 0x345; // EL1h, IRQ enabled, other exception masks retained.
+        }
+        *task.stack_pointer.lock() = address as u64;
+        task.kernel_context = true;
+        task
+    }
     pub fn new_with_auto_pid(parent_pid: Option<u64>) -> Self {
         Self::new(allocate_pid(), parent_pid)
     }

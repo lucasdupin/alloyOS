@@ -2,7 +2,7 @@
 
 Forge is MetalOS's resident, local, multi-model inference service. Gemma 2 2B IT
 is the initial default. Loading a backend retains its borrowed weights in guest
-RAM; requests allocate bounded, independent KV caches. No network or canned
+RAM; requests allocate bounded, independent KV caches. Cloud providers are explicit alternatives to local inference; no canned
 fallback exists. Other architectures implement `InferenceBackend` and register
 under independent model IDs.
 
@@ -13,8 +13,12 @@ GGUF-converted normalization weights already include Gemma's unit offset.
 Quantized tensor formats fail with `UnsupportedEncoding` rather than silently
 producing incorrect results. Greedy decoding is deterministic. Context is capped
 at 512 total prompt and output tokens to bound the initial guest heap footprint.
-This scalar reference backend favors correctness and portability, not throughput;
-2B generation in emulated QEMU may be very slow and is synchronous today.
+The CPU backend batches prompt projections and uses ARM NEON for F32 dot products.
+Generation runs in a timer-preempted Forge kernel task, with its own stack and
+saved integer/SIMD context. Ferrofluid submits bounded messages and reads streamed
+replies; inference has no per-frame time budget. Both tasks still share the kernel
+address space. Private user-process address spaces remain future work.
+2B generation under emulated QEMU may still be slow.
 
 ```
 MetalOS.forge("Explain this status", {model: "gemma-2-2b-it", max_tokens: 64});
@@ -81,8 +85,9 @@ Forge constructs the request and parses provider JSON. A bounded UART capability
 relays HTTPS through the host's `curl`, using its certificate verification and
 fixed provider destinations. The host handles no model routing or tool execution.
 There are no redirects, insecure TLS mode, automatic retries, or credential logs.
-Welder receives generated text or sanitized errors. Calls are synchronous and
-non-streaming; the UI waits for a complete response. API charges are separate
+Welder receives generated text or sanitized errors. Cloud requests run cooperatively with bounded transport work per frame, so
+input and rendering continue while waiting. Replies are non-streaming. Local
+Gemma inference remains synchronous. API charges are separate
 from consumer subscriptions.
 
 This QEMU bridge is required today because guest-native authenticated TLS is
@@ -93,3 +98,9 @@ explicit provider selection, and the HTTPS relay; they do not verify account acc
 API contracts: [Claude Messages](https://platform.claude.com/docs/en/api/messages/create),
 [Gemini GenerateContent](https://ai.google.dev/api/generate-content),
 [OpenAI Responses](https://developers.openai.com/api/docs/guides/text).
+
+
+Model boot uses a read-only VirtIO disk. The boot logotype is presented before
+any weight reads; the boot UI stays active while polled 16 MiB DMA transfers
+load reserved RAM. The UI transitions to the workspace when initialization
+finishes. No whole-image QEMU ROM preload or temporary copy is needed.

@@ -35,7 +35,9 @@ redirected output emits a progress line every ten seconds.
 Outputs live under ignored `.local/models/gemma-2-2b-it/`:
 
 - `2b_it_v2.gguf`: verified weights.
-- `model.img`: read-only boot model image, loaded into guest RAM by Welder.
+- `model.img`: a read-only VirtIO model disk. The kernel displays the boot
+  screen first, then loads weights directly into reserved guest RAM in polled
+  16 MiB transfers. QEMU does not preload weights or make temporary image copies.
 - `manifest.json`: public provenance and integrity metadata, no credentials.
 
 After downloading, launch the UI with the model attached:
@@ -88,3 +90,38 @@ python3 scripts/check_cloud_qemu.py --kernel target/aarch64-unknown-none/debug/m
 
 This loads fixture credentials through fw_cfg and exercises all three provider
 requests and responses over the real UART path. It does not validate API accounts.
+
+A synthetic fixture larger than 2 GiB always exercises QEMU loading in
+`xtask ci`, without downloading weights. The full-size QEMU loader regression runs automatically in `xtask ci` (including
+the pre-push hook) when the local model image exists. It checks actual guest RAM
+at the header, sampled boundaries, and the end of the image, and requires the
+boot screen to appear within five seconds before model loading starts. Without
+the asset, CI prints an explicit skip and does not download weights.
+
+Run it directly with:
+
+```sh
+cargo test -p metalos-dev-harness --test qemu_model_loader -- --ignored full_model_loads_into_qemu_at_contiguous_addresses
+```
+
+Set `METALOS_TEST_MODEL_IMAGE` to test a different packaged image larger than
+2 GiB. An explicitly configured missing image fails CI. Build a Forge-enabled
+kernel before running the test directly:
+
+```sh
+cargo build -p metalos-kernel --target aarch64-unknown-none --features forge
+```
+
+Use `METALOS_TEST_KERNEL` to select another Forge-enabled kernel. The test needs
+QEMU and 16 GiB guest RAM. It performs disk-to-RAM loading after splash without
+duplicating the model on disk.
+
+To check actual Gemma chat responsiveness and the first streamed reply through the
+keyboard UI, run (requires the full model image and macOS HVF):
+
+```sh
+python3 scripts/check_local_chat_qemu.py --kernel target/aarch64-unknown-none/release/metalos-kernel --model-image .local/models/gemma-2-2b-it/model.img
+```
+
+The test verifies continued rendering and keyboard input while Forge's independent
+kernel task executes inference, then waits for the first text in Welder's chat.

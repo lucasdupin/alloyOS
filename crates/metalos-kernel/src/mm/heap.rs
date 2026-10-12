@@ -10,7 +10,6 @@ pub const HEAP_SIZE: usize = 64 * 1024 * 1024;
 pub const HEAP_SIZE: usize = 256 * 1024 * 1024;
 
 #[cfg(target_os = "none")]
-#[global_allocator]
 pub static ALLOCATOR: LockedHeap = LockedHeap::empty();
 
 pub fn init_heap(
@@ -36,4 +35,22 @@ pub fn init_heap(
     }
 
     Ok(())
+}
+
+
+#[cfg(target_os = "none")]
+struct PreemptionSafeAllocator;
+#[cfg(target_os = "none")]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: PreemptionSafeAllocator = PreemptionSafeAllocator;
+#[cfg(target_os = "none")]
+unsafe impl core::alloc::GlobalAlloc for PreemptionSafeAllocator {
+    unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
+        let _interrupts = crate::sync::InterruptGuard::new();
+        core::alloc::GlobalAlloc::alloc(&ALLOCATOR, layout)
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: core::alloc::Layout) {
+        let _interrupts = crate::sync::InterruptGuard::new();
+        core::alloc::GlobalAlloc::dealloc(&ALLOCATOR, ptr, layout)
+    }
 }

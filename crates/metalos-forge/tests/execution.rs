@@ -78,7 +78,12 @@ fn fixture(scale: f32) -> Vec<u8> {
     tensors.push(("token_embd.weight".into(), vec![2, vocab], embedding));
     tensors.push(("output_norm.weight".into(), vec![2], vec![1., 1.]));
     for l in 0..2 {
-        for name in ["attn_norm", "attn_post_norm", "ffn_norm", "ffn_post_norm"] {
+        for name in [
+            "attn_norm",
+            "post_attention_norm",
+            "ffn_norm",
+            "post_ffw_norm",
+        ] {
             tensors.push((format!("blk.{l}.{name}.weight"), vec![2], vec![1., 1.]));
         }
         for name in [
@@ -239,5 +244,46 @@ fn load_diagnostics_are_machine_readable_and_clear_on_attach() {
             .unwrap()
             .error,
         None
+    );
+}
+
+#[test]
+fn local_chat_starts_without_computing_and_yields_through_prefill_and_streaming() {
+    use core::task::Poll;
+    use metalos_forge::InferenceBackend;
+    let weights = Box::leak(fixture(2.).into_boxed_slice());
+    let request = GenerationRequest {
+        model: Some("fixture".into()),
+        prompt: "a".into(),
+        max_tokens: 3,
+    };
+    let mut blocking = Gemma2::load("fixture", weights).unwrap();
+    let expected = blocking.generate(&request).unwrap();
+    let mut cooperative = Gemma2::load("fixture", weights).unwrap();
+    assert!(cooperative.start_generation(&request).unwrap().is_none());
+    assert!(matches!(
+        cooperative.start_generation(&request),
+        Err(ForgeError::Busy)
+    ));
+    let mut ticks = 0;
+    let mut saw_partial = false;
+    loop {
+        match cooperative.poll_generation() {
+            Poll::Pending => {
+                ticks += 1;
+                saw_partial |= cooperative.partial_text().is_some();
+                // Other UI work has a chance to run after every bounded poll.
+                assert!(ticks < 1000, "local reply never completed");
+            }
+            Poll::Ready(result) => {
+                assert_eq!(result.unwrap(), expected);
+                break;
+            }
+        }
+    }
+    assert!(ticks > 0, "reply never yielded its streamed text");
+    assert!(
+        saw_partial,
+        "text stayed hidden until the entire reply completed"
     );
 }

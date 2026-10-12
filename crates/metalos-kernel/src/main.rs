@@ -134,7 +134,7 @@ pub extern "C" fn aarch64_kernel_entry() -> ! {
     // 6. Present the static logotype using Ferrofluid's own font and display scale.
     let _ = drivers::virtio_gpu::init();
     drivers::virtio_input::init();
-    let mut system_ui = if drivers::virtio_gpu::has_hardware_display() {
+    let system_ui = if drivers::virtio_gpu::has_hardware_display() {
         let mut ui = drivers::system_ui::create();
         ui.set_booting(true);
         ui.render(core::time::Duration::ZERO);
@@ -144,6 +144,8 @@ pub extern "C" fn aarch64_kernel_entry() -> ! {
     } else {
         None
     };
+    #[cfg(any(not(feature = "forge"), feature = "debug-shell"))]
+    let mut system_ui = system_ui;
     serial_println!("[splash] Static metalOS logotype visible.");
 
     // 7. Init VFS (probes VirtIO-Blk for CobaltFS volume, falls back to RamFS)
@@ -161,7 +163,7 @@ pub extern "C" fn aarch64_kernel_entry() -> ! {
         drop(system_ui.take());
         serial_println!("[ferrofluidd] System UI disabled (serial debug shell).");
     }
-    #[cfg(not(feature = "debug-shell"))]
+    #[cfg(all(not(feature = "debug-shell"), not(feature = "forge")))]
     if let Some(ui) = system_ui.as_mut() {
         ui.set_booting(false);
         ui.render(core::time::Duration::ZERO);
@@ -218,6 +220,12 @@ pub extern "C" fn aarch64_kernel_entry() -> ! {
 
     // 13. Init scheduler, spawn init task
     task::init();
+    #[cfg(any(not(feature = "debug-shell"), feature = "forge"))]
+    {
+        task::scheduler::spawn_kernel(2, drivers::forge_worker::run);
+        task::scheduler::start_preemption();
+        serial_println!("[scheduler] Timer-preempted UI and Forge tasks online.");
+    }
 
     // 14. Ferrofluid owns the Slint System UI and its execution context.
     #[cfg(not(feature = "debug-shell"))]

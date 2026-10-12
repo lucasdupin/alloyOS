@@ -3,7 +3,7 @@
 use core::fmt;
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 use core::ptr::{read_volatile, write_volatile};
-use spin::Mutex;
+use crate::sync::IrqMutex as Mutex;
 
 /// Base MMIO address of UART0 (PL011) on QEMU `virt`.
 pub const PL011_BASE: usize = 0x0900_0000;
@@ -63,6 +63,22 @@ impl Pl011Uart {
             let _ = self.base;
             let _ = byte;
         }
+    }
+
+    /// Enqueue a byte only when the UART FIFO has space; never wait on the UI path.
+    pub fn try_send(&mut self, byte: u8) -> bool {
+        #[cfg(all(target_arch = "aarch64", target_os = "none"))]
+        unsafe {
+            if read_volatile((self.base + UARTFR) as *const u32) & FR_TXFF != 0 {
+                return false;
+            }
+            write_volatile((self.base + UARTDR) as *mut u32, byte as u32);
+        }
+        #[cfg(not(all(target_arch = "aarch64", target_os = "none")))]
+        {
+            let _ = (self.base, byte);
+        }
+        true
     }
 
     pub fn try_receive(&mut self) -> Option<u8> {

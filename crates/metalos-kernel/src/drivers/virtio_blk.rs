@@ -184,6 +184,12 @@ impl VirtIoBlk {
             return None;
         }
 
+        // Read-only model disks belong to Forge, never to the writable root FS.
+        Self::write_reg(base, 0x014, 0);
+        if Self::read_reg(base, REG_DEVICE_FEATURES) & (1 << 5) != 0 {
+            return None;
+        }
+
         // 1. Reset device
         Self::write_reg(base, REG_STATUS, 0);
 

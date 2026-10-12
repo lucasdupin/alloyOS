@@ -71,6 +71,7 @@ def main():
                         reply = {'status': 'completed', 'output': [{'type': 'message', 'role': 'assistant', 'content': [{'type': 'output_text', 'text': 'Cloud fixture 東京'}]}], 'usage': {'output_tokens': 4}}
                     else:
                         raise RuntimeError('Unexpected HTTPS destination')
+                    time.sleep(1)  # Simulate a slow provider while the guest renders.
                     envelope = json.dumps({'status': 200, 'body': json.dumps(reply, ensure_ascii=False)}, ensure_ascii=False)
                     send(f'FORGEHTTP1\t{fields[1]}\tok\t{envelope.encode().hex()}\n')
                     relays += 1
@@ -99,6 +100,11 @@ def main():
                 send(f'FORGE1\t{identifier}\tgenerate\t{model}\t32\t{"Hello 東京".encode().hex()}\n')
                 text, relays = response(identifier)
                 assert text == 'Cloud fixture 東京' and relays == 1
+                send(f'FORGE1\t{identifier + 100}\tstatus\n')
+                updated, _ = response(identifier + 100)
+                updated = json.loads(updated)
+                assert updated['ui_frames'] - status['ui_frames'] > 20, 'UI stopped during cloud wait'
+                status = updated
             print('All three QEMU cloud API fixture round trips passed (no network calls).')
         finally:
             selector.close()

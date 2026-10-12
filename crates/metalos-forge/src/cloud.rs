@@ -6,6 +6,7 @@ use alloc::{
     vec,
     vec::Vec,
 };
+use core::task::Poll;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -61,6 +62,12 @@ pub struct HttpResponse {
 }
 pub trait HttpsClient: Send {
     fn post(&mut self, request: &HttpRequest) -> Result<HttpResponse, ForgeError>;
+    fn start_post(&mut self, request: &HttpRequest) -> Poll<Result<HttpResponse, ForgeError>> {
+        Poll::Ready(self.post(request))
+    }
+    fn poll_post(&mut self) -> Poll<Result<HttpResponse, ForgeError>> {
+        Poll::Ready(Err(ForgeError::InvalidRequest))
+    }
 }
 
 /// Owns an ephemeral API credential, never exposed to Welder or persisted to configuration.
@@ -68,6 +75,7 @@ pub struct ApiTransport {
     provider: ApiProvider,
     key: String,
     client: Box<dyn HttpsClient>,
+    pending: Option<CloudModel>,
 }
 impl Drop for ApiTransport {
     fn drop(&mut self) {
@@ -92,6 +100,7 @@ impl ApiTransport {
             provider,
             key: key.to_string(),
             client,
+            pending: None,
         })
     }
     pub fn request(
@@ -232,6 +241,35 @@ impl CloudTransport for ApiTransport {
         let outbound = self.request(model, request)?;
         let result = self.client.post(&outbound)?;
         self.parse(model, result)
+    }
+    fn start_generation(
+        &mut self,
+        model: &CloudModel,
+        request: &GenerationRequest,
+    ) -> Result<Option<Generation>, ForgeError> {
+        if self.pending.is_some() {
+            return Err(ForgeError::Busy);
+        }
+        let outbound = self.request(model, request)?;
+        match self.client.start_post(&outbound) {
+            Poll::Ready(response) => self.parse(model, response?).map(Some),
+            Poll::Pending => {
+                self.pending = Some(model.clone());
+                Ok(None)
+            }
+        }
+    }
+    fn poll_generation(&mut self) -> Poll<Result<Generation, ForgeError>> {
+        if self.pending.is_none() {
+            return Poll::Ready(Err(ForgeError::InvalidRequest));
+        }
+        match self.client.poll_post() {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(response) => {
+                let model = self.pending.take().expect("pending cloud model");
+                Poll::Ready(response.and_then(|response| self.parse(&model, response)))
+            }
+        }
     }
 }
 impl Forge {

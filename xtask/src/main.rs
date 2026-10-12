@@ -444,8 +444,9 @@ fn run_qemu(release: bool, debug_shell: bool, model_image: Option<PathBuf>, memo
     let display_arg = "default,show-cursor=on";
 
     let mut qemu = Command::new("qemu-system-aarch64");
-    if let Some(image) = model_image {
-        qemu.arg("-device").arg(format!("loader,file={},addr=0x80000000,force-raw=on", image.display()));
+    if let Some(image) = &model_image {
+        metalos_dev_harness::model_loader::attach_disk(image, &mut qemu)
+            .context("Failed to attach model disk")?;
     }
     #[cfg(target_os = "macos")]
     {
@@ -677,6 +678,37 @@ fn run_ci() -> Result<()> {
     println!("[xtask] Checking model asset tooling (offline)...");
     let assets = Command::new("python3").current_dir(&workspace_root).args(["-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py"]).status().context("Failed to run model asset and launcher tests")?;
     if !assets.success() { return Err(anyhow!("model asset tests failed")); }
+    let model_kernel = build_crates_mode(false, false, true)?;
+    println!("[xtask] Checking large-file model loading in QEMU (synthetic fixture)...");
+    let loader_test = Command::new("cargo").current_dir(&workspace_root)
+        .args(["test", "-p", "metalos-dev-harness", "--test", "qemu_model_loader", "--",
+            "--ignored", "large_synthetic_image_loads_into_qemu"])
+        .env("METALOS_TEST_KERNEL", &model_kernel).status()
+        .context("Failed to run large-file QEMU loader test")?;
+    if !loader_test.success() { return Err(anyhow!("large-file QEMU loader test failed")); }
+    let model_image = std::env::var_os("METALOS_TEST_MODEL_IMAGE").map(PathBuf::from)
+        .unwrap_or_else(|| workspace_root.join(".local/models/gemma-2-2b-it/model.img"));
+    if model_image.exists() {
+        println!("[xtask] Checking full-size model loading in QEMU...");
+        let status = Command::new("cargo").current_dir(&workspace_root)
+            .args(["test", "-p", "metalos-dev-harness", "--test", "qemu_model_loader", "--", "--ignored", "full_model_loads_into_qemu_at_contiguous_addresses"])
+            .env("METALOS_TEST_MODEL_IMAGE", model_image.canonicalize()?)
+            .env("METALOS_TEST_KERNEL", &model_kernel).status()
+            .context("Failed to run full-size QEMU model test")?;
+        if !status.success() { return Err(anyhow!("full-size QEMU model test failed")); }
+        println!("[xtask] Checking real local chat responsiveness during inference...");
+        let chat = Command::new("python3").current_dir(&workspace_root)
+            .arg("scripts/check_local_chat_qemu.py")
+            .arg("--kernel").arg(&model_kernel)
+            .arg("--model-image").arg(model_image.canonicalize()?)
+            .status().context("Failed to run local QEMU chat test")?;
+        if !chat.success() { return Err(anyhow!("local QEMU chat responsiveness test failed")); }
+
+    } else if std::env::var_os("METALOS_TEST_MODEL_IMAGE").is_some() {
+        return Err(anyhow!("METALOS_TEST_MODEL_IMAGE does not exist"));
+    } else {
+        println!("[xtask] SKIP full-size QEMU model test: local model image is absent");
+    }
     println!("[xtask] Step 2: Building metalOS (aarch64) and executing E2E tests...");
     let kernel_image = build_crates(false, true)?;
     run_e2e_tests(&kernel_image, Duration::from_secs(60))?;
@@ -740,9 +772,9 @@ fn main() -> Result<()> {
                 .arg(memory).arg("-kernel").arg(kernel)
                 .arg("-drive").arg(format!("file={},if=none,format=raw,id=hd0", disk.display()))
                 .args(["-device", "virtio-blk-device,drive=hd0"]);
-            if let Some(image) = model_image {
-                if image.to_string_lossy().contains(',') { return Err(anyhow!("model image path must not contain commas")); }
-                command.arg("-device").arg(format!("loader,file={},addr=0x80000000,force-raw=on", image.display()));
+            if let Some(image) = &model_image {
+                metalos_dev_harness::model_loader::attach_disk(image, &mut command)
+                    .context("Failed to attach model disk")?;
             }
             metalos_dev_harness::install_shutdown_handler();
             let _credentials = attach_cloud_credentials(&mut command, &root, auth_env, auth_file)?;

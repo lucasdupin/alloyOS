@@ -14,3 +14,8 @@ pub mod virtio_net;
 
 #[cfg(test)]
 pub mod tests;
+
+#[cfg(all(target_arch = "aarch64", target_os = "none", feature = "forge"))]
+pub mod model_disk;
+
+pub mod forge_worker;

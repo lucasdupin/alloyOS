@@ -1,10 +1,10 @@
 [package]
-name = "metalos-mercury"
+name = "metalos-ferrofluid"
 version.workspace = true
 edition.workspace = true
 
 [lib]
-name = "metalos_mercury"
+name = "metalos_ferrofluid"
 path = "src/lib.rs"
 
 [dependencies]

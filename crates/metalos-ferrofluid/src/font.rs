@@ -1,6 +1,6 @@
 use metalos_proto::DirtyRect;
 
-use crate::framebuffer::{rect_union, MercuryFramebuffer};
+use crate::framebuffer::{rect_union, FerrofluidFramebuffer};
 use crate::theme::{
     ACCENT_LIQUID_SILVER, BORDER_SILVER_DIM, SURFACE_CARBON, TEXT_MERCURY_BRIGHT,
 };
@@ -114,14 +114,14 @@ pub const fn glyph_bitmap(c: char) -> [u8; 8] {
 
 /// Renders an 8x8 glyph at `(x, y)` in `fg` color with anti-aliased edge tinting,
 /// and marks the 8x8 bounding box dirty in `fb`.
-pub fn draw_char(fb: &mut MercuryFramebuffer, x: u32, y: u32, c: char, fg: u32) -> DirtyRect {
+pub fn draw_char(fb: &mut FerrofluidFramebuffer, x: u32, y: u32, c: char, fg: u32) -> DirtyRect {
     draw_char_styled(fb, x, y, c, fg, false, true)
 }
 
 /// Renders an 8x8 glyph with configurable bold weight and anti-aliased liquid
 /// silver edge tinting.
 pub fn draw_char_styled(
-    fb: &mut MercuryFramebuffer,
+    fb: &mut FerrofluidFramebuffer,
     x: u32,
     y: u32,
     c: char,
@@ -160,13 +160,13 @@ pub fn draw_char_styled(
 }
 
 /// Renders a single-line or multi-line string in 8x8 monospace font.
-pub fn draw_str(fb: &mut MercuryFramebuffer, x: u32, y: u32, text: &str, fg: u32) -> DirtyRect {
+pub fn draw_str(fb: &mut FerrofluidFramebuffer, x: u32, y: u32, text: &str, fg: u32) -> DirtyRect {
     draw_str_styled(fb, x, y, text, fg, false)
 }
 
 /// Renders a string with optional bold weight.
 pub fn draw_str_styled(
-    fb: &mut MercuryFramebuffer,
+    fb: &mut FerrofluidFramebuffer,
     x: u32,
     y: u32,
     text: &str,
@@ -192,7 +192,7 @@ pub fn draw_str_styled(
 }
 
 /// Renders a smooth liquid-mercury block cursor at `(x, y)`.
-pub fn draw_cursor(fb: &mut MercuryFramebuffer, x: u32, y: u32, active: bool) -> DirtyRect {
+pub fn draw_cursor(fb: &mut FerrofluidFramebuffer, x: u32, y: u32, active: bool) -> DirtyRect {
     let rect = DirtyRect::new(x, y, 7, 8);
     if active {
         fb.fill_rect(x, y, 7, 8, TEXT_MERCURY_BRIGHT);
@@ -206,7 +206,7 @@ pub fn draw_cursor(fb: &mut MercuryFramebuffer, x: u32, y: u32, active: bool) ->
 /// Renders formatted Markdown & code blocks (`**bold**`, `` `code` ``, and fenced
 /// ` ``` ` blocks) within a scrollback viewport `(scroll_offset_lines, max_visible_lines)`.
 pub fn draw_markdown(
-    fb: &mut MercuryFramebuffer,
+    fb: &mut FerrofluidFramebuffer,
     x: u32,
     y: u32,
     max_width: u32,
@@ -272,7 +272,7 @@ pub fn draw_markdown(
 
 /// Renders a single line containing `**bold**` and `` `code` `` inline spans.
 fn draw_inline_markdown_line(
-    fb: &mut MercuryFramebuffer,
+    fb: &mut FerrofluidFramebuffer,
     x: u32,
     y: u32,
     line: &str,

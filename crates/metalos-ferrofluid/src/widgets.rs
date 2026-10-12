@@ -6,7 +6,7 @@ use metalos_proto::DirtyRect;
 use crate::font::{
     draw_cursor, draw_markdown, draw_str, draw_str_styled, CHAR_ADVANCE_X, CHAR_LINE_HEIGHT,
 };
-use crate::framebuffer::{rect_union, MercuryFramebuffer};
+use crate::framebuffer::{rect_union, FerrofluidFramebuffer};
 use crate::theme::{
     ACCENT_LIQUID_SILVER, BG_OBSIDIAN, BORDER_CHROME, BORDER_SILVER_DIM, SURFACE_CARBON,
     TEXT_MERCURY_BRIGHT,
@@ -95,7 +95,7 @@ impl AiConsoleView {
     /// Renders the `AiConsoleView` into `(x, y, width, height)` on `fb`.
     pub fn render(
         &self,
-        fb: &mut MercuryFramebuffer,
+        fb: &mut FerrofluidFramebuffer,
         x: u32,
         y: u32,
         width: u32,
@@ -115,7 +115,15 @@ impl AiConsoleView {
         }
 
         // Header bar with title and `[Gemini | Claude | ChatGPT]` model badge
-        let header_h = 20u32.min(height / 3);
+        let badge = self.model_badge_text();
+        let badge_w = (badge.len() as u32) * CHAR_ADVANCE_X;
+        let title_w = 21 * CHAR_ADVANCE_X;
+        let stacked_header = width < title_w + badge_w + 24;
+        let header_h = if stacked_header {
+            30u32.min(height / 3)
+        } else {
+            20u32.min(height / 3)
+        };
         if let Some(r) = fb.fill_rect(x + 1, y + 1, width - 2, header_h, SURFACE_CARBON) {
             dirty = rect_union(dirty, r);
         }
@@ -123,24 +131,25 @@ impl AiConsoleView {
             dirty = rect_union(dirty, r);
         }
 
+        let title_y = if stacked_header { y + 4 } else { y + 6 };
         let title_rect = draw_str_styled(
             fb,
             x + 8,
-            y + 6,
+            title_y,
             "MERCURY // AI CONSOLE",
             TEXT_MERCURY_BRIGHT,
             true,
         );
         dirty = rect_union(dirty, title_rect);
 
-        let badge = self.model_badge_text();
-        let badge_w = (badge.len() as u32) * CHAR_ADVANCE_X;
-        let badge_x = if width > badge_w + 12 {
-            x + width - badge_w - 8
+        let (badge_x, badge_y) = if stacked_header {
+            (x + 8, y + 17)
+        } else if width > badge_w + 12 {
+            (x + width - badge_w - 8, y + 6)
         } else {
-            x + 8
+            (x + 8, y + 6)
         };
-        let badge_rect = draw_str(fb, badge_x, y + 6, &badge, ACCENT_LIQUID_SILVER);
+        let badge_rect = draw_str(fb, badge_x, badge_y, &badge, ACCENT_LIQUID_SILVER);
         dirty = rect_union(dirty, badge_rect);
 
         // Input prompt bar at bottom
@@ -153,7 +162,13 @@ impl AiConsoleView {
             dirty = rect_union(dirty, r);
         }
 
-        let prompt_prefix = format!("agent> {}", self.input_prompt);
+        let prompt_prefix = if self.input_prompt.is_empty()
+            && self.streaming_line.starts_with("metalos:")
+        {
+            self.streaming_line.clone()
+        } else {
+            format!("agent> {}", self.input_prompt)
+        };
         let p_rect = draw_str(fb, x + 8, prompt_y + 5, &prompt_prefix, TEXT_MERCURY_BRIGHT);
         dirty = rect_union(dirty, p_rect);
 
@@ -182,13 +197,20 @@ impl AiConsoleView {
             combined.push_str(&self.streaming_line);
         }
 
+        let total_lines = combined.lines().count();
+        let effective_scroll = if self.scroll_offset == 0 {
+            total_lines.saturating_sub(max_lines)
+        } else {
+            self.scroll_offset
+        };
+
         let md_rect = draw_markdown(
             fb,
             x + 8,
             body_y,
             width.saturating_sub(16),
             &combined,
-            self.scroll_offset,
+            effective_scroll,
             max_lines,
         );
         dirty = rect_union(dirty, md_rect);
@@ -197,9 +219,9 @@ impl AiConsoleView {
     }
 }
 
-/// Agent-synthesized generative UI widgets rendered by `mercuryd`.
+/// Agent-synthesized generative UI widgets rendered by `ferrofluidd`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MercuryWidget {
+pub enum FerrofluidWidget {
     /// Full interactive AI Console view with streaming chat history, model badge
     /// `[Gemini | Claude | ChatGPT]`, input prompt line, and cursor.
     AiConsoleView(AiConsoleView),
@@ -229,32 +251,32 @@ pub enum MercuryWidget {
     },
 }
 
-impl MercuryWidget {
+impl FerrofluidWidget {
     /// Renders this generative UI widget into the specified bounding rectangle
     /// `(x, y, width, height)` in `fb` and returns the damaged `DirtyRect`.
     pub fn render(
         &self,
-        fb: &mut MercuryFramebuffer,
+        fb: &mut FerrofluidFramebuffer,
         x: u32,
         y: u32,
         width: u32,
         height: u32,
     ) -> DirtyRect {
         match self {
-            MercuryWidget::AiConsoleView(console) => console.render(fb, x, y, width, height),
-            MercuryWidget::MetricCard {
+            FerrofluidWidget::AiConsoleView(console) => console.render(fb, x, y, width, height),
+            FerrofluidWidget::MetricCard {
                 title,
                 value,
                 unit,
                 subtitle,
             } => render_metric_card(fb, x, y, width, height, title, value, unit, subtitle),
-            MercuryWidget::DataTable { headers, rows } => {
+            FerrofluidWidget::DataTable { headers, rows } => {
                 render_data_table(fb, x, y, width, height, headers, rows)
             }
-            MercuryWidget::Sparkline { label, samples } => {
+            FerrofluidWidget::Sparkline { label, samples } => {
                 render_sparkline(fb, x, y, width, height, label, samples)
             }
-            MercuryWidget::StatusBanner {
+            FerrofluidWidget::StatusBanner {
                 status,
                 active_mcp_apps,
                 scheduled_scripts,
@@ -273,7 +295,7 @@ impl MercuryWidget {
 }
 
 fn render_metric_card(
-    fb: &mut MercuryFramebuffer,
+    fb: &mut FerrofluidFramebuffer,
     x: u32,
     y: u32,
     width: u32,
@@ -315,7 +337,7 @@ fn render_metric_card(
 }
 
 fn render_data_table(
-    fb: &mut MercuryFramebuffer,
+    fb: &mut FerrofluidFramebuffer,
     x: u32,
     y: u32,
     width: u32,
@@ -367,7 +389,7 @@ fn render_data_table(
 }
 
 fn render_sparkline(
-    fb: &mut MercuryFramebuffer,
+    fb: &mut FerrofluidFramebuffer,
     x: u32,
     y: u32,
     width: u32,
@@ -424,7 +446,7 @@ fn render_sparkline(
 }
 
 fn render_status_banner(
-    fb: &mut MercuryFramebuffer,
+    fb: &mut FerrofluidFramebuffer,
     x: u32,
     y: u32,
     width: u32,

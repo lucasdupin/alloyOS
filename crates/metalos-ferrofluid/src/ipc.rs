@@ -3,11 +3,11 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use metalos_proto::{InputEvent, InputEventKind, SyscallNo};
 
-use crate::auth::{AgentUiToken, CallerPrincipal, MercuryError, SecurityGate};
-use crate::widgets::{AiConsoleView, MercuryWidget};
+use crate::auth::{AgentUiToken, CallerPrincipal, FerrofluidError, SecurityGate};
+use crate::widgets::{AiConsoleView, FerrofluidWidget};
 
 /// Queues and dispatches `metalos_proto::InputEvent` (keyboard key-down/up with
-/// ASCII conversion, pointer motion/clicks) to the active Mercury AI Console.
+/// ASCII conversion, pointer motion/clicks) to the active Ferrofluid AI Console.
 #[derive(Debug, Clone)]
 pub struct InputMultiplexer {
     queue: VecDeque<InputEvent>,
@@ -123,9 +123,9 @@ impl InputMultiplexer {
     }
 }
 
-/// UI commands submitted over the `SYS_SHM` shared-memory IPC ring buffer to `mercuryd`.
+/// UI commands submitted over the `SYS_SHM` shared-memory IPC ring buffer to `ferrofluidd`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MercuryIpcCommand {
+pub enum FerrofluidIpcCommand {
     /// Creates a new surface/window (only permitted for the AI Agent).
     CreateSurface {
         title: String,
@@ -134,12 +134,12 @@ pub enum MercuryIpcCommand {
     },
     /// Replaces the generative UI widget tree displayed alongside the AI console.
     SubmitWidgets {
-        widgets: Vec<MercuryWidget>,
+        widgets: Vec<FerrofluidWidget>,
     },
     /// Mutates or appends a single generative UI widget.
     UpsertWidget {
         index: usize,
-        widget: MercuryWidget,
+        widget: FerrofluidWidget,
     },
     /// Streams a chat token chunk into the active `AiConsoleView`.
     StreamChatToken {
@@ -155,16 +155,16 @@ pub enum MercuryIpcCommand {
 
 /// Shared-memory ring simulation (`SyscallNo::ShmGet` / `SyscallNo::ShmAt`)
 /// allowing the authenticated AI agent runtime to submit UI trees, streaming
-/// chat tokens, and widget updates to `mercuryd`.
-pub struct MercuryIpcChannel {
+/// chat tokens, and widget updates to `ferrofluidd`.
+pub struct FerrofluidIpcChannel {
     pub shm_id: u64,
     pub capacity: usize,
     security_gate: SecurityGate,
-    ring: VecDeque<MercuryIpcCommand>,
+    ring: VecDeque<FerrofluidIpcCommand>,
 }
 
-impl MercuryIpcChannel {
-    pub const DEFAULT_SHM_KEY: u64 = (SyscallNo::ShmGet as u64) << 32 | 0x4D45_5243;
+impl FerrofluidIpcChannel {
+    pub const DEFAULT_SHM_KEY: u64 = (SyscallNo::ShmGet as u64) << 32 | 0x4645_5252;
 
     pub fn new(capacity: usize, expected_token: AgentUiToken) -> Self {
         Self {
@@ -179,23 +179,23 @@ impl MercuryIpcChannel {
     /// the Agent-Exclusive UI Security Gate.
     ///
     /// Any attempt by `CallerPrincipal::DeveloperMcpApp` or `CallerPrincipal::Unauthenticated`
-    /// is immediately rejected with `MercuryError::UiCreationForbiddenForApp`.
+    /// is immediately rejected with `FerrofluidError::UiCreationForbiddenForApp`.
     pub fn send(
         &mut self,
         principal: &CallerPrincipal,
         token: Option<&AgentUiToken>,
-        command: MercuryIpcCommand,
-    ) -> Result<(), MercuryError> {
+        command: FerrofluidIpcCommand,
+    ) -> Result<(), FerrofluidError> {
         self.security_gate.authorize(principal, token)?;
         if self.ring.len() >= self.capacity {
-            return Err(MercuryError::IpcRingFull);
+            return Err(FerrofluidError::IpcRingFull);
         }
         self.ring.push_back(command);
         Ok(())
     }
 
     /// Pops the next authenticated UI command from the shared-memory ring buffer.
-    pub fn recv(&mut self) -> Option<MercuryIpcCommand> {
+    pub fn recv(&mut self) -> Option<FerrofluidIpcCommand> {
         self.ring.pop_front()
     }
 

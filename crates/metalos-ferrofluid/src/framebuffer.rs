@@ -7,7 +7,7 @@ use crate::theme::{blend_argb, liquid_mercury_border_color, BG_OBSIDIAN};
 /// Double-buffered 32-bpp ARGB8888 canvas with `DirtyRect` damage tracking,
 /// fast page-flipping, and vsync frame counter.
 #[derive(Debug, Clone)]
-pub struct MercuryFramebuffer {
+pub struct FerrofluidFramebuffer {
     pub width: u32,
     pub height: u32,
     pub back_buffer: Vec<u32>,
@@ -16,7 +16,7 @@ pub struct MercuryFramebuffer {
     pub vsync_counter: u64,
 }
 
-impl MercuryFramebuffer {
+impl FerrofluidFramebuffer {
     /// Creates a new double-buffered ARGB8888 framebuffer initialized to `BG_OBSIDIAN`.
     pub fn new(width: u32, height: u32) -> Self {
         let len = (width as usize).saturating_mul(height as usize);
@@ -218,7 +218,7 @@ impl MercuryFramebuffer {
 
     /// Draws the signature metalOS liquid-mercury drip perimeter border around a
     /// rectangle, seamlessly connecting the kernel boot splash aesthetic to the
-    /// Mercury AI Console frame.
+    /// Ferrofluid AI Console frame.
     pub fn draw_liquid_mercury_border(
         &mut self,
         x: u32,

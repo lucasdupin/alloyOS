@@ -1,8 +1,8 @@
 use alloc::string::String;
 
-/// Errors returned by the Mercury (`mercuryd`) display server and compositor.
+/// Errors returned by the Ferrofluid (`ferrofluidd`) display server and compositor.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MercuryError {
+pub enum FerrofluidError {
     /// Strict security gate violation: third-party developer MCP apps and
     /// unauthenticated callers are strictly forbidden from creating windows,
     /// surfaces, or mutating/rendering UI. Only the AI agent may create or
@@ -21,7 +21,7 @@ pub enum MercuryError {
     NotFound,
 }
 
-/// Identifies the security principal attempting to interact with `mercuryd`.
+/// Identifies the security principal attempting to interact with `ferrofluidd`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CallerPrincipal {
     /// The privileged metalOS AI Agent runtime, authorized to synthesize and
@@ -43,7 +43,7 @@ pub struct AgentUiToken {
 }
 
 impl AgentUiToken {
-    pub const DEFAULT_TOKEN_ID: u64 = 0x4D45_5243_5552_5901; // "MERCURY\x01"
+    pub const DEFAULT_TOKEN_ID: u64 = 0x4645_5252_4F46_4C01; // "FERROFL\x01"
     pub const DEFAULT_SECRET: u64 = 0xA6E4_7001_9988_7766;
 
     pub const fn new(token_id: u64, capability_secret: u64) -> Self {
@@ -80,25 +80,25 @@ impl SecurityGate {
 
     /// Validates that the caller is the authenticated AI agent and holds the
     /// valid `AgentUiToken`. Rejects `DeveloperMcpApp` and `Unauthenticated`
-    /// with `MercuryError::UiCreationForbiddenForApp`.
+    /// with `FerrofluidError::UiCreationForbiddenForApp`.
     pub fn authorize(
         &self,
         principal: &CallerPrincipal,
         token: Option<&AgentUiToken>,
-    ) -> Result<(), MercuryError> {
+    ) -> Result<(), FerrofluidError> {
         match principal {
             CallerPrincipal::DeveloperMcpApp { .. } | CallerPrincipal::Unauthenticated => {
-                Err(MercuryError::UiCreationForbiddenForApp)
+                Err(FerrofluidError::UiCreationForbiddenForApp)
             }
             CallerPrincipal::AiAgent { token_id } => {
-                let provided = token.ok_or(MercuryError::InvalidAgentToken)?;
+                let provided = token.ok_or(FerrofluidError::InvalidAgentToken)?;
                 if *token_id == self.expected_token.token_id
                     && provided.token_id == self.expected_token.token_id
                     && provided.capability_secret == self.expected_token.capability_secret
                 {
                     Ok(())
                 } else {
-                    Err(MercuryError::InvalidAgentToken)
+                    Err(FerrofluidError::InvalidAgentToken)
                 }
             }
         }

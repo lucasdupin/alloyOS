@@ -1,13 +1,36 @@
-use metalos_mercury::{
+use metalos_ferrofluid::{
     draw_char, draw_markdown, draw_str, AgentUiToken, AiConsoleView, CallerPrincipal,
-    MercuryError, MercuryFramebuffer, MercuryIpcCommand, MercuryServer, MercuryWidget,
-    ACCENT_LIQUID_SILVER, BG_OBSIDIAN, BORDER_CHROME, SURFACE_CARBON, TEXT_MERCURY_BRIGHT,
+    FerrofluidError, FerrofluidFramebuffer, FerrofluidIpcCommand, FerrofluidServer,
+    FerrofluidWidget, ACCENT_LIQUID_SILVER, BG_OBSIDIAN, BORDER_CHROME, SURFACE_CARBON,
+    TEXT_MERCURY_BRIGHT,
 };
 use metalos_proto::{DirtyRect, InputEvent, InputEventKind};
 
 #[test]
+fn phone_widgets_stack_at_full_width() {
+    let mut server = FerrofluidServer::new(480, 864);
+    let token = server.agent_token();
+    let agent = server.agent_principal();
+    let card = FerrofluidWidget::MetricCard {
+        title: "CPU".into(),
+        value: "12".into(),
+        unit: "%".into(),
+        subtitle: "Usage".into(),
+    };
+    server.submit_widgets(&agent, Some(&token), vec![card.clone(), card]).unwrap();
+    let surface = &server.surfaces[0];
+    let deck_y = surface.y + surface.height * 3 / 5 + 4;
+    let slot_h = (surface.height - surface.height * 3 / 5 - 4) / 2;
+    // Both cards span the phone width and occupy separate vertical rows.
+    for y in [deck_y, deck_y + slot_h] {
+        assert_eq!(server.framebuffer.get_back_pixel(surface.x, y), Some(BORDER_CHROME));
+        assert_eq!(server.framebuffer.get_back_pixel(surface.x + surface.width - 1, y), Some(BORDER_CHROME));
+    }
+}
+
+#[test]
 fn double_buffered_rendering_dirty_rect_coalescing_and_vsync() {
-    let mut fb = MercuryFramebuffer::new(320, 200);
+    let mut fb = FerrofluidFramebuffer::new(320, 200);
     assert_eq!(fb.vsync_count(), 0);
     assert!(fb.dirty_rects.is_empty());
 
@@ -37,7 +60,7 @@ fn double_buffered_rendering_dirty_rect_coalescing_and_vsync() {
 
 #[test]
 fn security_gate_forbids_developer_mcp_apps_and_allows_ai_agent() {
-    let mut server = MercuryServer::new(640, 400);
+    let mut server = FerrofluidServer::new(640, 400);
     let dev_app = CallerPrincipal::DeveloperMcpApp {
         app_id: "com.acme.weather-mcp".to_string(),
     };
@@ -46,10 +69,10 @@ fn security_gate_forbids_developer_mcp_apps_and_allows_ai_agent() {
 
     // 1. Developer MCP app attempting to create a window/surface is strictly forbidden
     let res_surface = server.create_surface(&dev_app, Some(&fake_token), "Weather Popup", 200, 150);
-    assert_eq!(res_surface, Err(MercuryError::UiCreationForbiddenForApp));
+    assert_eq!(res_surface, Err(FerrofluidError::UiCreationForbiddenForApp));
 
     // 2. Developer MCP app attempting to submit or mutate widgets is strictly forbidden
-    let metric = MercuryWidget::MetricCard {
+    let metric = FerrofluidWidget::MetricCard {
         title: "CPU".to_string(),
         value: "12".to_string(),
         unit: "%".to_string(),
@@ -57,15 +80,15 @@ fn security_gate_forbids_developer_mcp_apps_and_allows_ai_agent() {
     };
     assert_eq!(
         server.submit_widgets(&dev_app, None, vec![metric.clone()]),
-        Err(MercuryError::UiCreationForbiddenForApp)
+        Err(FerrofluidError::UiCreationForbiddenForApp)
     );
     assert_eq!(
         server.mutate_widget(&dev_app, None, 0, metric.clone()),
-        Err(MercuryError::UiCreationForbiddenForApp)
+        Err(FerrofluidError::UiCreationForbiddenForApp)
     );
     assert_eq!(
         server.render_widget(&dev_app, None, &metric, 10, 10, 100, 50),
-        Err(MercuryError::UiCreationForbiddenForApp)
+        Err(FerrofluidError::UiCreationForbiddenForApp)
     );
 
     // 3. Developer MCP app attempting to send IPC UI commands is strictly forbidden
@@ -73,24 +96,24 @@ fn security_gate_forbids_developer_mcp_apps_and_allows_ai_agent() {
         server.submit_ipc_command(
             &dev_app,
             Some(&server.agent_token()),
-            MercuryIpcCommand::StreamChatToken {
+            FerrofluidIpcCommand::StreamChatToken {
                 token: "hijack".to_string()
             }
         ),
-        Err(MercuryError::UiCreationForbiddenForApp)
+        Err(FerrofluidError::UiCreationForbiddenForApp)
     );
 
     // 4. Unauthenticated caller is also rejected with UiCreationForbiddenForApp
     assert_eq!(
         server.create_surface(&unauth, None, "Unauth Window", 100, 100),
-        Err(MercuryError::UiCreationForbiddenForApp)
+        Err(FerrofluidError::UiCreationForbiddenForApp)
     );
 
     // 5. AI Agent with wrong token is rejected with InvalidAgentToken
     let agent_principal = server.agent_principal();
     assert_eq!(
         server.create_surface(&agent_principal, Some(&fake_token), "Bad Token", 100, 100),
-        Err(MercuryError::InvalidAgentToken)
+        Err(FerrofluidError::InvalidAgentToken)
     );
 
     // 6. Authenticated AI Agent with valid AgentUiToken succeeds
@@ -114,7 +137,7 @@ fn security_gate_forbids_developer_mcp_apps_and_allows_ai_agent() {
 
 #[test]
 fn monospace_font_and_markdown_code_block_pixel_rendering() {
-    let mut fb = MercuryFramebuffer::new(400, 200);
+    let mut fb = FerrofluidFramebuffer::new(400, 200);
     let char_rect = draw_char(&mut fb, 8, 8, 'M', TEXT_MERCURY_BRIGHT);
     assert_eq!(char_rect, DirtyRect::new(8, 8, 8, 8));
 
@@ -153,43 +176,43 @@ fn monospace_font_and_markdown_code_block_pixel_rendering() {
 
 #[test]
 fn generative_ui_widgets_pixel_output_and_single_window_boot() {
-    let mut server = MercuryServer::new(640, 480);
+    let mut server = FerrofluidServer::new(640, 480);
 
-    // Initial boot presents the single centered/fullscreen Mercury AI Console window
+    // Initial boot presents the single centered/fullscreen Ferrofluid AI Console window
     let boot_dirty = server.present();
     assert!(!boot_dirty.is_empty());
     assert_eq!(server.framebuffer.vsync_count(), 1);
     assert_eq!(server.surfaces.len(), 1);
-    assert_eq!(server.surfaces[0].title, "Mercury AI Console");
+    assert_eq!(server.surfaces[0].title, "Ferrofluid AI Console");
 
     let agent = server.agent_principal();
     let token = server.agent_token();
 
     // Synthesize all 5 generative UI widget variants
     let widgets = vec![
-        MercuryWidget::MetricCard {
+        FerrofluidWidget::MetricCard {
             title: "LATENCY".to_string(),
             value: "1.4".to_string(),
             unit: "ms".to_string(),
             subtitle: "VirtIO-Net".to_string(),
         },
-        MercuryWidget::DataTable {
+        FerrofluidWidget::DataTable {
             headers: vec!["PID".to_string(), "TASK".to_string()],
             rows: vec![
-                vec!["1".to_string(), "mercuryd".to_string()],
+                vec!["1".to_string(), "ferrofluidd".to_string()],
                 vec!["2".to_string(), "agentd".to_string()],
             ],
         },
-        MercuryWidget::Sparkline {
+        FerrofluidWidget::Sparkline {
             label: "TOK/S".to_string(),
             samples: vec![12, 28, 45, 60, 52, 80, 95],
         },
-        MercuryWidget::StatusBanner {
+        FerrofluidWidget::StatusBanner {
             status: "OPTIMAL".to_string(),
             active_mcp_apps: 4,
             scheduled_scripts: 2,
         },
-        MercuryWidget::AiConsoleView(AiConsoleView::new("Claude")),
+        FerrofluidWidget::AiConsoleView(AiConsoleView::new("Claude")),
     ];
 
     server
@@ -242,8 +265,8 @@ fn generative_ui_widgets_pixel_output_and_single_window_boot() {
     );
 
     // Also test standalone draw_str helper
-    let mut scratch = MercuryFramebuffer::new(128, 32);
-    let r = draw_str(&mut scratch, 4, 4, "MERCURY", TEXT_MERCURY_BRIGHT);
-    assert_eq!(r.width, 7 * 8);
+    let mut scratch = FerrofluidFramebuffer::new(128, 32);
+    let r = draw_str(&mut scratch, 4, 4, "FERROFLUID", TEXT_MERCURY_BRIGHT);
+    assert_eq!(r.width, 10 * 8);
     assert_eq!(r.height, 8);
 }

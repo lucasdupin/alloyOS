@@ -1,4 +1,4 @@
-/// Crisp monochrome & liquid-mercury visual palette for `mercuryd` (ARGB8888).
+/// Crisp monochrome & liquid-mercury visual palette for `ferrofluidd` (ARGB8888).
 
 /// Pure obsidian background (`#000000`).
 pub const BG_OBSIDIAN: u32 = 0xFF00_0000;

@@ -1,5 +1,9 @@
 # Ferrofluid System UI
 
+The boot logotype uses subtle, layered turbulence and falling white droplets during loading. The scanout
+pass samples the pristine Slint text with bilinear filtering and repaints only
+the logo and droplet region between UI updates; the effect stops on workspace transition.
+
 Ferrofluid owns the Slint platform adapter and the single fullscreen System UI
 window. The kernel supplies monotonic time, Linux evdev input, and VirtIO-GPU
 scanout. The default graphical boot launches this window after the splash.

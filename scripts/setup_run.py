@@ -148,9 +148,6 @@ def main():
                 return 1
     print('\nStep 4 of 4 — Build and launch')
     print('Building release mode and starting the UI with Gemma attached. The first build may take a while.')
-    if choose('Launch now? y/n', ('y', 'n'), 'y') == 'n':
-        print('Ready for next time. Run ./run.sh to launch.')
-        return 0
     # Downloader credentials are unnecessary for the already-prepared model.
     env = dict(os.environ)
     for name in ('HF_TOKEN', args.auth_env):

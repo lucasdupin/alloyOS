@@ -95,7 +95,7 @@ class SetupTests(unittest.TestCase):
             image.parent.mkdir(parents=True)
             image.touch()
             output = io.StringIO()
-            with mock.patch('sys.argv', ['setup_run', '--memory', '20G']), mock.patch.object(setup.shutil, 'which', return_value='/tool'), mock.patch('builtins.input', side_effect=['y']), mock.patch.dict(os.environ, {'HF_TOKEN': 'fixture-secret', 'OPENAI_API_KEY': 'cloud-secret'}, clear=True), mock.patch.object(setup.os, 'execve') as launch, contextlib.redirect_stdout(output):
+            with mock.patch('sys.argv', ['setup_run', '--memory', '20G']), mock.patch.object(setup.shutil, 'which', return_value='/tool'), mock.patch('builtins.input', side_effect=AssertionError('Unexpected launch confirmation')), mock.patch.dict(os.environ, {'HF_TOKEN': 'fixture-secret', 'OPENAI_API_KEY': 'cloud-secret'}, clear=True), mock.patch.object(setup.os, 'execve') as launch, contextlib.redirect_stdout(output):
                 setup.main()
             argv, env = launch.call_args.args[1:]
             self.assertEqual(argv, ['run.sh', '--non-interactive', '--memory', '20G'])
@@ -121,8 +121,9 @@ class SetupTests(unittest.TestCase):
             self.assertIn('Which setup instructions', prompt.call_args_list[0].args[0])
 
     def test_download_retry_uses_reference_only(self):
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(setup, 'ROOT', Path(tmp)), mock.patch('sys.argv', ['setup_run', '--auth-file', '/private/hf-token']), mock.patch.object(setup.shutil, 'which', return_value='/tool'), mock.patch('builtins.input', side_effect=['0', 'y', 'y', 'n']), mock.patch.object(setup.subprocess, 'run', side_effect=[mock.Mock(returncode=1), mock.Mock(returncode=0)]) as download, contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(setup.main(), 0)
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(setup, 'ROOT', Path(tmp)), mock.patch('sys.argv', ['setup_run', '--auth-file', '/private/hf-token']), mock.patch.object(setup.shutil, 'which', return_value='/tool'), mock.patch('builtins.input', side_effect=['0', 'y', 'y']), mock.patch.object(setup.subprocess, 'run', side_effect=[mock.Mock(returncode=1), mock.Mock(returncode=0)]) as download, mock.patch.object(setup.os, 'execve') as launch, contextlib.redirect_stdout(io.StringIO()):
+            setup.main()
+            launch.assert_called_once()
             self.assertEqual(download.call_count, 2)
             self.assertEqual(download.call_args.args[0][-2:], ['--auth-file', '/private/hf-token'])
 

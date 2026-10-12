@@ -10,3 +10,4 @@ pub mod system_ui;
 
 pub use auth::{AgentUiToken, CallerPrincipal, FerrofluidError, SecurityGate};
 pub use system_ui::FerrofluidSystemUi;
+mod boot_liquid;

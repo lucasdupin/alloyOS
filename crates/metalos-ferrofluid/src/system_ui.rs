@@ -51,6 +51,7 @@ pub struct FerrofluidSystemUi {
     scale: f32,
     keys: EvdevKeyboard,
     liquid: LiquidDisplacement,
+    boot_liquid: crate::boot_liquid::BootLiquid,
 }
 
 impl FerrofluidSystemUi {
@@ -107,6 +108,7 @@ impl FerrofluidSystemUi {
             scale,
             keys: EvdevKeyboard::default(),
             liquid: LiquidDisplacement::new(width, height, scale),
+            boot_liquid: crate::boot_liquid::BootLiquid::new(size, scale),
         })
     }
 
@@ -169,29 +171,51 @@ impl FerrofluidSystemUi {
         }
     }
 
-    /// Advances local timers and renders only when Slint requests a repaint.
+    /// Advances local timers, boot turbulence and requested Slint repaints.
     /// Returns physical damage bounds for VirtIO-GPU transfer/flush.
     pub fn render(&mut self, elapsed: Duration) -> Option<DirtyRect> {
         self.now.set(elapsed.max(self.now.get()));
         slint::platform::update_timers_and_animations();
+        let booting = self.ui.get_booting();
+        let boot_damage = if booting {
+            self.boot_liquid.advance(self.now.get());
+            Some(self.boot_liquid.bounds())
+        } else {
+            None
+        };
         let liquid_damage = self.liquid.advance(
             self.now.get(),
             self.ui.get_keyboard_reveal(),
             self.ui.get_booting(),
         );
-        if liquid_damage.is_some() {
+        if liquid_damage.is_some() || boot_damage.is_some() {
             self.window.request_redraw();
         }
         let mut damage = None;
         self.window.draw_if_needed(|renderer| {
             let region = renderer.render(&mut self.rgb, self.size.width as usize);
+            if booting {
+                self.boot_liquid.prepare_drops(&self.rgb);
+            }
             let origin = region.bounding_box_origin();
             let size = region.bounding_box_size();
-            if size.width == 0 || size.height == 0 {
+            if (size.width == 0 || size.height == 0) && boot_damage.is_none() {
                 return;
             }
             let mut rect =
                 DirtyRect::new(origin.x as u32, origin.y as u32, size.width, size.height);
+            if let Some(boot) = boot_damage {
+                if size.width == 0 || size.height == 0 {
+                    rect = boot;
+                } else {
+                    let right = (rect.x + rect.width).max(boot.x + boot.width);
+                    let bottom = (rect.y + rect.height).max(boot.y + boot.height);
+                    rect.x = rect.x.min(boot.x);
+                    rect.y = rect.y.min(boot.y);
+                    rect.width = right - rect.x;
+                    rect.height = bottom - rect.y;
+                }
+            }
             if let Some((top, bottom)) = liquid_damage {
                 let end = (rect.y + rect.height).max(bottom);
                 rect.y = rect.y.min(top);
@@ -202,7 +226,11 @@ impl FerrofluidSystemUi {
             for y in rect.y..rect.y + rect.height {
                 for x in rect.x..rect.x + rect.width {
                     let i = y as usize * self.size.width as usize + x as usize;
-                    let p = self.liquid.pixel(&self.rgb, x, y);
+                    let p = if booting {
+                        self.boot_liquid.pixel(&self.rgb, x, y)
+                    } else {
+                        self.liquid.pixel(&self.rgb, x, y)
+                    };
                     self.argb[i] = 0xff000000 | (p.r as u32) << 16 | (p.g as u32) << 8 | p.b as u32;
                 }
             }
@@ -400,10 +428,15 @@ mod tests {
                 assert!(y > PHONE_HEIGHT / 2 - 100 && y < PHONE_HEIGHT / 2 + 100);
             }
         }
-        assert!(
-            ui.render(Duration::from_millis(16)).is_none(),
-            "boot is static"
-        );
+        let initial = ui.pixels().to_vec();
+        let boot_damage = ui.render(Duration::from_millis(16)).unwrap();
+        assert!(boot_damage.width < PHONE_WIDTH);
+        assert!(boot_damage.height < PHONE_HEIGHT);
+        assert_ne!(ui.pixels(), initial.as_slice(), "boot turbulence advances");
+        assert_eq!(ui.pixels()[0], 0xff000000);
+        let animated = ui.pixels().to_vec();
+        ui.render(Duration::from_millis(16));
+        assert_eq!(ui.pixels(), animated.as_slice(), "fixed-time sampling must not drift");
         ui.set_booting(false);
         let damage = ui.render(Duration::ZERO).unwrap();
         assert!(damage.width > 0 && damage.height > 0);

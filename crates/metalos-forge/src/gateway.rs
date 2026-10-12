@@ -7,7 +7,7 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-use core::cell::RefCell;
+use core::{cell::RefCell, task::Poll};
 
 /// Active inference provider selection inside Forge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +45,7 @@ impl ActiveProvider {
 #[derive(Clone)]
 pub struct ModelGateway {
     active: ActiveProvider,
+    pending: Option<u64>,
     forge: Rc<RefCell<Forge>>,
     forge_model: String,
     gemini: GeminiProvider,
@@ -68,6 +69,7 @@ impl ModelGateway {
     pub fn new() -> Self {
         Self {
             active: ActiveProvider::Forge,
+            pending: None,
             forge: Rc::new(RefCell::new(Forge::new(0))),
             forge_model: DEFAULT_MODEL.to_string(),
             gemini: GeminiProvider::new(),
@@ -193,6 +195,94 @@ impl ModelGateway {
         }
         Ok(())
     }
+    /// Cycle through ready models in registry order, wrapping after the last.
+    pub fn cycle_model(&mut self) -> Result<(), AiError> {
+        if self.is_pending() {
+            return Err(AiError::PolicyViolation("A reply is already pending".into()));
+        }
+        let models: Vec<_> = self.forge.borrow().models().into_iter()
+            .filter(|model| model.state == "ready")
+            .collect();
+        if models.is_empty() {
+            return Ok(());
+        }
+        let next = models.iter().position(|model| model.id == self.active_model_id())
+            .map_or(0, |index| (index + 1) % models.len());
+        let model = &models[next];
+        let provider = match &model.source {
+            crate::ModelSource::Local => ActiveProvider::Forge,
+            crate::ModelSource::Cloud { provider } => ActiveProvider::from_name(provider)?,
+        };
+        self.active = provider;
+        self.set_model(&model.id)
+    }
+
+    pub fn is_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+    pub fn start_chat(&mut self, messages: &[Message]) -> Result<(), AiError> {
+        if self.pending.is_some() {
+            return Err(AiError::PolicyViolation(
+                "A reply is already pending".into(),
+            ));
+        }
+        let mut prompt = String::new();
+        for message in messages {
+            prompt.push_str(message.role.as_str());
+            prompt.push_str(": ");
+            prompt.push_str(&message.content);
+            prompt.push('\n');
+        }
+        let job = self
+            .forge
+            .borrow_mut()
+            .start_generation(&GenerationRequest {
+                model: Some(self.active_model_id().to_string()),
+                prompt,
+                max_tokens: 128,
+            })
+            .map_err(|e| self.inference_error(e))?;
+        self.pending = Some(job);
+        Ok(())
+    }
+    pub fn partial_reply(&self) -> Option<String> {
+        self.forge
+            .borrow()
+            .partial_text(self.pending?)
+            .map(ToString::to_string)
+    }
+    pub fn poll_chat(&mut self) -> Poll<Result<Response, AiError>> {
+        let Some(id) = self.pending else {
+            return Poll::Pending;
+        };
+        let result = self.forge.borrow_mut().poll_generation(id);
+        match result {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(result) => {
+                self.pending = None;
+                Poll::Ready(
+                    result
+                        .map(|g| {
+                            Response::new(
+                                g.text,
+                                Vec::new(),
+                                g.model,
+                                TokenUsage::new(0, g.generated_tokens),
+                            )
+                        })
+                        .map_err(|e| self.inference_error(e)),
+                )
+            }
+        }
+    }
+    fn inference_error(&self, error: crate::ForgeError) -> AiError {
+        if self.active == ActiveProvider::Forge {
+            AiError::LocalInferenceError(error.to_string())
+        } else {
+            AiError::NetworkError(error.to_string())
+        }
+    }
+
     /// Execute through the shared Forge registry, including explicitly attached
     /// cloud transports. Missing backends always return errors.
     pub fn chat(
@@ -235,6 +325,30 @@ mod tests {
     use super::*;
     use crate::{CloudModel, CloudTransport, ForgeError, Generation};
     use alloc::boxed::Box;
+
+    #[test]
+    fn model_cycle_skips_unavailable_and_wraps() {
+        let mut forge = Forge::new(0);
+        for id in ["a", "b", "c"] {
+            let model = CloudModel::new(id, "claude", id, "test-credential").unwrap();
+            forge.register_cloud(&model).unwrap();
+            if id != "b" {
+                forge.attach_cloud(model, Box::new(CheckingTransport)).unwrap();
+            }
+        }
+        let mut gateway = ModelGateway::new();
+        gateway.set_forge(Rc::new(RefCell::new(forge)));
+        gateway.cycle_model().unwrap();
+        assert_eq!(gateway.active_model_id(), "a");
+        assert_eq!(gateway.active_provider_name(), "claude");
+        gateway.cycle_model().unwrap();
+        assert_eq!(gateway.active_model_id(), "c");
+        gateway.cycle_model().unwrap();
+        assert_eq!(gateway.active_model_id(), "a");
+        gateway.pending = Some(1);
+        assert!(gateway.cycle_model().is_err());
+        assert_eq!(gateway.active_model_id(), "a");
+    }
 
     struct CheckingTransport;
     impl CloudTransport for CheckingTransport {

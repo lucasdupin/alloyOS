@@ -45,6 +45,7 @@ pub struct FerrofluidSystemUi {
     ui: SystemUi,
     now: Rc<Cell<Duration>>,
     submissions: Rc<RefCell<VecDeque<String>>>,
+    model_cycles: Rc<Cell<usize>>,
     rgb: Vec<slint::Rgb8Pixel>,
     argb: Vec<u32>,
     size: PhysicalSize,
@@ -81,12 +82,23 @@ impl FerrofluidSystemUi {
         let queue = submissions.clone();
         let weak = ui.as_weak();
         ui.on_submit(move |text| {
-            if text.trim().is_empty() || queue.borrow().len() >= 16 {
+            if weak.upgrade().is_some_and(|ui| ui.get_reply_pending())
+                || text.trim().is_empty()
+                || queue.borrow().len() >= 16
+            {
                 return;
             }
             queue.borrow_mut().push_back(String::from(text.as_str()));
             if let Some(ui) = weak.upgrade() {
                 ui.set_draft(SharedString::default());
+            }
+        });
+        let model_cycles = Rc::new(Cell::new(0usize));
+        let cycles = model_cycles.clone();
+        let weak = ui.as_weak();
+        ui.on_cycle_model(move || {
+            if weak.upgrade().is_some_and(|ui| !ui.get_reply_pending()) {
+                cycles.set(cycles.get().saturating_add(1));
             }
         });
         let soft_window = window.clone();
@@ -102,6 +114,7 @@ impl FerrofluidSystemUi {
             ui,
             now,
             submissions,
+            model_cycles,
             rgb: vec![slint::Rgb8Pixel::default(); width as usize * height as usize],
             argb: vec![0xff000000; width as usize * height as usize],
             size,
@@ -116,11 +129,19 @@ impl FerrofluidSystemUi {
         self.ui.set_booting(booting);
     }
 
+    pub fn set_reply_pending(&self, pending: bool) {
+        self.ui.set_reply_pending(pending);
+    }
     pub fn set_transcript(&self, text: &str) {
         self.ui.set_transcript(text.into());
     }
     pub fn set_active_model(&self, text: &str) {
         self.ui.set_active_model(text.into());
+    }
+    pub fn take_model_cycle(&self) -> bool {
+        let count = self.model_cycles.get();
+        self.model_cycles.set(count.saturating_sub(1));
+        count > 0
     }
     pub fn take_submission(&self) -> Option<String> {
         self.submissions.borrow_mut().pop_front()
@@ -443,6 +464,16 @@ mod tests {
         assert_eq!(ui.pixels().len(), (PHONE_WIDTH * PHONE_HEIGHT) as usize);
         assert!(ui.pixels().iter().all(|pixel| pixel >> 24 == 255));
         assert!(ui.pixels().iter().any(|pixel| *pixel != ui.pixels()[0]));
+        // Tap the model label through the actual physical input path.
+        for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
+            ui.handle_input(InputEvent { kind, code: 0x110, x: 1050, y: 110 });
+        }
+        assert!(ui.take_model_cycle());
+        assert!(!ui.take_model_cycle());
+        ui.set_reply_pending(true);
+        ui.ui.invoke_cycle_model();
+        assert!(!ui.take_model_cycle(), "pending replies prevent model changes");
+        ui.set_reply_pending(false);
         // Click the composer through physical-to-logical coordinate conversion.
         for kind in [
             InputEventKind::PointerButtonDown,
@@ -468,6 +499,20 @@ mod tests {
             "d",
             "evdev KEY_D is not ASCII space"
         );
+        ui.set_reply_pending(true);
+        ui.render(Duration::from_millis(16));
+        ui.handle_input(InputEvent {
+            kind: InputEventKind::KeyDown,
+            code: 28,
+            x: 0,
+            y: 0,
+        });
+        assert!(
+            ui.take_submission().is_none(),
+            "pending reply prevents duplicate sends"
+        );
+        assert_eq!(ui.ui.get_draft().as_str(), "d", "draft remains editable");
+        ui.set_reply_pending(false);
         ui.handle_input(InputEvent {
             kind: InputEventKind::KeyDown,
             code: 28,

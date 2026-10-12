@@ -20,7 +20,9 @@ export component SystemUi inherits Window {
     in property <string> active-model: "Gemini";
     in property <string> transcript: "Welcome to metalOS.\n\nYour workspace takes shape around what you need.";
     in-out property <string> draft;
+    in property <bool> reply-pending: false;
     callback submit(string);
+    callback cycle-model();
     callback soft-key(string);
     out property <bool> keyboard-visible: keyboard.shown;
     out property <length> keyboard-reveal: keyboard.reveal;
@@ -40,7 +42,16 @@ export component SystemUi inherits Window {
             spacing: 20px;
             HorizontalBox {
                 Logotype { }
-                Text { text: root.active-model; color: #a0a0ae; horizontal-alignment: right; }
+                Rectangle {
+                    min-width: model-label.preferred-width;
+                    min-height: model-label.preferred-height;
+                    model-label := Text { text: root.active-model; color: #a0a0ae; horizontal-alignment: right; }
+                    TouchArea {
+                        enabled: !root.reply-pending;
+                        mouse-cursor: pointer;
+                        clicked => { root.cycle-model(); }
+                    }
+                }
             }
             Rectangle {
                 background: #15151b;
@@ -80,11 +91,11 @@ export component SystemUi inherits Window {
                     placeholder-text: "What would you like to do?";
                     text <=> root.draft;
                     edited => { keyboard.reopen(); }
-                    accepted => { if (root.draft != "") { root.submit(root.draft); } }
+                    accepted => { if (root.draft != "" && !root.reply-pending) { root.submit(root.draft); } }
                 }
                 Button {
                     text: "Send";
-                    enabled: root.draft != "";
+                    enabled: root.draft != "" && !root.reply-pending;
                     clicked => { root.submit(root.draft); }
                 }
             }

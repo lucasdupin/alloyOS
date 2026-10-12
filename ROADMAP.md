@@ -181,7 +181,8 @@ Forge is its model gateway: it owns model discovery and selection, resident
 inference, cloud adapters, credentials, and provider transport. Gemma 2 2B IT is
 the resident default; cloud models require configured access and explicit
 selection. Missing backends and failed requests return errors without silently
-switching providers.
+switching providers. The planned default model selection is **Auto**, which
+prefers local inference and routes more complex tasks to configured cloud models.
 
 - [x] **Forge resident inference**
   - Multi-model registry, bounded requests and resident backend lifecycle
@@ -201,6 +202,11 @@ switching providers.
 - [ ] **Complete console agent integration**
   - Connect the graphical console to the bounded multi-step tool loop and real OS/app capabilities
   - Persist configuration, conversation and first-boot preferences on CobaltFS
+- [ ] **Auto model selection by default**
+  - Make `Auto` the default model option in Ferrofluid and persist it in the agent configuration
+  - Automatically assess task complexity and required capabilities; prefer a ready local model for tasks it can handle and select a configured cloud model for more complex tasks
+  - Keep routing in Forge, driven by Welder's task requirements, and preserve manual model selection as an override
+  - Show which model Auto selected and respect configured cloud access; report unavailable models rather than treating request failures as task complexity
 - [ ] **Full-model acceptance and performance**
   - Verify readiness and generation with official Gemma weights in the target guest
   - Library fixtures establish interface and numeric behavior, not full-model acceptance
@@ -293,7 +299,7 @@ learning. See [KNOWLEDGE.md](KNOWLEDGE.md) for the design.
 | **M2: Networking & Model Transport** | Guest TCP/IP and authenticated Forge cloud access | `metalos-kernel`, `metalos-user`, `metalos-dev-harness` | Host HTTPS bridge implemented; native TLS and streaming pending |
 | **M3: Boot & Model Readiness** | Liquid boot logo, resident weight loading and workspace transition | `metalos-boot`, `metalos-kernel`, `metalos-ferrofluid` | Logo turbulence and loading implemented |
 | **M4: Ferrofluid System UI** | Slint rendering, chat bridge and native input | `metalos-ferrofluid`, `metalos-keyboard`, `metalos-kernel` | Chat and keyboard connected; synthesized views, IRQ wakeups and voice pending |
-| **M5: Welder & Forge** | Agent orchestration, resident inference and cloud adapters | `metalos-welder`, `metalos-forge` | Runtime libraries and model access implemented; complete agent integration and full-model acceptance pending |
+| **M5: Welder & Forge** | Agent orchestration, resident inference and cloud adapters | `metalos-welder`, `metalos-forge` | Runtime libraries and model access implemented; default Auto routing, complete agent integration and full-model acceptance pending |
 | **M6: JS Automation** | Capability-scoped interpreter and time/event scheduler | `metalos-js`, `metalos-welder` | Libraries implemented; live OS wiring and durability pending |
 | **M7: MCP Apps** | Headless app platform, scoped capabilities and agent presentation | `metalos-mcp`, `metalos-welder`, `metalos-ferrofluid` | Core libraries implemented; live broker, app skills and view transport pending |
 | **M8: User Knowledge** | Durable profile, retrieval, learning and user controls | `metalos-welder`, `metalos-kernel`, `metalos-ferrofluid` | Planned |

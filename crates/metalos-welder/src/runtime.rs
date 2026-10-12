@@ -8,7 +8,7 @@ use alloc::{
     vec,
     vec::Vec,
 };
-use core::cell::RefCell;
+use core::{cell::RefCell, task::Poll};
 use metalos_forge::provider::{AiError, Message, Response};
 use metalos_forge::{ActiveProvider, Forge, ModelGateway};
 
@@ -72,6 +72,11 @@ impl AgentRuntime {
         let provider = self.gateway.switch_provider(name)?;
         self.persist_config_to_vfs();
         Ok(provider)
+    }
+    pub fn cycle_model(&mut self) -> Result<(), AiError> {
+        self.gateway.cycle_model()?;
+        self.persist_config_to_vfs();
+        Ok(())
     }
     pub fn serialize_config(&self) -> String {
         self.gateway.serialize_config()
@@ -159,6 +164,40 @@ impl AgentRuntime {
             .gateway
             .chat(&self.history, &tools_snapshot, on_token)?;
         self.apply_response(response)
+    }
+
+    /// Console UI entry point: return immediately after starting cloud work.
+    pub fn start_console_input(
+        &mut self,
+        input: &str,
+    ) -> Result<Option<ConsoleTurnOutput>, AiError> {
+        if self.gateway.is_pending() {
+            return Err(AiError::PolicyViolation(
+                "A reply is already pending".into(),
+            ));
+        }
+        let trimmed = input.trim();
+        validate_console_input_no_shell(trimmed)?;
+        if trimmed.starts_with("/model") {
+            return self.handle_console_input(input, &mut |_| {}).map(Some);
+        }
+        self.history.push(Message::user(trimmed));
+        if let Err(error) = self.gateway.start_chat(&self.history) {
+            self.history.pop();
+            return Err(error);
+        }
+        Ok(None)
+    }
+    pub fn partial_console_reply(&self) -> Option<String> {
+        self.gateway.partial_reply()
+    }
+    pub fn poll_console_reply(&mut self) -> Poll<Result<ConsoleTurnOutput, AiError>> {
+        match self.gateway.poll_chat() {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(result) => {
+                Poll::Ready(result.and_then(|response| self.apply_response(response)))
+            }
+        }
     }
 
     fn apply_response(&mut self, response: Response) -> Result<ConsoleTurnOutput, AiError> {

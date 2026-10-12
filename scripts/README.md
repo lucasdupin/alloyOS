@@ -27,6 +27,11 @@ verified before atomically installing the file. Errors are intentionally generic
 to avoid printing credentials or signed download URLs. `--package-only` rebuilds
 the image from an already verified local download.
 
+Download progress shows a bar, percentage, transferred GiB, speed, and estimated
+remaining time. A waiting indicator appears when no bytes arrive for five seconds.
+Verification and image packaging also show progress. Terminals update in place;
+redirected output emits a progress line every ten seconds.
+
 Outputs live under ignored `.local/models/gemma-2-2b-it/`:
 
 - `2b_it_v2.gguf`: verified weights.
@@ -66,3 +71,20 @@ python3 -m unittest discover -s scripts -p 'test_*.py'
 
 Passing these checks validates acquisition and image structure; it does not
 claim that real Gemma weights were downloaded or generation succeeded.
+
+Cloud API keys configured by setup now enable Forge providers at launch. Use
+`/model claude`, `/model gemini`, or `/model openai` in chat, and `/model local`
+to return to Gemma. `xtask run` discovers the provider environment variables or
+same-named private `.secrets` files and removes referenced secrets from QEMU's
+inherited environment. The host HTTPS relay needs `curl` and verifies certificates.
+Requests may incur provider charges. Live account access is not covered by fixture tests.
+
+Run a guest-to-host API integration check without network access or real keys:
+
+```sh
+cargo build -p metalos-kernel --target aarch64-unknown-none
+python3 scripts/check_cloud_qemu.py --kernel target/aarch64-unknown-none/debug/metalos-kernel
+```
+
+This loads fixture credentials through fw_cfg and exercises all three provider
+requests and responses over the real UART path. It does not validate API accounts.

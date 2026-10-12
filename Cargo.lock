@@ -2280,6 +2280,7 @@ dependencies = [
 name = "metalos-dev-harness"
 version = "0.1.0"
 dependencies = [
+ "metalos-forge",
  "serde",
  "serde_json",
 ]
@@ -2300,6 +2301,8 @@ name = "metalos-forge"
 version = "0.1.0"
 dependencies = [
  "libm",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2323,6 +2326,7 @@ dependencies = [
  "metalos-proto",
  "metalos-user",
  "metalos-welder",
+ "serde_json",
  "spin",
 ]
 

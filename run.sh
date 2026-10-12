@@ -29,6 +29,7 @@ Usage: ./run.sh [--non-interactive] [--auth-env VARIABLE | --auth-file PATH] [UI
 
 In a terminal, opens a step-by-step setup guide for Gemma and optional cloud
 API credentials. Use --non-interactive as the first option to skip the guide.
+Cloud setup is skipped when credentials exist; use --setup-cloud to add another.
 
 Downloads Gemma if its local model image is missing, then builds and runs
 the UI in release mode with the model attached (16 GiB guest RAM by default).

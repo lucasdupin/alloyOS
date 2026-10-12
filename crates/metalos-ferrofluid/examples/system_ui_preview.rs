@@ -7,7 +7,6 @@ fn main() {
     let mut ui =
         FerrofluidSystemUi::new(PHONE_WIDTH, PHONE_HEIGHT, PHONE_SCALE as f32).expect("System UI");
     ui.set_booting(std::env::args().any(|arg| arg == "--boot"));
-    ui.set_status("Ready · AI unavailable");
     ui.render(Duration::ZERO).expect("initial frame");
     if std::env::args().any(|arg| arg == "--keyboard") {
         for kind in [

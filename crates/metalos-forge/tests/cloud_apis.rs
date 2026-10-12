@@ -1,0 +1,211 @@
+use metalos_forge::{
+    cloud::{ApiProvider, HttpRequest, HttpResponse, HttpsClient},
+    provider::{AiError, Message},
+    Forge, ForgeError, GenerationRequest, ModelGateway,
+};
+use serde_json::{json, Value};
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    sync::{Arc, Mutex},
+};
+struct FixtureHttp {
+    status: u16,
+    response: String,
+    requests: Arc<Mutex<Vec<(String, Value)>>>,
+    provider: ApiProvider,
+}
+impl HttpsClient for FixtureHttp {
+    fn post(&mut self, request: &HttpRequest) -> Result<HttpResponse, ForgeError> {
+        let body: Value = serde_json::from_str(&request.body).unwrap();
+        let (auth, name) = match self.provider {
+            ApiProvider::Claude => ("fixture-key", "x-api-key"),
+            ApiProvider::Gemini => ("fixture-key", "x-goog-api-key"),
+            ApiProvider::OpenAi => ("Bearer fixture-key", "Authorization"),
+        };
+        assert!(request.headers.iter().any(|(n, v)| n == name && v == auth));
+        assert!(!request.url.contains("fixture-key"));
+        self.requests
+            .lock()
+            .unwrap()
+            .push((request.url.clone(), body));
+        Ok(HttpResponse {
+            status: self.status,
+            body: self.response.clone(),
+        })
+    }
+}
+fn reply(provider: ApiProvider) -> Value {
+    match provider {
+        ApiProvider::Claude => {
+            json!({"type":"message","content":[{"type":"text","text":"Hello 東京"}],"usage":{"output_tokens":4}})
+        }
+        ApiProvider::Gemini => {
+            json!({"candidates":[{"content":{"parts":[{"thought":true,"text":"private reasoning"},{"text":"Hello 東京"}]}}],"usageMetadata":{"candidatesTokenCount":4}})
+        }
+        ApiProvider::OpenAi => {
+            json!({"status":"completed","output":[{"type":"reasoning"},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello 東京"}]}],"usage":{"output_tokens":4}})
+        }
+    }
+}
+#[test]
+fn all_apis_execute_through_forge_and_gateway_with_explicit_selection() {
+    let forge = Rc::new(RefCell::new(Forge::new(0)));
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    for provider in [
+        ApiProvider::Claude,
+        ApiProvider::Gemini,
+        ApiProvider::OpenAi,
+    ] {
+        forge
+            .borrow_mut()
+            .connect_api(
+                provider,
+                provider.default_model(),
+                "fixture-key",
+                Box::new(FixtureHttp {
+                    status: 200,
+                    response: reply(provider).to_string(),
+                    requests: captured.clone(),
+                    provider,
+                }),
+            )
+            .unwrap();
+    }
+    assert_eq!(forge.borrow().default_model(), "gemma-2-2b-it");
+    assert_eq!(
+        forge
+            .borrow()
+            .models()
+            .iter()
+            .filter(|m| m.state == "ready")
+            .count(),
+        3
+    );
+    let mut gateway = ModelGateway::new();
+    gateway.set_forge(forge);
+    assert!(matches!(
+        gateway.chat(&[Message::user("hello")], &[], &mut |_| {}),
+        Err(AiError::LocalInferenceError(_))
+    ));
+    assert!(captured.lock().unwrap().is_empty());
+    for provider in [
+        ApiProvider::Claude,
+        ApiProvider::Gemini,
+        ApiProvider::OpenAi,
+    ] {
+        gateway.switch_provider(provider.name()).unwrap();
+        let mut streamed = String::new();
+        let response = gateway
+            .chat(
+                &[Message::user("Quotes \" and 東京\nnew line")],
+                &[],
+                &mut |t| streamed.push_str(t),
+            )
+            .unwrap();
+        assert_eq!(response.text, "Hello 東京");
+        assert_eq!(response.text, streamed);
+        assert_eq!(response.model_name, provider.default_model());
+        assert_eq!(response.usage.completion_tokens, 4);
+    }
+    let requests = captured.lock().unwrap();
+    assert_eq!(requests[0].0, "https://api.anthropic.com/v1/messages");
+    assert_eq!(requests[0].1["max_tokens"], 128);
+    assert!(requests[0].1["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("東京"));
+    assert!(requests[1].0.ends_with(":generateContent"));
+    assert_eq!(requests[1].1["generationConfig"]["maxOutputTokens"], 128);
+    assert_eq!(requests[2].0, "https://api.openai.com/v1/responses");
+    assert_eq!(requests[2].1["max_output_tokens"], 128);
+    assert_eq!(requests[2].1["store"], false);
+}
+#[test]
+fn api_failures_never_turn_into_canned_text_or_leak_response_details() {
+    for provider in [
+        ApiProvider::Claude,
+        ApiProvider::Gemini,
+        ApiProvider::OpenAi,
+    ] {
+        for (status, body, expected) in [
+            (401, "fixture-secret", ForgeError::AuthenticationFailed),
+            (403, "fixture-secret", ForgeError::AuthenticationFailed),
+            (429, "fixture-secret", ForgeError::RateLimited),
+            (503, "fixture-secret", ForgeError::HttpStatus(503)),
+            (200, "not JSON fixture-secret", ForgeError::InvalidResponse),
+            (200, "{}", ForgeError::InvalidResponse),
+        ] {
+            let mut forge = Forge::new(0);
+            forge
+                .connect_api(
+                    provider,
+                    provider.default_model(),
+                    "fixture-key",
+                    Box::new(FixtureHttp {
+                        status,
+                        response: body.into(),
+                        requests: Arc::new(Mutex::new(Vec::new())),
+                        provider,
+                    }),
+                )
+                .unwrap();
+            let error = forge
+                .generate(&GenerationRequest {
+                    model: Some(provider.default_model().into()),
+                    prompt: "hello".into(),
+                    max_tokens: 128,
+                })
+                .unwrap_err();
+            assert_eq!(error, expected);
+            assert!(!error.to_string().contains("fixture-secret"));
+        }
+    }
+}
+#[test]
+fn rejects_bad_credentials_and_impossible_usage_counts() {
+    for key in ["", "secret\r\nInjected: yes"] {
+        let mut forge = Forge::new(0);
+        let provider = ApiProvider::OpenAi;
+        assert_eq!(
+            forge.connect_api(
+                provider,
+                provider.default_model(),
+                key,
+                Box::new(FixtureHttp {
+                    status: 200,
+                    response: reply(provider).to_string(),
+                    requests: Arc::new(Mutex::new(Vec::new())),
+                    provider
+                })
+            ),
+            Err(ForgeError::InvalidRequest)
+        );
+        assert_eq!(forge.models().len(), 1);
+    }
+    let mut forge = Forge::new(0);
+    let provider = ApiProvider::OpenAi;
+    let mut body = reply(provider);
+    body["usage"]["output_tokens"] = json!(999);
+    forge
+        .connect_api(
+            provider,
+            provider.default_model(),
+            "fixture-key",
+            Box::new(FixtureHttp {
+                status: 200,
+                response: body.to_string(),
+                requests: Arc::new(Mutex::new(Vec::new())),
+                provider,
+            }),
+        )
+        .unwrap();
+    assert_eq!(
+        forge.generate(&GenerationRequest {
+            model: Some(provider.default_model().into()),
+            prompt: "hello".into(),
+            max_tokens: 128
+        }),
+        Err(ForgeError::GenerationFailed)
+    );
+}

@@ -32,7 +32,6 @@ pub fn run(
     let mut transcript =
         String::from("Welcome to metalOS.\n\nYour workspace takes shape around what you need.");
     ui.set_active_model(agent.active_model_id());
-    ui.set_status("Welder · resident local inference");
     loop {
         forge.poll();
         // Bound work per frame so a busy input device cannot starve rendering.
@@ -53,10 +52,10 @@ pub fn run(
                 Ok(output) => {
                     transcript.push_str("\n\nWelder: ");
                     transcript.push_str(&output.response_text);
-                    ui.set_status("Welder · response ready");
                 }
                 Err(error) => {
-                    ui.set_status(&alloc::format!("Welder unavailable · {}", error));
+                    transcript.push_str("\n\nWelder: ");
+                    transcript.push_str(&alloc::format!("{}", error));
                 }
             }
             ui.set_active_model(agent.active_model_id());

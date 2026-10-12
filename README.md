@@ -73,8 +73,11 @@ Run the UI with resident Gemma using the root launcher:
 In a terminal, the launcher guides you through build tools, optional Claude,
 Gemini, or OpenAI API credentials, Gemma access, and launch. Pasted keys are
 hidden; optional saved keys live in ignored `.secrets/` files with mode 600.
-Cloud credentials are preparation only: Forge cloud transports are not yet
-implemented, and the current launch uses Gemma.
+Forge uses configured keys for Claude, Gemini, and OpenAI through the QEMU
+HTTPS bridge. In chat, select `/model claude`, `/model gemini`, or `/model openai`;
+`/model local` returns to Gemma. Gemma remains the default. Requests go to the
+selected provider and may incur API charges. The launcher requires `curl` for
+certificate-verified HTTPS.
 
 For automation, use `./run.sh --non-interactive` (as the first option).
 The launcher downloads and packages missing weights, then builds and runs in

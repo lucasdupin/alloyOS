@@ -1,5 +1,6 @@
 //! The development harness's bounded, loopback-only development endpoint and guest serial transport.
 pub mod credentials;
+pub mod https;
 use serde::Deserialize;
 use std::{
     io::{BufRead, BufReader, Read, Write},
@@ -68,17 +69,17 @@ impl Guest {
                 let mut line = Vec::new();
                 match reader
                     .by_ref()
-                    .take((LIMIT + 1) as u64)
+                    .take((metalos_forge::cloud::HTTP_FRAME_LIMIT + 1) as u64)
                     .read_until(b'\n', &mut line)
                 {
                     Ok(0) | Err(_) => break,
                     _ => {}
                 }
-                if line.len() > LIMIT {
+                if line.len() > metalos_forge::cloud::HTTP_FRAME_LIMIT {
                     break;
                 }
                 if let Ok(line) = String::from_utf8(line) {
-                    if line.starts_with("FORGE1\t") && tx.try_send(line).is_err() {
+                    if (line.starts_with("FORGE1\t") || line.starts_with("FORGEHTTP1\t")) && tx.try_send(line).is_err() {
                         break;
                     }
                 }
@@ -115,6 +116,10 @@ impl Guest {
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(_) => return Err("guest transport closed".into()),
             };
+            if let Some(reply) = https::relay(&line, https::post) {
+                self.input.write_all(reply.as_bytes()).and_then(|_|self.input.flush()).map_err(|_|"cloud relay closed")?;
+                continue;
+            }
             if !line.starts_with(&prefix) {
                 continue;
             }

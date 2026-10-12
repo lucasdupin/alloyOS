@@ -117,9 +117,6 @@ impl FerrofluidSystemUi {
     pub fn set_transcript(&self, text: &str) {
         self.ui.set_transcript(text.into());
     }
-    pub fn set_status(&self, text: &str) {
-        self.ui.set_status(text.into());
-    }
     pub fn set_active_model(&self, text: &str) {
         self.ui.set_active_model(text.into());
     }

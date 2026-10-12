@@ -19,7 +19,6 @@ export component SystemUi inherits Window {
     default-font-size: 16px;
     in property <string> active-model: "Gemini";
     in property <string> transcript: "Welcome to metalOS.\n\nYour workspace takes shape around what you need.";
-    in property <string> status: "System UI ready";
     in-out property <string> draft;
     callback submit(string);
     callback soft-key(string);
@@ -75,7 +74,6 @@ export component SystemUi inherits Window {
                     }
                 }
             }
-            Text { text: root.status; color: #a0a0ae; font-size: 13px; wrap: word-wrap; }
             HorizontalBox {
                 spacing: 8px;
                 input := LineEdit {

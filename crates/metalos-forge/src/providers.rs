@@ -45,7 +45,7 @@ fn build_json_schema_parameters(
 }
 
 // ============================================================================
-// 1. Google Gemini Provider ("gemini", default model "gemini-2.5-pro")
+// 1. Google Gemini Provider ("gemini", default model "gemini-3.8-flash")
 // ============================================================================
 
 /// First-class Google Gemini adapter supporting `streamGenerateContent?alt=sse`.
@@ -64,7 +64,7 @@ impl Default for GeminiProvider {
 }
 
 impl GeminiProvider {
-    pub const DEFAULT_MODEL: &'static str = "gemini-2.5-pro";
+    pub const DEFAULT_MODEL: &'static str = crate::cloud::GEMINI_MODEL;
 
     pub fn new() -> Self {
         Self {
@@ -255,7 +255,7 @@ impl AiModelProvider for GeminiProvider {
 }
 
 // ============================================================================
-// 2. Anthropic Claude Provider ("claude", default model "claude-sonnet-4-20250514")
+// 2. Anthropic Claude Provider ("claude", default model "claude-sonnet-4-6")
 // ============================================================================
 
 /// First-class Anthropic Claude adapter supporting `/v1/messages` SSE streaming.
@@ -275,7 +275,7 @@ impl Default for ClaudeProvider {
 }
 
 impl ClaudeProvider {
-    pub const DEFAULT_MODEL: &'static str = "claude-sonnet-4-20250514";
+    pub const DEFAULT_MODEL: &'static str = crate::cloud::CLAUDE_MODEL;
 
     pub fn new() -> Self {
         Self {
@@ -525,7 +525,7 @@ impl Default for ChatGptProvider {
 }
 
 impl ChatGptProvider {
-    pub const DEFAULT_MODEL: &'static str = "gpt-4.1";
+    pub const DEFAULT_MODEL: &'static str = crate::cloud::OPENAI_MODEL;
 
     pub fn new() -> Self {
         Self {

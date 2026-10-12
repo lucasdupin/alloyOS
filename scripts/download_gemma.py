@@ -9,6 +9,8 @@ from pathlib import Path
 import struct
 import sys
 import socket
+import threading
+import time
 import urllib.error
 import urllib.request
 import urllib.parse
@@ -21,6 +23,54 @@ FILENAME = '2b_it_v2.gguf'
 
 class AcquisitionError(ValueError):
     """A diagnostic written by us, safe to display without request data."""
+
+class Progress:
+    """Throttled byte progress; heartbeat also covers blocked network reads."""
+    def __init__(self, label, total, initial=0, stream=None):
+        self.label, self.total = label, total
+        self.stream = stream if stream is not None else sys.stderr
+        self.tty = self.stream.isatty()
+        self.initial = self.completed = initial
+        self.started = self.changed = time.monotonic()
+        self.lock = threading.Lock()
+        self.stop = threading.Event()
+
+    def update(self, completed):
+        with self.lock:
+            self.completed = completed
+            self.changed = time.monotonic()
+
+    def line(self, now):
+        with self.lock:
+            completed, changed = self.completed, self.changed
+        ratio = min(completed / max(self.total, 1), 1)
+        filled = int(ratio * 16)
+        speed = max(completed - self.initial, 0) / max(now - self.started, 0.001)
+        eta = f'{int((self.total - completed) / speed)}s' if speed > 0 else '--'
+        activity = f'waiting {int(now - changed)}s' if now - changed >= 5 and completed < self.total else f'ETA {eta}'
+        return (f'{self.label} [{"#" * filled}{"-" * (16 - filled)}] '
+                f'{ratio:5.1%} {completed / 2**30:.2f}/{self.total / 2**30:.2f} GiB '
+                f'{speed / 2**20:.1f} MiB/s {activity}')
+
+    def render(self, final=False):
+        line = self.line(time.monotonic())
+        self.stream.write(('\r\033[2K' if self.tty else '') + line + ('\n' if final or not self.tty else ''))
+        self.stream.flush()
+
+    def heartbeat(self):
+        while not self.stop.wait(0.5 if self.tty else 10):
+            self.render()
+
+    def __enter__(self):
+        self.render()
+        self.thread = threading.Thread(target=self.heartbeat, daemon=True)
+        self.thread.start()
+        return self
+
+    def __exit__(self, *_):
+        self.stop.set()
+        self.thread.join()
+        self.render(final=True)
 
 def failure_message(error):
     if isinstance(error, AcquisitionError):
@@ -61,9 +111,10 @@ class SafeRedirect(urllib.request.HTTPRedirectHandler):
 
 def digest(path):
     h = hashlib.sha256()
-    with path.open('rb') as src:
+    with Progress('Verifying', path.stat().st_size) as progress, path.open('rb') as src:
         while chunk := src.read(1024 * 1024):
             h.update(chunk)
+            progress.update(src.tell())
     return h.hexdigest()
 
 def verify(path, expected_sha, expected_size):
@@ -90,15 +141,22 @@ def download(path, token, opener=None):
     if start:
         headers['Range'] = f'bytes={start}-'
     url = f'https://huggingface.co/{REPO}/resolve/{REVISION}/{FILENAME}'
-    with opener.open(urllib.request.Request(url, headers=headers), timeout=120) as response:
+    print('Connecting to Hugging Face; interrupted downloads resume automatically.', file=sys.stderr, flush=True)
+    with Progress('Downloading', SIZE, start) as progress, opener.open(urllib.request.Request(url, headers=headers), timeout=120) as response:
         append = start and response.status == 206
         if append and not response.headers.get('Content-Range', '').startswith(f'bytes {start}-'):
             raise AcquisitionError('Server returned an invalid download resume range. Remove 2b_it_v2.gguf.part from the output directory and rerun.')
         with partial.open('ab' if append else 'wb') as output:
+            # A server ignoring Range restarts the transfer from zero.
+            if not append:
+                with progress.lock:
+                    progress.initial = 0
+                progress.update(0)
             while chunk := response.read(1024 * 1024):
                 output.write(chunk)
                 if output.tell() > SIZE:
                     raise AcquisitionError('Download exceeded the pinned model size. Remove 2b_it_v2.gguf.part and check model access before rerunning.')
+                progress.update(output.tell())
             output.flush()
             os.fsync(output.fileno())
     verify(partial, SHA256, SIZE)
@@ -112,10 +170,11 @@ def package(source, output, expected_sha=SHA256, expected_size=SIZE):
     struct.pack_into('<Q', header, 8, expected_size)
     header[16:48] = bytes.fromhex(expected_sha)
     header[48:48 + len(b'gemma-2-2b-it')] = b'gemma-2-2b-it'
-    with source.open('rb') as src, partial.open('wb') as dest:
+    with Progress('Packaging', expected_size) as progress, source.open('rb') as src, partial.open('wb') as dest:
         dest.write(header)
         while chunk := src.read(1024 * 1024):
             dest.write(chunk)
+            progress.update(src.tell())
         padding = (-dest.tell()) % 512
         dest.write(bytes(padding))
         dest.flush()

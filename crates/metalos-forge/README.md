@@ -61,3 +61,35 @@ Graph and format references:
 - https://github.com/ggml-org/llama.cpp/blob/master/src/models/gemma2.cpp
 - https://github.com/ggml-org/llama.cpp/blob/master/conversion/gemma.py
 - https://github.com/ggml-org/ggml/blob/master/docs/gguf.md
+
+## Cloud APIs
+
+Forge supports Claude Messages, Gemini GenerateContent, and OpenAI Responses.
+The defaults are `claude-sonnet-4-6`, `gemini-3.8-flash`, and `gpt-4.1`.
+OpenAI's chat provider alias remains accepted as `/model chatgpt`, alongside
+`/model openai`. Selecting a provider does not change the resident Gemma default
+and failed requests never silently switch providers.
+
+For `xtask run`, keys are discovered from `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`,
+`OPENAI_API_KEY`, or same-named owner-only files under `.secrets/`. Explicit
+`--auth-env NAME` and `--auth-file PATH` references are also accepted. Files can
+contain `NAME=VALUE` lines; same-named key files may contain a single raw key.
+The interactive launcher prepares these references. Credentials cross into
+volatile guest RAM through QEMU fw_cfg, not command-line key values or AI config.
+
+Forge constructs the request and parses provider JSON. A bounded UART capability
+relays HTTPS through the host's `curl`, using its certificate verification and
+fixed provider destinations. The host handles no model routing or tool execution.
+There are no redirects, insecure TLS mode, automatic retries, or credential logs.
+Welder receives generated text or sanitized errors. Calls are synchronous and
+non-streaming; the UI waits for a complete response. API charges are separate
+from consumer subscriptions.
+
+This QEMU bridge is required today because guest-native authenticated TLS is
+not implemented. Direct QEMU launches must supply an equivalent HTTPS capability.
+Offline fixtures cover all APIs, status failures, malformed replies, token bounds,
+explicit provider selection, and the HTTPS relay; they do not verify account access.
+
+API contracts: [Claude Messages](https://platform.claude.com/docs/en/api/messages/create),
+[Gemini GenerateContent](https://ai.google.dev/api/generate-content),
+[OpenAI Responses](https://developers.openai.com/api/docs/guides/text).

@@ -21,6 +21,11 @@ pub enum ForgeError {
     BackendUnavailable,
     MemoryBudgetExceeded,
     GenerationFailed,
+    AuthenticationFailed,
+    RateLimited,
+    HttpStatus(u16),
+    TransportUnavailable,
+    InvalidResponse,
 }
 impl ForgeError {
     pub const fn code(&self) -> &'static str {
@@ -31,12 +36,17 @@ impl ForgeError {
             Self::BackendUnavailable => "backend_unavailable",
             Self::MemoryBudgetExceeded => "memory_budget_exceeded",
             Self::GenerationFailed => "generation_failed",
+            Self::AuthenticationFailed => "authentication_failed",
+            Self::RateLimited => "rate_limited",
+            Self::HttpStatus(_) => "http_error",
+            Self::TransportUnavailable => "https_transport_unavailable",
+            Self::InvalidResponse => "invalid_api_response",
         }
     }
 }
 impl fmt::Display for ForgeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.code())
+        if let Self::HttpStatus(status) = self { write!(f, "http_error_{status}") } else { f.write_str(self.code()) }
     }
 }
 
@@ -311,3 +321,5 @@ pub use gateway::{ActiveProvider, ModelGateway};
 
 #[cfg(test)]
 mod provider_tests;
+
+pub mod cloud;

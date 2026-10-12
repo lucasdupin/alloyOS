@@ -19,6 +19,11 @@ spec.loader.exec_module(setup)
 
 
 class SetupTests(unittest.TestCase):
+    def setUp(self):
+        environment = mock.patch.dict(os.environ, {}, clear=True)
+        environment.start()
+        self.addCleanup(environment.stop)
+
     def test_return_and_default_work_after_raw_terminal(self):
         master, slave = pty.openpty()
         process = None
@@ -84,19 +89,36 @@ class SetupTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 setup.credential('HF_TOKEN')
 
-    def test_launch_reuses_model_and_strips_credentials(self):
+    def test_launch_reuses_model_and_forwards_only_cloud_credentials(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(setup, 'ROOT', Path(tmp)):
             image = Path(tmp) / '.local/models/gemma-2-2b-it/model.img'
             image.parent.mkdir(parents=True)
             image.touch()
             output = io.StringIO()
-            with mock.patch('sys.argv', ['setup_run', '--memory', '20G']), mock.patch.object(setup.shutil, 'which', return_value='/tool'), mock.patch('builtins.input', side_effect=['0', 'y']), mock.patch.dict(os.environ, {'HF_TOKEN': 'fixture-secret', 'OPENAI_API_KEY': 'cloud-secret'}), mock.patch.object(setup.os, 'execve') as launch, contextlib.redirect_stdout(output):
+            with mock.patch('sys.argv', ['setup_run', '--memory', '20G']), mock.patch.object(setup.shutil, 'which', return_value='/tool'), mock.patch('builtins.input', side_effect=['y']), mock.patch.dict(os.environ, {'HF_TOKEN': 'fixture-secret', 'OPENAI_API_KEY': 'cloud-secret'}, clear=True), mock.patch.object(setup.os, 'execve') as launch, contextlib.redirect_stdout(output):
                 setup.main()
             argv, env = launch.call_args.args[1:]
             self.assertEqual(argv, ['run.sh', '--non-interactive', '--memory', '20G'])
             self.assertNotIn('HF_TOKEN', env)
-            self.assertNotIn('OPENAI_API_KEY', env)
+            self.assertEqual(env.get('OPENAI_API_KEY'), 'cloud-secret')
+            self.assertNotIn('cloud-secret', repr(argv))
+            self.assertNotIn('cloud-secret', output.getvalue())
             self.assertNotIn('fixture-secret', output.getvalue())
+            self.assertIn('Skipping cloud setup', output.getvalue())
+
+    def test_saved_cloud_key_skips_every_cloud_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(setup, 'ROOT', Path(tmp)), mock.patch('sys.argv', ['setup_run']), mock.patch.object(setup.shutil, 'which', return_value='/tool'), mock.patch('builtins.input', side_effect=['n']) as prompt, contextlib.redirect_stdout(io.StringIO()) as output:
+            setup.save_secret('GEMINI_API_KEY', 'fixture-secret')
+            self.assertEqual(setup.main(), 0)
+            self.assertEqual(prompt.call_count, 1)
+            self.assertIn('Already configured: Gemini', output.getvalue())
+            self.assertNotIn('Which setup instructions', output.getvalue())
+            self.assertNotIn('fixture-secret', output.getvalue())
+
+    def test_cloud_setup_can_be_requested_explicitly(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(setup, 'ROOT', Path(tmp)), mock.patch('sys.argv', ['setup_run', '--setup-cloud']), mock.patch.object(setup.shutil, 'which', return_value='/tool'), mock.patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'fixture-secret'}), mock.patch('builtins.input', side_effect=['0', 'n']) as prompt, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(setup.main(), 0)
+            self.assertIn('Which setup instructions', prompt.call_args_list[0].args[0])
 
     def test_download_retry_uses_reference_only(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(setup, 'ROOT', Path(tmp)), mock.patch('sys.argv', ['setup_run', '--auth-file', '/private/hf-token']), mock.patch.object(setup.shutil, 'which', return_value='/tool'), mock.patch('builtins.input', side_effect=['0', 'y', 'y', 'n']), mock.patch.object(setup.subprocess, 'run', side_effect=[mock.Mock(returncode=1), mock.Mock(returncode=0)]) as download, contextlib.redirect_stdout(io.StringIO()):
@@ -104,10 +126,12 @@ class SetupTests(unittest.TestCase):
             self.assertEqual(download.call_count, 2)
             self.assertEqual(download.call_args.args[0][-2:], ['--auth-file', '/private/hf-token'])
 
-    def test_cloud_setup_is_explicitly_pending(self):
+    def test_cloud_setup_explains_selection_and_separate_api_billing(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(setup, 'ROOT', Path(tmp)), mock.patch('sys.argv', ['setup_run']), mock.patch.object(setup.shutil, 'which', return_value='/tool'), mock.patch('builtins.input', side_effect=['3', 'n', 'n']), contextlib.redirect_stdout(io.StringIO()) as output:
             self.assertEqual(setup.main(), 0)
-            self.assertIn('not implemented yet', output.getvalue())
+            self.assertIn('through verified HTTPS', output.getvalue())
+            self.assertIn('/model openai', output.getvalue())
+            self.assertIn('Gemma remains the default', output.getvalue())
             self.assertIn('ChatGPT subscription does not include API billing', output.getvalue())
 
 

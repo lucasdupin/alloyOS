@@ -5,10 +5,10 @@ use alloc::{string::String, vec, vec::Vec};
 fn gemini_provider_request_and_sse_streaming_with_tool_call() {
     let mut gemini = GeminiProvider::new();
     assert_eq!(gemini.name(), "gemini");
-    assert_eq!(gemini.model, "gemini-2.5-pro");
+    assert_eq!(gemini.model, "gemini-3.8-flash");
     assert!(gemini
         .endpoint_url()
-        .contains("models/gemini-2.5-pro:streamGenerateContent?alt=sse"));
+        .contains("models/gemini-3.8-flash:streamGenerateContent?alt=sse"));
 
     let specs = vec![
         ToolSpec::new("fs_read", "Read file", Vec::new()),
@@ -44,7 +44,7 @@ fn gemini_provider_request_and_sse_streaming_with_tool_call() {
 
     assert_eq!(streamed_tokens, vec!["Reading ", "config..."]);
     assert_eq!(response.text, "Reading config...");
-    assert_eq!(response.model_name, "gemini-2.5-pro");
+    assert_eq!(response.model_name, "gemini-3.8-flash");
     assert_eq!(response.tool_calls.len(), 1);
     assert_eq!(response.tool_calls[0].name, "fs_read");
     assert_eq!(
@@ -57,7 +57,7 @@ fn gemini_provider_request_and_sse_streaming_with_tool_call() {
 fn claude_provider_request_and_sse_streaming_with_tool_use() {
     let mut claude = ClaudeProvider::new();
     assert_eq!(claude.name(), "claude");
-    assert_eq!(claude.model, "claude-sonnet-4-20250514");
+    assert_eq!(claude.model, "claude-sonnet-4-6");
     assert_eq!(
         claude.endpoint_url(),
         "https://api.anthropic.com/v1/messages"
@@ -76,7 +76,7 @@ fn claude_provider_request_and_sse_streaming_with_tool_use() {
     let req_json = claude
         .build_request_json(&messages, &specs)
         .expect("should build Claude JSON request");
-    assert!(req_json.contains("\"model\":\"claude-sonnet-4-20250514\""));
+    assert!(req_json.contains("\"model\":\"claude-sonnet-4-6\""));
     assert!(req_json.contains("\"stream\":true"));
     assert!(req_json.contains("\"input_schema\""));
     assert!(req_json.contains("\"script_run\""));

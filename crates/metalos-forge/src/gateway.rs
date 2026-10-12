@@ -261,9 +261,9 @@ mod tests {
     fn conversation_uses_explicit_shared_transport_and_keeps_context() {
         let forge = Rc::new(RefCell::new(Forge::new(0)));
         let cloud = CloudModel::new(
-            "claude-sonnet-4-20250514",
+            "claude-sonnet-4-6",
             "claude",
-            "claude-sonnet-4-20250514",
+            "claude-sonnet-4-6",
             "test-credential",
         )
         .unwrap();
@@ -293,7 +293,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.text, "Transport response");
         assert_eq!(tokens, response.text);
-        assert_eq!(response.model_name, "claude-sonnet-4-20250514");
+        assert_eq!(response.model_name, "claude-sonnet-4-6");
     }
 
     #[test]

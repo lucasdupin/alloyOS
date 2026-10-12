@@ -34,3 +34,11 @@ transient private fw_cfg file, removed when the guest exits. Token values must
 never be supplied directly on command lines, committed, or written to model images.
 The host download script takes its own auth reference; tokens are not needed for
 local inference once model weights exist.
+
+The host also provides a bounded HTTPS capability for Forge API requests.
+`https::run_ui` services this capability while QEMU displays Ferrofluid; the
+loopback development endpoint services it during a cloud generation request.
+The host forwards only the fixed Claude/Gemini/OpenAI HTTPS endpoints, through
+certificate-verified curl with redirects disabled and a 45-second request timeout.
+Credentials and JSON bodies cross private stdin/stdout pipes and are not logged.
+Forge owns model selection and API semantics; Welder has no network access.

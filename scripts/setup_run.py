@@ -95,26 +95,38 @@ def main():
     auth = parser.add_mutually_exclusive_group()
     auth.add_argument('--auth-env')
     auth.add_argument('--auth-file')
+    parser.add_argument('--setup-cloud', action='store_true', help='Show cloud setup even when a provider is already configured')
     args, launch = parser.parse_known_args()
     print('\nWelcome to metalOS. We’ll prepare a local model, explain cloud access, then launch.\n')
     print('Step 1 of 4 — Build tools')
-    missing = [name for name in ('cargo', 'qemu-system-aarch64') if not shutil.which(name)]
+    missing = [name for name in ('cargo', 'qemu-system-aarch64', 'curl') if not shutil.which(name)]
     if missing:
         print('Missing: ' + ', '.join(missing))
         print('Install Rust from https://rustup.rs and QEMU (on macOS: brew install qemu), then rerun.')
         return 1
-    print('Cargo and QEMU are available.')
+    print('Cargo, QEMU, and curl are available.')
     print('\nStep 2 of 4 — Optional cloud API access')
-    print('Forge cloud transports are not implemented yet. Keys can be prepared now,')
-    print('but this launch uses Gemma; saving a key does not enable cloud generation.')
-    print('1 Claude   2 Gemini   3 OpenAI / ChatGPT models   4 All three   0 Skip')
-    selected = choose('Which setup instructions would you like?', ('0', '1', '2', '3', '4'), '0')
+    print('Forge supports Claude, Gemini, and OpenAI through verified HTTPS.')
+    print('Gemma remains the default. Use /model claude, /model gemini, or /model openai in chat.')
+    configured = []
+    for title, name, _, _ in PROVIDERS.values():
+        path = ROOT / '.secrets' / name
+        if os.environ.get(name, '').strip() or path.exists() or path.is_symlink():
+            credential(name)  # Validate private files without displaying their contents.
+            configured.append(title)
+    if configured and not args.setup_cloud:
+        print('Already configured: ' + ', '.join(configured) + '. Skipping cloud setup.')
+        print('To add another provider later, run ./run.sh --setup-cloud.')
+        selected = '0'
+    else:
+        print('1 Claude   2 Gemini   3 OpenAI / ChatGPT models   4 All three   0 Skip')
+        selected = choose('Which setup instructions would you like?', ('0', '1', '2', '3', '4'), '0')
     for key in (('1', '2', '3') if selected == '4' else (() if selected == '0' else (selected,))):
         title, name, url, instructions = PROVIDERS[key]
         print(f'\n{title}\n  1. Open {url}\n  2. {instructions}\n  3. Return here with the API key.')
         if choose('Configure a key now? y/n', ('y', 'n'), 'n') == 'y':
             credential(name)
-            print('Credential prepared locally. Forge integration is still pending.')
+            print('Credential configured. Forge will enable this provider at launch.')
     print('\nStep 3 of 4 — Resident Gemma')
     image = ROOT / '.local/models/gemma-2-2b-it/model.img'
     if image.is_file():
@@ -141,7 +153,7 @@ def main():
         return 0
     # Downloader credentials are unnecessary for the already-prepared model.
     env = dict(os.environ)
-    for name in ('HF_TOKEN', args.auth_env, 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'OPENAI_API_KEY'):
+    for name in ('HF_TOKEN', args.auth_env):
         if name:
             env.pop(name, None)
     os.execve(str(ROOT / 'run.sh'), ['run.sh', '--non-interactive', *launch], env)

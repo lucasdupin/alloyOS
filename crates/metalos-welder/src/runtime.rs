@@ -209,7 +209,7 @@ mod tests {
             .handle_console_input("/model claude", &mut |t| streamed.push_str(t))
             .expect("should switch to claude");
         assert_eq!(out_claude.active_provider, "claude");
-        assert_eq!(out_claude.active_model, "claude-sonnet-4-20250514");
+        assert_eq!(out_claude.active_model, "claude-sonnet-4-6");
         assert!(out_claude.config_persisted);
 
         let saved_conf = runtime
@@ -217,7 +217,7 @@ mod tests {
             .vfs_read("/etc/ai.conf")
             .expect("/etc/ai.conf must exist");
         assert!(saved_conf.contains("provider=claude"));
-        assert!(saved_conf.contains("model=claude-sonnet-4-20250514"));
+        assert!(saved_conf.contains("model=claude-sonnet-4-6"));
 
         // Switch to ChatGPT via slash command
         let out_gpt = runtime
@@ -231,15 +231,15 @@ mod tests {
             .handle_console_input("/model gemini", &mut |_| {})
             .expect("should switch to gemini");
         assert_eq!(out_gemini.active_provider, "gemini");
-        assert_eq!(out_gemini.active_model, "gemini-2.5-pro");
+        assert_eq!(out_gemini.active_model, "gemini-3.8-flash");
 
         // Test loading a custom /etc/ai.conf into a fresh runtime
         let mut restored = AgentRuntime::new();
         restored
-            .load_config_str("provider=claude\nmodel=claude-sonnet-4-20250514\n")
+            .load_config_str("provider=claude\nmodel=claude-sonnet-4-6\n")
             .expect("config should load");
         assert_eq!(restored.active_provider_name(), "claude");
-        assert_eq!(restored.active_model_id(), "claude-sonnet-4-20250514");
+        assert_eq!(restored.active_model_id(), "claude-sonnet-4-6");
     }
 
     #[test]

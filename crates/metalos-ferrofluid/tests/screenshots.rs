@@ -33,7 +33,6 @@ fn system_ui_screenshots() {
     ui.render(Duration::ZERO);
     snapshot(&mut suite, "boot", &ui);
     ui.set_booting(false);
-    ui.set_status("Ready · AI unavailable");
     ui.render(Duration::from_millis(16));
     snapshot(&mut suite, "workspace", &ui);
     pointer(&mut ui, InputEventKind::PointerButtonDown, 300, 2500);

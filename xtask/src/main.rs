@@ -36,6 +36,10 @@ enum Commands {
         /// Guest RAM; defaults to 16G with a model, otherwise 256M
         #[arg(long)]
         memory: Option<String>,
+        /// Cloud credential environment references (never key values)
+        #[arg(long)] auth_env: Vec<String>,
+        /// Private cloud credential files
+        #[arg(long)] auth_file: Vec<PathBuf>,
     },
     /// Launches the host development bridge and its loopback Forge endpoint
     ForgeBridge {
@@ -401,7 +405,23 @@ fn build_crates_mode(release: bool, debug_shell: bool, forge: bool) -> Result<Pa
     Ok(kernel_bin)
 }
 
-fn run_qemu(release: bool, debug_shell: bool, model_image: Option<PathBuf>, memory: Option<String>) -> Result<()> {
+fn attach_cloud_credentials(command: &mut Command, root: &Path, mut env_names: Vec<String>, mut files: Vec<PathBuf>) -> Result<Option<metalos_dev_harness::credentials::BootCredentials>> {
+    // Explicit references take precedence over automatic discovery.
+    if env_names.is_empty() && files.is_empty() {
+        for name in ["ANTHROPIC_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY"] {
+            if std::env::var_os(name).is_some() {
+                env_names.push(name.into());
+            } else {
+                let file=root.join(".secrets").join(name);
+                if file.is_file() { files.push(file); }
+            }
+        }
+    }
+    metalos_dev_harness::credentials::attach(command,&env_names,&files).map_err(|e|anyhow!(e))
+}
+
+fn run_qemu(release: bool, debug_shell: bool, model_image: Option<PathBuf>, memory: Option<String>, auth_env: Vec<String>, auth_file: Vec<PathBuf>) -> Result<()> {
+    let forge_mode = model_image.is_some();
     let memory = memory.unwrap_or_else(|| if model_image.is_some() { "16G" } else { "256M" }.into());
     if model_image.is_some() {
         validate_forge_launch(&memory, model_image.as_deref(), 120)?;
@@ -447,7 +467,8 @@ fn run_qemu(release: bool, debug_shell: bool, model_image: Option<PathBuf>, memo
         }
         qemu.env("DYLD_INSERT_LIBRARIES", libraries);
     }
-    let status = qemu.arg("-M")
+    let _credentials=attach_cloud_credentials(&mut qemu,&workspace_root,auth_env,auth_file)?;
+    qemu.arg("-M")
         .arg("virt")
         .arg("-accel")
         .arg("hvf")
@@ -475,11 +496,12 @@ fn run_qemu(release: bool, debug_shell: bool, model_image: Option<PathBuf>, memo
         .arg("-m")
         .arg(memory)
         .arg("-no-reboot")
-        .status()
-        .context("Failed to execute qemu-system-aarch64")?;
-
-    if !status.success() {
-        return Err(anyhow!("QEMU exited with error: {:?}", status.code()));
+        .arg("-monitor").arg("none");
+    if debug_shell && !forge_mode {
+        let status=qemu.status().context("Failed to execute qemu-system-aarch64")?;
+        if !status.success() { return Err(anyhow!("QEMU exited with an error")); }
+    } else {
+        metalos_dev_harness::https::run_ui(&mut qemu).map_err(|e|anyhow!(e))?;
     }
     Ok(())
 }
@@ -694,7 +716,7 @@ fn main() -> Result<()> {
             println!("[xtask] Kernel built: {}", image.display());
             Ok(())
         }
-        Commands::Run { release, debug_shell, model_image, memory } => run_qemu(release, debug_shell, model_image, memory),
+        Commands::Run { release, debug_shell, model_image, memory, auth_env, auth_file } => run_qemu(release, debug_shell, model_image, memory, auth_env, auth_file),
         Commands::Test {
             timeout,
             release,
@@ -723,7 +745,7 @@ fn main() -> Result<()> {
                 command.arg("-device").arg(format!("loader,file={},addr=0x80000000,force-raw=on", image.display()));
             }
             metalos_dev_harness::install_shutdown_handler();
-            let _credentials = metalos_dev_harness::credentials::attach(&mut command, &auth_env, &auth_file).map_err(|e| anyhow!(e))?;
+            let _credentials = attach_cloud_credentials(&mut command, &root, auth_env, auth_file)?;
             let mut guest = metalos_dev_harness::Guest::launch(&mut command, Duration::from_secs(timeout)).map_err(|e| anyhow!(e))?;
             // A status response confirms the guest transport. Model readiness is reported in its JSON.
             let status = guest.wait_ready().map_err(|e| anyhow!(e))?;
@@ -778,11 +800,11 @@ mod tests {
     #[test]
     fn parse_run_command() {
         let args = Cli::parse_from(["xtask", "run"]);
-        assert_eq!(args.command, Commands::Run { release: false, debug_shell: false, model_image: None, memory: None });
+        assert_eq!(args.command, Commands::Run { release: false, debug_shell: false, model_image: None, memory: None, auth_env: Vec::new(), auth_file: Vec::new() });
         let debug = Cli::parse_from(["xtask", "run", "--debug-shell"]);
-        assert_eq!(debug.command, Commands::Run { release: false, debug_shell: true, model_image: None, memory: None });
+        assert_eq!(debug.command, Commands::Run { release: false, debug_shell: true, model_image: None, memory: None, auth_env: Vec::new(), auth_file: Vec::new() });
         let model = Cli::parse_from(["xtask", "run", "--model-image", "model.img", "--memory", "16G"]);
-        assert_eq!(model.command, Commands::Run { release: false, debug_shell: false, model_image: Some(PathBuf::from("model.img")), memory: Some("16G".into()) });
+        assert_eq!(model.command, Commands::Run { release: false, debug_shell: false, model_image: Some(PathBuf::from("model.img")), memory: Some("16G".into()), auth_env: Vec::new(), auth_file: Vec::new() });
     }
 
     #[test]

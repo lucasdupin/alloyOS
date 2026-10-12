@@ -26,6 +26,15 @@ pub fn attach(
     env_names: &[String],
     files: &[PathBuf],
 ) -> Result<Option<BootCredentials>, String> {
+    // QEMU receives only the private fw_cfg payload, never inherited provider keys.
+    for name in [
+        "ANTHROPIC_API_KEY",
+        "GEMINI_API_KEY",
+        "OPENAI_API_KEY",
+        "HF_TOKEN",
+    ] {
+        command.env_remove(name);
+    }
     let mut entries = Vec::new();
     for name in env_names {
         let value = std::env::var(name)
@@ -48,6 +57,19 @@ pub fn attach(
             return Err("credential file too large".into());
         }
         let data = String::from_utf8(data).map_err(|_| "credential file must be UTF-8")?;
+        let basename = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        if [
+            "ANTHROPIC_API_KEY",
+            "GEMINI_API_KEY",
+            "OPENAI_API_KEY",
+            "HF_TOKEN",
+        ]
+        .contains(&basename)
+            && !data.trim().starts_with(&format!("{basename}="))
+        {
+            entries.push((basename.into(), data.trim().into()));
+            continue;
+        }
         for line in data.lines().filter(|s| !s.is_empty()) {
             let (name, value) = line
                 .split_once('=')
@@ -134,6 +156,29 @@ mod tests {
         assert!(!path.exists());
         fs::remove_file(source).unwrap();
     }
+    #[test]
+    fn setup_key_files_reach_fw_cfg_without_entering_argv() {
+        let source =
+            std::env::temp_dir().join(format!("metalos-api-file-test-{}", std::process::id()));
+        fs::create_dir_all(&source).unwrap();
+        let path = source.join("OPENAI_API_KEY");
+        fs::write(&path, b"fixture-secret=value\n").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let mut command = Command::new("qemu");
+        let guard = attach(&mut command, &[], &[path]).unwrap().unwrap();
+        assert_eq!(
+            fs::read(guard.directory.join("boot-auth")).unwrap(),
+            b"OPENAI_API_KEY=fixture-secret=value\0"
+        );
+        assert!(!format!("{:?}", command).contains("fixture-secret"));
+        assert!(command
+            .get_envs()
+            .any(|(name, value)| name == "OPENAI_API_KEY" && value.is_none()));
+        drop(guard);
+        fs::remove_dir_all(source).unwrap();
+    }
+
     #[test]
     fn empty_credentials_need_no_channel() {
         assert!(attach(&mut Command::new("qemu"), &[], &[])

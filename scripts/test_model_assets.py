@@ -12,6 +12,36 @@ assets = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(assets)
 
 class ModelAssetsTests(unittest.TestCase):
+    def test_progress_reports_resume_speed_eta_and_waiting(self):
+        output = io.StringIO()
+        with mock.patch.object(assets.time, 'monotonic', return_value=0):
+            progress = assets.Progress('Downloading', 100 * 2**20, 40 * 2**20, stream=output)
+            progress.update(60 * 2**20)
+        line = progress.line(2)
+        self.assertIn('60.0%', line)
+        self.assertIn('10.0 MiB/s', line)
+        self.assertIn('ETA 4s', line)
+        self.assertIn('waiting 6s', progress.line(6))
+
+    def test_terminal_bar_finishes_on_its_own_line(self):
+        output = io.StringIO()
+        output.isatty = lambda: True
+        with assets.Progress('Downloading', 10, stream=output) as progress:
+            progress.update(10)
+        self.assertIn('\r\033[2K', output.getvalue())
+        self.assertIn('100.0%', output.getvalue())
+        self.assertTrue(output.getvalue().endswith('\n'))
+        self.assertFalse(progress.thread.is_alive())
+
+    def test_progress_cleans_up_after_failed_read(self):
+        output = io.StringIO()
+        with self.assertRaises(OSError):
+            with assets.Progress('Downloading', 10, stream=output) as progress:
+                raise OSError('fixture-secret')
+        self.assertFalse(progress.thread.is_alive())
+        self.assertNotIn('fixture-secret', output.getvalue())
+        self.assertNotIn('\033', output.getvalue())
+
     def test_packaging_and_integrity(self):
         with tempfile.TemporaryDirectory() as directory:
             src = pathlib.Path(directory)/'model.gguf'

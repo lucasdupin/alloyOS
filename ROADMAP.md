@@ -1,12 +1,12 @@
-# metalOS Roadmap
+# alloyOS Roadmap
 
-**metalOS** is an AI-first, single-user, bare-metal ARM64 operating system written in `#![no_std]` Rust for QEMU `virt`, with native Apple Silicon acceleration through HVF. Ferrofluid provides the Slint system interface, Welder orchestrates the agent, Forge supplies resident and cloud model access, and CobaltFS provides persistent storage. Gemma 2 2B IT is the default local model; Claude, Gemini, and OpenAI are explicit cloud alternatives.
+**alloyOS** is an AI-first, single-user, bare-metal ARM64 operating system written in `#![no_std]` Rust for QEMU `virt`, with native Apple Silicon acceleration through HVF. Ferrofluid provides the Slint system interface, Welder orchestrates the agent, Forge supplies resident and cloud model access, and CobaltFS provides persistent storage. Gemma 2 2B IT is the default local model; Claude, Gemini, and OpenAI are explicit cloud alternatives.
 
 ### Core Architectural Invariants
-- **Single-User by Design**: Personal devices are single-owner devices. metalOS intentionally omits multi-user support (no UIDs/GIDs, user session switching, `/home/<user>` hierarchies, or cross-user permission matrices). Security and isolation boundaries exist strictly between **the AI Agent** and **capability-scoped JS isolates / headless MCP apps**, eliminating an entire class of state-synchronization and permission bugs.
-- **No Shell for the AI**: The AI agent cannot see or execute shell commands (`sh`, `exec`, `spawn`). It interacts with the OS exclusively through typed native tools, local JavaScript (`metalos-js`), and MCP servers.
-- **Agent-Exclusive UI & Declarative Tiles**: Developer apps are strictly headless (`metalos-mcp`) and never link against or depend on any UI toolkit. Each app can expose **MCP entry points** (tools, resources, prompts), **SKILLs** (text files under `/apps/<app_id>/SKILL.md`), and declarative **Tiles** (`AppTile` schemas that can be embedded in the chat stream or pinned to the **Dashboard**). Only Welder and **Ferrofluid (`ferrofluidd`)** synthesize and render UI surfaces.
-- **One Process per App (required; pending)**: Every JavaScript app runs in its own independently scheduled OS process with a private virtual address space. `metalos-mcp` invokes app handlers through IPC; manifest capabilities remain enforced inside each app process. An app fault or hang must not stop the host, Welder, Ferrofluid, or other apps.
+- **Single-User by Design**: Personal devices are single-owner devices. alloyOS intentionally omits multi-user support (no UIDs/GIDs, user session switching, `/home/<user>` hierarchies, or cross-user permission matrices). Security and isolation boundaries exist strictly between **the AI Agent** and **capability-scoped JS isolates / headless MCP apps**, eliminating an entire class of state-synchronization and permission bugs.
+- **No Shell for the AI**: The AI agent cannot see or execute shell commands (`sh`, `exec`, `spawn`). It interacts with the OS exclusively through typed native tools, local JavaScript (`alloyos-js`), and MCP servers.
+- **Agent-Exclusive UI & Declarative Tiles**: Developer apps are strictly headless (`alloyos-mcp`) and never link against or depend on any UI toolkit. Each app can expose **MCP entry points** (tools, resources, prompts), **SKILLs** (text files under `/apps/<app_id>/SKILL.md`), and declarative **Tiles** (`AppTile` schemas that can be embedded in the chat stream or pinned to the **Dashboard**). Only Welder and **Ferrofluid (`ferrofluidd`)** synthesize and render UI surfaces.
+- **One Process per App (required; pending)**: Every JavaScript app runs in its own independently scheduled OS process with a private virtual address space. `alloyos-mcp` invokes app handlers through IPC; manifest capabilities remain enforced inside each app process. An app fault or hang must not stop the host, Welder, Ferrofluid, or other apps.
 - **Welder-Centralized App Orchestration & Exclusive `Tasks` Scheduler Access**: No app can access or invoke another app; **only Welder centralizes app access and orchestration**. Furthermore, the canonical **Tasks** app (`app_id = "tasks"`) is the **only** app permitted to access `ScriptScheduler` (`/etc/schedules.conf` and `/scripts/*.js`), and Welder must route scheduled-task operations through `Tasks`.
 - **Agent-Owned User Knowledge**: The planned knowledge service maintains local user context under `/knowledge/`, with source tracking and user correction/deletion controls. Skills are supplied by `/apps/`, independently of knowledge; no top-level `/skills/` directory is planned.
 
@@ -39,7 +39,7 @@ flowchart TB
     subgraph Apps["App architecture — headless, Welder-centralized, capability scoped"]
         Tasks["Tasks App (/apps/tasks)<br/>MCP entry points, SKILL.md & declarative Tiles<br/>Sole app with ScriptScheduler access"]
         OtherMCP["Future MCP Apps<br/>MCP entry points, SKILLs & Tiles<br/>Zero cross-app or scheduler access"]
-        JS["JavaScript automation (metalos-js)<br/>Isolated interpreter and ScriptScheduler"]
+        JS["JavaScript automation (alloyos-js)<br/>Isolated interpreter and ScriptScheduler"]
     end
 
     Boot -->|"Initialize"| Kernel
@@ -57,7 +57,7 @@ flowchart TB
     Welder -.->|"Sole app orchestrator"| OtherMCP
     Tasks -->|"Exclusive schedule CRUD"| JS
     Welder -->|"Create and run scripts"| JS
-    JS -->|"Opt-in MetalOS.forge capability"| Forge
+    JS -->|"Opt-in AlloyOS.forge capability"| Forge
     Welder -.->|"Conversation, config and /knowledge/ persistence"| Cobalt
     Tasks -->|"Scoped /etc/schedules.conf & /scripts"| Cobalt
 ```
@@ -87,7 +87,7 @@ device access. The current QEMU boot path loads the kernel ELF directly.
   - QEMU `virt` support with Apple Silicon HVF acceleration
 - [x] **Kernel services**
   - Heap and frame allocation, task scheduling, syscall dispatch and device drivers
-  - Userland syscall wrappers in `metalos-user`; serial debug shell via `--debug-shell`
+  - Userland syscall wrappers in `alloyos-user`; serial debug shell via `--debug-shell`
 - [x] **Storage foundation**
   - VFS mount table, persistent CobaltFS, RamFS and DevFS
   - VirtIO block transport for filesystem disks
@@ -113,7 +113,7 @@ TLS remains a separate integration requirement.
   - Cooperative transport polling keeps input and rendering active during cloud requests
   - Credentials enter volatile guest memory through fw_cfg; Welder receives text or sanitized errors
 - [x] **Networking protocol libraries**
-  - HTTP parsing, chunked transfer/SSE helpers and TLS-related primitives in `metalos-user`
+  - HTTP parsing, chunked transfer/SSE helpers and TLS-related primitives in `alloyos-user`
 - [x] **Guest-native authenticated HTTPS**
   - Complete and validate TLS handshake, certificate authentication and encrypted transport
   - Connect Forge to native HTTPS without requiring the QEMU host relay
@@ -126,7 +126,7 @@ TLS remains a separate integration requirement.
 ## Phase 3: Boot Presentation & Model Readiness
 
 Boot presentation makes system startup visible while storage and model services
-initialize. Ferrofluid displays a metalOS logotype with liquid turbulence in the same Slint
+initialize. Ferrofluid displays a alloyOS logotype with liquid turbulence in the same Slint
 window that becomes the workspace. Forge loads local model weights from a
 read-only VirtIO model disk into reserved guest RAM while the boot UI remains
 active, then signals completion or reports a loading error.
@@ -138,7 +138,7 @@ active, then signals completion or reports a loading error.
   - Polled DMA transfers into reserved RAM without a whole-image ROM preload
   - Resident backend attachment, readiness/error reporting and workspace transition
 - [x] **Liquid animation library**
-  - Metaball and mercury shading helpers in `metalos-boot`
+  - Metaball and mercury shading helpers in `alloyos-boot`
   - The active boot screen applies layered turbulence to the Slint logotype
 - [x] **Boot logo turbulence**
   - Subtle layered displacement and bilinear sampling preserve smooth text edges
@@ -152,7 +152,7 @@ active, then signals completion or reports a loading error.
 Ferrofluid owns the single fullscreen System UI, its bare-metal platform
 adapter, and rendering. The kernel supplies input, monotonic time, and GPU
 scanout. Ferrofluid forwards user submissions to Welder and presents replies
-and model selection. The independent `metalos-keyboard` component supplies the
+and model selection. The independent `alloyos-keyboard` component supplies the
 soft keyboard and liquid displacement effects.
 
 - [x] **Platform and rendering**
@@ -219,14 +219,14 @@ models.
 
 ## Phase 6: JavaScript Automation & Scheduling
 
-`metalos-js` provides a custom `no_std` JavaScript interpreter for local automation.
+`alloyos-js` provides a custom `no_std` JavaScript interpreter for local automation.
 Each isolate has deterministic execution limits and capability-scoped host
 bindings. The scheduler supports time and event triggers; scripts can access
-Forge only through an explicitly granted `MetalOS.forge(...)` capability.
+Forge only through an explicitly granted `AlloyOS.forge(...)` capability.
 
 - [x] **Interpreter and host API**
   - Parsing, isolated execution and instruction fuel limits
-  - `MetalOS.*` interfaces for files, network, status and notifications; shell access is forbidden
+  - `AlloyOS.*` interfaces for files, network, status and notifications; shell access is forbidden
   - `V8Isolate` is a compatibility alias for the custom interpreter
 - [x] **Scheduling library**
   - One-shot timers, intervals, five-field cron expressions and event matching
@@ -240,8 +240,8 @@ Forge only through an explicitly granted `MetalOS.forge(...)` capability.
   - Store `/scripts/*.js` and `/etc/schedules.conf` through CobaltFS
   - Restore and verify automations across reboot
 - [ ] **Boa JavaScript engine support (deferred; low priority)**
-  - Keep the current `metalos-js` subset interpreter for near-term automation and headless apps; broader ECMAScript compatibility is a later developer-platform improvement, not a prerequisite for current milestones
-  - Introduce a shared engine boundary for source validation and execution, preserving `MetalOS.*` capability policies, Welder-only app orchestration, and Tasks-only scheduler access
+  - Keep the current `alloyos-js` subset interpreter for near-term automation and headless apps; broader ECMAScript compatibility is a later developer-platform improvement, not a prerequisite for current milestones
+  - Introduce a shared engine boundary for source validation and execution, preserving `AlloyOS.*` capability policies, Welder-only app orchestration, and Tasks-only scheduler access
   - Resolve Boa's upstream `std` dependency for the bare-metal ARM64 environment before committing to integration; measure binary size, startup cost, and memory use on the guest
   - Validate module loading, promises/async host I/O, and execution/memory limits within protected app processes before enabling Boa for developer apps
   - Define supported language and host APIs explicitly; Boa support does not imply Node.js or unrestricted npm package compatibility
@@ -250,7 +250,7 @@ Forge only through an explicitly granted `MetalOS.forge(...)` capability.
 
 ## Phase 7: Headless MCP Apps, SKILLs, Declarative Tiles & Tasks App
 
-Every metalOS application is a headless package under `/apps/<app_id>/` that can expose three declarative surfaces:
+Every alloyOS application is a headless package under `/apps/<app_id>/` that can expose three declarative surfaces:
 1. **MCP Entry Points**: Structured tools (`tools/list`, `tools/call`), resources (`resources/list`, `resources/read`), and prompts (`prompts/list`, `prompts/get`).
 2. **SKILLs**: Plain-text Markdown instruction files (`/apps/<app_id>/SKILL.md`, exposed via `skills/list` and `skills/read`) teaching Welder how to orchestrate the app's capabilities.
 3. **Tiles**: UI-framework-agnostic `AppTile` descriptors (`tiles/list`, `tiles/render`) that Ferrofluid can either **embed inline in the chat stream** or **pin to the Dashboard**.
@@ -260,7 +260,7 @@ Strict isolation and orchestration rules govern all apps:
 - **Exclusive `ScriptScheduler` Access**: `Tasks` is the **only** app allowed to declare `ScriptSchedulerAccess` or touch `/etc/schedules.conf` and `/scripts/*.js`. Welder routes all schedule management through `Tasks`.
 - **Welder-Centralized App Orchestration**: No app can access or invoke another app (`McpCaller::App` is rejected by `McpRegistry`). Only Welder (`McpCaller::Welder`) centralizes app access and cross-app workflows.
 
-- [x] **MCP platform library (`metalos-mcp`)**
+- [x] **MCP platform library (`alloyos-mcp`)**
   - JSON-RPC protocol (`tools/*`, `resources/*`, `prompts/*`, `skills/*`, `tiles/*`), app registry and `/apps/<app_id>/*.mcp` manifest discovery
   - Declarative, renderer-agnostic `AppTile` and `AppSkill` schemas
 - [x] **First canonical app: `Tasks` (`/apps/tasks/`)**
@@ -287,7 +287,7 @@ Strict isolation and orchestration rules govern all apps:
 - [ ] **One protected OS process per JavaScript app**
   - Current apps execute inside the MCP host; JavaScript isolates and shared-address-space kernel tasks do not satisfy this requirement
   - Add user-mode app processes with per-process page tables, private heaps/stacks, and preemptive scheduling; prevent access to kernel and other app memory
-  - Run `metalos-js` inside each app process, loading `/apps/<app_id>/main.js` under its manifest-derived capability policy
+  - Run `alloyos-js` inside each app process, loading `/apps/<app_id>/main.js` under its manifest-derived capability policy
   - Route MCP requests, results, and authorized OS operations over bounded IPC; derive caller identity from the process rather than trusting app-supplied IDs
   - Enforce memory and execution limits, request timeouts/cancellation, and process teardown/restart so a faulty app cannot block other apps or the system UI
   - Add QEMU regression tests for cross-process memory protection, denied capabilities, and continued host/UI/other-app operation when an app crashes, hangs, or exceeds its limits
@@ -328,11 +328,11 @@ learning. See [KNOWLEDGE.md](KNOWLEDGE.md) for the design.
 
 | Milestone | Deliverable | Target Crate(s) | Status |
 |---|---|---|---|
-| **M1: ARM64 Core & CobaltFS** | Boot entry, kernel services, VFS and persistent storage | `metalos-kernel`, `metalos-user` | Foundation implemented; agent persistence pending |
-| **M2: Networking & Model Transport** | Guest TCP/IP and authenticated Forge cloud access | `metalos-kernel`, `metalos-user`, `metalos-forge`, `metalos-dev-harness` | Implemented |
-| **M3: Boot & Model Readiness** | Liquid boot logo, resident weight loading and workspace transition | `metalos-boot`, `metalos-kernel`, `metalos-ferrofluid` | Logo turbulence and loading implemented |
-| **M4: Ferrofluid System UI & Dashboard** | System UI rendering, customizable Dashboard with dynamic Tiles, chat bridge and native input | `metalos-ferrofluid`, `metalos-keyboard`, `metalos-kernel` | Chat and keyboard connected; Dashboard, inline Tile rendering, IRQ wakeups and voice pending |
-| **M5: Welder & Forge** | Centralized app orchestration, resident inference and cloud adapters | `metalos-welder`, `metalos-forge` | Runtime libraries and model access implemented; default Auto routing, complete agent integration and full-model acceptance pending |
-| **M6: JS Automation** | Capability-scoped interpreter and time/event scheduler | `metalos-js`, `metalos-welder`, `metalos-kernel` | Current interpreter and scheduler implemented; Boa support deferred, low priority |
-| **M7: Headless Apps (MCP, SKILLs & Tiles)** | JavaScript apps in separate protected processes, MCP entry points, `SKILL.md` files, declarative Tiles, and Welder-only orchestration | `metalos-mcp`, `metalos-js`, `metalos-kernel`, `metalos-welder`, `metalos-ferrofluid` | MCP surfaces and manifest guards implemented; per-app process isolation and Ferrofluid Dashboard/chat Tile rendering pending |
-| **M8: User Knowledge** | Durable profile, retrieval, learning and user controls | `metalos-welder`, `metalos-kernel`, `metalos-ferrofluid` | Planned |
+| **M1: ARM64 Core & CobaltFS** | Boot entry, kernel services, VFS and persistent storage | `alloyos-kernel`, `alloyos-user` | Foundation implemented; agent persistence pending |
+| **M2: Networking & Model Transport** | Guest TCP/IP and authenticated Forge cloud access | `alloyos-kernel`, `alloyos-user`, `alloyos-forge`, `alloyos-dev-harness` | Implemented |
+| **M3: Boot & Model Readiness** | Liquid boot logo, resident weight loading and workspace transition | `alloyos-boot`, `alloyos-kernel`, `alloyos-ferrofluid` | Logo turbulence and loading implemented |
+| **M4: Ferrofluid System UI & Dashboard** | System UI rendering, customizable Dashboard with dynamic Tiles, chat bridge and native input | `alloyos-ferrofluid`, `alloyos-keyboard`, `alloyos-kernel` | Chat and keyboard connected; Dashboard, inline Tile rendering, IRQ wakeups and voice pending |
+| **M5: Welder & Forge** | Centralized app orchestration, resident inference and cloud adapters | `alloyos-welder`, `alloyos-forge` | Runtime libraries and model access implemented; default Auto routing, complete agent integration and full-model acceptance pending |
+| **M6: JS Automation** | Capability-scoped interpreter and time/event scheduler | `alloyos-js`, `alloyos-welder`, `alloyos-kernel` | Current interpreter and scheduler implemented; Boa support deferred, low priority |
+| **M7: Headless Apps (MCP, SKILLs & Tiles)** | JavaScript apps in separate protected processes, MCP entry points, `SKILL.md` files, declarative Tiles, and Welder-only orchestration | `alloyos-mcp`, `alloyos-js`, `alloyos-kernel`, `alloyos-welder`, `alloyos-ferrofluid` | MCP surfaces and manifest guards implemented; per-app process isolation and Ferrofluid Dashboard/chat Tile rendering pending |
+| **M8: User Knowledge** | Durable profile, retrieval, learning and user controls | `alloyos-welder`, `alloyos-kernel`, `alloyos-ferrofluid` | Planned |

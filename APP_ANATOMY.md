@@ -1,6 +1,6 @@
-# Getting started with metalOS apps
+# Getting started with alloyOS apps
 
-Build a metalOS app by writing JavaScript, a manifest, and an optional skill.
+Build a alloyOS app by writing JavaScript, a manifest, and an optional skill.
 Your app exposes tools and data to **Welder**, which presents them through
 **Ferrofluid**. The Clock example below shows the complete path from a developer's
 files to a time display and a Refresh action.
@@ -17,8 +17,8 @@ commands that work on the current kernel.
 The kernel, CobaltFS, Forge, Welder, Ferrofluid, and the MCP app host are Rust OS
 services. **All apps, including built-in apps, are JavaScript files on disk.**
 
-`metalos-mcp` owns app execution through `metalos-js`. Welder invokes the MCP host;
-it does not import `metalos-js`, create app isolates, or execute app source itself.
+`alloyos-mcp` owns app execution through `alloyos-js`. Welder invokes the MCP host;
+it does not import `alloyos-js`, create app isolates, or execute app source itself.
 The host loads your JavaScript into a capability-scoped execution environment,
 calls a handler, validates its result, and returns it to Welder.
 
@@ -26,9 +26,9 @@ calls a handler, validates its result, and returns it to Welder.
 flowchart LR
     User --> Ferrofluid
     Ferrofluid <-->|Conversation and views| Welder
-    Welder <-->|MCP requests and results| Host[metalos-mcp app host]
+    Welder <-->|MCP requests and results| Host[alloyos-mcp app host]
     Host -->|Load manifest and main.js| Disk[CobaltFS /apps/clock/]
-    Host <-->|IPC: invoke handlers and receive results| JS[App process: metalos-js]
+    Host <-->|IPC: invoke handlers and receive results| JS[App process: alloyos-js]
     JS -->|Declared host operations| OS[Rust OS services]
 ```
 
@@ -38,7 +38,7 @@ receive raw keyboard events, run shells, or call other apps. To combine two apps
 Welder invokes each app separately.
 
 Each app must run in its own OS process, with a private virtual address space
-and independently scheduled execution. The process hosts `metalos-js`; its
+and independently scheduled execution. The process hosts `alloyos-js`; its
 JavaScript isolates enforce the manifest's capabilities within that process.
 The MCP host invokes handlers through IPC. An app crash or infinite loop must
 not stop Welder, Ferrofluid, or another app.
@@ -87,7 +87,7 @@ what the host will accept. JavaScript implements the declared behavior, and
 The **target manifest contract** retains `key = value` configuration. Descriptor
 keys (`tool`, `resource`, `prompt`, and `tile`) are repeatable, with one JSON object
 per line. The descriptor keys require extending the existing manifest parser;
-`entrypoint` is already parsed and checked to stay inside the app package. The `ReadClock` grant and `MetalOS.clock.now()` binding below are also part
+`entrypoint` is already parsed and checked to stay inside the app package. The `ReadClock` grant and `AlloyOS.clock.now()` binding below are also part
 of the target contract.
 
 ```ini
@@ -123,7 +123,7 @@ browser APIs. Discovery comes from the manifest, so handlers do not implement
 `tools/list` or parse JSON-RPC envelopes. Implement only the handlers for the
 surfaces you declare.
 
-The target `MetalOS.clock.now()` binding returns a fresh OS snapshot with
+The target `AlloyOS.clock.now()` binding returns a fresh OS snapshot with
 `epoch_seconds` (UTC wall-clock time) and `uptime_seconds` (monotonic uptime).
 Wall-clock time must come from a real clock source; uptime alone cannot establish
 the current date or time. If that source is unavailable, the host reports an error
@@ -153,7 +153,7 @@ function formatTime(seconds, use24h) {
 function snapshot(args) {
     let offset = args.utc_offset_hours || 0;
     let use24h = args.format_24h !== false;
-    let now = MetalOS.clock.now();
+    let now = AlloyOS.clock.now();
     let time = formatTime(now.epoch_seconds + offset * 3600, use24h);
     let badge = "UTC" + (offset < 0 ? "-" : "+") + pad2(Math.abs(offset)) + ":00";
     return {

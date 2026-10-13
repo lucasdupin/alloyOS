@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Acquire local Gemma weights once, then build and launch the metalOS UI.
+# Acquire local Gemma weights once, then build and launch the alloyOS UI.
 set -euo pipefail
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -58,5 +58,5 @@ if [[ ! -f "$model_image" ]]; then
     python3 "$root/scripts/download_gemma.py" ${auth_args[@]+"${auth_args[@]}"}
 fi
 
-echo "[run] Building and launching metalOS with Gemma..."
+echo "[run] Building and launching alloyOS with Gemma..."
 exec cargo run -p xtask -- run --release --model-image "$model_image" ${run_args[@]+"${run_args[@]}"}

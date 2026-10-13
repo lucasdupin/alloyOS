@@ -1,10 +1,10 @@
-// metalOS Canonical App: Tasks (/apps/tasks/main.js)
-// Executed inside a capability-scoped metalos-js isolate by metalos-mcp.
-// Tasks is the ONLY app granted ScriptSchedulerAccess (MetalOS.scheduler.*).
+// alloyOS Canonical App: Tasks (/apps/tasks/main.js)
+// Executed inside a capability-scoped alloyos-js isolate by alloyos-mcp.
+// Tasks is the ONLY app granted ScriptSchedulerAccess (AlloyOS.scheduler.*).
 
 function callTool(toolName, args) {
     if (toolName === "tasks.list") {
-        let tasks = MetalOS.scheduler.list();
+        let tasks = AlloyOS.scheduler.list();
         return JSON.stringify(tasks);
     }
 
@@ -13,7 +13,7 @@ function callTool(toolName, args) {
         let scriptPath = args.script_path;
         let trigger = args.trigger;
         let source = args.source;
-        let created = MetalOS.scheduler.create(id, scriptPath, trigger, source);
+        let created = AlloyOS.scheduler.create(id, scriptPath, trigger, source);
         return JSON.stringify(created);
     }
 
@@ -22,13 +22,13 @@ function callTool(toolName, args) {
         let scriptPath = args.script_path || "";
         let trigger = args.trigger || "";
         let source = args.source || "";
-        let updated = MetalOS.scheduler.edit(id, scriptPath, trigger, source);
+        let updated = AlloyOS.scheduler.edit(id, scriptPath, trigger, source);
         return JSON.stringify(updated);
     }
 
     if (toolName === "tasks.delete") {
         let id = args.id;
-        let deleted = MetalOS.scheduler.delete(id);
+        let deleted = AlloyOS.scheduler.delete(id);
         return JSON.stringify(deleted);
     }
 
@@ -37,7 +37,7 @@ function callTool(toolName, args) {
 
 function readResource(uri) {
     if (uri === "mcp://tasks/scheduled") {
-        let tasks = MetalOS.scheduler.list();
+        let tasks = AlloyOS.scheduler.list();
         return JSON.stringify(tasks);
     }
     return JSON.stringify({ error: "Unknown resource URI: " + uri });
@@ -45,7 +45,7 @@ function readResource(uri) {
 
 function renderTile(tileId) {
     if (tileId === "tasks.board") {
-        let tasks = MetalOS.scheduler.list();
+        let tasks = AlloyOS.scheduler.list();
         let items = [];
         for (let i = 0; i < tasks.length; i = i + 1) {
             let t = tasks[i];

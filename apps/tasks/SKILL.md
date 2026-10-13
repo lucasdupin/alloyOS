@@ -1,11 +1,11 @@
 ---
 name: tasks
-description: List, create, edit, and delete scheduled tasks backed by metalOS ScriptScheduler, and present interactive Tasks Tiles.
+description: List, create, edit, and delete scheduled tasks backed by alloyOS ScriptScheduler, and present interactive Tasks Tiles.
 ---
 
 # Tasks App Skill (`/apps/tasks/SKILL.md`)
 
-**Tasks** (`/apps/tasks/`) is the canonical scheduled-automation application in metalOS.
+**Tasks** (`/apps/tasks/`) is the canonical scheduled-automation application in alloyOS.
 It is the **only** application permitted to access `ScriptScheduler` (`/etc/schedules.conf` and `/scripts/*.js`). Welder must always route schedule listing, creation, editing, and deletion through the `Tasks` MCP entry points.
 
 ## Architectural Rules

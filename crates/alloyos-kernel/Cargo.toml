@@ -1,0 +1,36 @@
+[package]
+name = "alloyos-kernel"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+spin = "0.9"
+linked_list_allocator = "0.10"
+bitflags = "2"
+alloyos-proto = { path = "../alloyos-proto" }
+alloyos-user = { path = "../alloyos-user" }
+alloyos-ferrofluid = { path = "../alloyos-ferrofluid" }
+alloyos-js = { path = "../alloyos-js" }
+alloyos-mcp = { path = "../alloyos-mcp" }
+alloyos-forge = { path = "../alloyos-forge" }
+alloyos-welder = { path = "../alloyos-welder" }
+
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+alloyos-boot = { path = "../alloyos-boot" }
+
+[features]
+default = []
+host-tests = []
+debug-shell = []
+forge = []
+
+[lib]
+name = "alloyos_kernel"
+path = "src/lib.rs"
+
+[[bin]]
+name = "alloyos-kernel"
+path = "src/main.rs"
+test = false

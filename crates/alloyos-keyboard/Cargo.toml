@@ -1,0 +1,31 @@
+[package]
+name = "alloyos-keyboard"
+version.workspace = true
+edition.workspace = true
+links = "alloyos_keyboard"
+
+[features]
+preview = []
+
+[[example]]
+name = "keyboard_preview"
+required-features = ["preview"]
+
+[[test]]
+name = "keyboard_ui"
+required-features = ["preview"]
+
+[[test]]
+name = "screenshots"
+required-features = ["preview"]
+
+[dependencies]
+slint = { version = "=1.18.1", default-features = false, features = ["compat-1-18", "unsafe-single-threaded", "libm", "renderer-software"] }
+
+[build-dependencies]
+alloyos-proto = { path = "../alloyos-proto" }
+slint-build = "=1.18.1"
+
+[dev-dependencies]
+png = "=0.18.1"
+alloyos-proto = { path = "../alloyos-proto" }

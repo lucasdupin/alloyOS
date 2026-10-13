@@ -1,16 +1,16 @@
 [workspace]
 members = [
-    "crates/metalos-proto",
-    "crates/metalos-boot",
-    "crates/metalos-kernel",
-    "crates/metalos-user",
-    "crates/metalos-ferrofluid",
-    "crates/metalos-keyboard",
-    "crates/metalos-js",
-    "crates/metalos-mcp",
-    "crates/metalos-forge",
-    "crates/metalos-welder",
-    "crates/metalos-dev-harness",
+    "crates/alloyos-proto",
+    "crates/alloyos-boot",
+    "crates/alloyos-kernel",
+    "crates/alloyos-user",
+    "crates/alloyos-ferrofluid",
+    "crates/alloyos-keyboard",
+    "crates/alloyos-js",
+    "crates/alloyos-mcp",
+    "crates/alloyos-forge",
+    "crates/alloyos-welder",
+    "crates/alloyos-dev-harness",
     "xtask",
 ]
 resolver = "2"

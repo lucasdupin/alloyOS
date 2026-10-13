@@ -8,7 +8,7 @@ name = "xtask"
 path = "src/main.rs"
 
 [dependencies]
-metalos-proto = { path = "../crates/metalos-proto" }
+alloyos-proto = { path = "../crates/alloyos-proto" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-metalos-dev-harness = { path = "../crates/metalos-dev-harness" }
+alloyos-dev-harness = { path = "../crates/alloyos-dev-harness" }

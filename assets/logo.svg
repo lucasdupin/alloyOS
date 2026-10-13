@@ -1,4 +1,5 @@
 <svg viewBox="0 0 960 320" width="960" height="320" xmlns="http://www.w3.org/2000/svg">
+  <title>alloyOS</title>
   <defs>
     <!-- Surface-tension physics filter for the Ferrofluid Crystal Emblem -->
     <filter id="crystal-weld" x="-35%" y="-35%" width="170%" height="170%">
@@ -26,20 +27,50 @@
 
   <!-- Liquid Metal Wordmark (Mode 2: Viscous Meniscus Bridges) -->
   <g filter="url(#mercury-type)" fill="#FFFFFF">
-    <text x="52" y="204"
-          font-family="system-ui, -apple-system, 'Inter', 'Helvetica Neue', Arial, sans-serif"
-          font-weight="800"
-          font-size="122"
-          letter-spacing="-4"
-          fill="#FFFFFF">metalOS</text>
-
-    <!-- Viscous Meniscus Bridges between neighboring letters -->
-    <rect x="162" y="154" width="28" height="7" rx="3.5" />
-    <rect x="246" y="148" width="28" height="7" rx="3.5" />
-    <rect x="306" y="152" width="24" height="6" rx="3" />
-    <rect x="396" y="192" width="24" height="7" rx="3.5" />
-    <rect x="424" y="154" width="26" height="7" rx="3.5" />
-    <rect x="522" y="160" width="30" height="8" rx="4" />
+    <!-- alloyOS vector wordmark; shared with the boot splash stroke geometry. -->
+    <!-- a -->
+    <path d="M64,146 L128,146" fill="none" stroke="#FFFFFF" stroke-width="20" stroke-linecap="round" />
+    <path d="M128,146 L128,204" fill="none" stroke="#FFFFFF" stroke-width="22" stroke-linecap="round" />
+    <path d="M64,174 L128,174" fill="none" stroke="#FFFFFF" stroke-width="18" stroke-linecap="round" />
+    <path d="M64,198 L128,198" fill="none" stroke="#FFFFFF" stroke-width="20" stroke-linecap="round" />
+    <path d="M64,174 L64,198" fill="none" stroke="#FFFFFF" stroke-width="20" stroke-linecap="round" />
+    <!-- l -->
+    <path d="M174,112 L174,198" fill="none" stroke="#FFFFFF" stroke-width="22" stroke-linecap="round" />
+    <path d="M174,198 L190,198" fill="none" stroke="#FFFFFF" stroke-width="20" stroke-linecap="round" />
+    <!-- l -->
+    <path d="M220,112 L220,198" fill="none" stroke="#FFFFFF" stroke-width="22" stroke-linecap="round" />
+    <path d="M220,198 L236,198" fill="none" stroke="#FFFFFF" stroke-width="20" stroke-linecap="round" />
+    <!-- o -->
+    <path d="M270,146 L318,146" fill="none" stroke="#FFFFFF" stroke-width="20" stroke-linecap="round" />
+    <path d="M318,146 L328,156" fill="none" stroke="#FFFFFF" stroke-width="20" stroke-linecap="round" />
+    <path d="M328,156 L328,188" fill="none" stroke="#FFFFFF" stroke-width="20" stroke-linecap="round" />
+    <path d="M328,188 L318,198" fill="none" stroke="#FFFFFF" stroke-width="20" stroke-linecap="round" />
+    <path d="M318,198 L270,198" fill="none" stroke="#FFFFFF" stroke-width="20" stroke-linecap="round" />
+    <path d="M270,198 L260,188" fill="none" stroke="#FFFFFF" stroke-width="20" stroke-linecap="round" />
+    <path d="M260,188 L260,156" fill="none" stroke="#FFFFFF" stroke-width="20" stroke-linecap="round" />
+    <path d="M260,156 L270,146" fill="none" stroke="#FFFFFF" stroke-width="20" stroke-linecap="round" />
+    <!-- y -->
+    <path d="M354,146 L380,180" fill="none" stroke="#FFFFFF" stroke-width="22" stroke-linecap="round" />
+    <path d="M406,146 L380,180" fill="none" stroke="#FFFFFF" stroke-width="22" stroke-linecap="round" />
+    <path d="M380,180 L354,218" fill="none" stroke="#FFFFFF" stroke-width="22" stroke-linecap="round" />
+    <!-- O -->
+    <path d="M454,118 L518,118" fill="none" stroke="#FFFFFF" stroke-width="22" stroke-linecap="round" />
+    <path d="M454,198 L518,198" fill="none" stroke="#FFFFFF" stroke-width="22" stroke-linecap="round" />
+    <path d="M454,118 L454,198" fill="none" stroke="#FFFFFF" stroke-width="22" stroke-linecap="round" />
+    <path d="M518,118 L518,198" fill="none" stroke="#FFFFFF" stroke-width="22" stroke-linecap="round" />
+    <!-- S -->
+    <path d="M552,118 L612,118" fill="none" stroke="#FFFFFF" stroke-width="22" stroke-linecap="round" />
+    <path d="M552,118 L552,158" fill="none" stroke="#FFFFFF" stroke-width="22" stroke-linecap="round" />
+    <path d="M552,158 L612,158" fill="none" stroke="#FFFFFF" stroke-width="22" stroke-linecap="round" />
+    <path d="M612,158 L612,198" fill="none" stroke="#FFFFFF" stroke-width="22" stroke-linecap="round" />
+    <path d="M552,198 L612,198" fill="none" stroke="#FFFFFF" stroke-width="22" stroke-linecap="round" />
+    <!-- Viscous meniscus bridges between neighboring letters -->
+    <path d="M128,198 L174,198" fill="none" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round" />
+    <path d="M190,198 L220,198" fill="none" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round" />
+    <path d="M236,198 L270,198" fill="none" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round" />
+    <path d="M328,157 L362,157" fill="none" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round" />
+    <path d="M400,154 L454,154" fill="none" stroke="#FFFFFF" stroke-width="8" stroke-linecap="round" />
+    <path d="M518,164 L552,164" fill="none" stroke="#FFFFFF" stroke-width="9" stroke-linecap="round" />
   </g>
 
   <!-- Ferrofluid Metaball Crystal Emblem -->

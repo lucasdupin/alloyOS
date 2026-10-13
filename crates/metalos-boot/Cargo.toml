@@ -1,7 +1,0 @@
-[package]
-name = "metalos-boot"
-version.workspace = true
-edition.workspace = true
-
-[dependencies]
-metalos-proto = { path = "../metalos-proto" }

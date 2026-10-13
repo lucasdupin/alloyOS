@@ -26,7 +26,7 @@ impl Screenshots {
     pub fn check(&mut self, name: &str, width: u32, height: u32, rgb: &[u8]) {
         assert_eq!(rgb.len(), width as usize * height as usize * 3);
         let baseline = self.baseline.join(format!("{name}.png"));
-        if std::env::var("METALOS_UPDATE_SCREENSHOTS").as_deref() == Ok("1") {
+        if std::env::var("ALLOYOS_UPDATE_SCREENSHOTS").as_deref() == Ok("1") {
             write_png(&baseline, width, height, rgb);
             return;
         }

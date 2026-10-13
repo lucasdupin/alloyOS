@@ -1,4 +1,4 @@
-# metalOS Headless MCP App Manifest (/apps/tasks/tasks.mcp)
+# alloyOS Headless MCP App Manifest (/apps/tasks/tasks.mcp)
 name = Tasks
 version = 1.0.0
 entrypoint = /apps/tasks/main.js

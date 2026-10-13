@@ -59,7 +59,7 @@ small kernel heap. This model image is separate from the writable CobaltFS image
 Welder launch authentication uses environment variable names or private files
 containing `NAME=VALUE` lines; unlike the downloader's token file, launch files
 can carry multiple credentials. QEMU receives a private transient `fw_cfg` file
-named `opt/metalos/auth`, containing NUL-delimited entries. The guest reads it
+named `opt/alloyos/auth`, containing NUL-delimited entries. The guest reads it
 into volatile RAM; no persistent guest filesystem receives it. Normal shutdown
 and Ctrl-C remove the temporary file. Abrupt termination cannot guarantee
 cleanup of files in the host temporary directory. Local process/memory inspection
@@ -84,8 +84,8 @@ Requests may incur provider charges. Live account access is not covered by fixtu
 Run a guest-to-host API integration check without network access or real keys:
 
 ```sh
-cargo build -p metalos-kernel --target aarch64-unknown-none
-python3 scripts/check_cloud_qemu.py --kernel target/aarch64-unknown-none/debug/metalos-kernel
+cargo build -p alloyos-kernel --target aarch64-unknown-none
+python3 scripts/check_cloud_qemu.py --kernel target/aarch64-unknown-none/debug/alloyos-kernel
 ```
 
 This loads fixture credentials through fw_cfg and exercises all three provider
@@ -101,18 +101,18 @@ the asset, CI prints an explicit skip and does not download weights.
 Run it directly with:
 
 ```sh
-cargo test -p metalos-dev-harness --test qemu_model_loader -- --ignored full_model_loads_into_qemu_at_contiguous_addresses
+cargo test -p alloyos-dev-harness --test qemu_model_loader -- --ignored full_model_loads_into_qemu_at_contiguous_addresses
 ```
 
-Set `METALOS_TEST_MODEL_IMAGE` to test a different packaged image larger than
+Set `ALLOYOS_TEST_MODEL_IMAGE` to test a different packaged image larger than
 2 GiB. An explicitly configured missing image fails CI. Build a Forge-enabled
 kernel before running the test directly:
 
 ```sh
-cargo build -p metalos-kernel --target aarch64-unknown-none --features forge
+cargo build -p alloyos-kernel --target aarch64-unknown-none --features forge
 ```
 
-Use `METALOS_TEST_KERNEL` to select another Forge-enabled kernel. The test needs
+Use `ALLOYOS_TEST_KERNEL` to select another Forge-enabled kernel. The test needs
 QEMU and 16 GiB guest RAM. It performs disk-to-RAM loading after splash without
 duplicating the model on disk.
 
@@ -120,7 +120,7 @@ To check actual Gemma chat responsiveness and the first streamed reply through t
 keyboard UI, run (requires the full model image and macOS HVF):
 
 ```sh
-python3 scripts/check_local_chat_qemu.py --kernel target/aarch64-unknown-none/release/metalos-kernel --model-image .local/models/gemma-2-2b-it/model.img
+python3 scripts/check_local_chat_qemu.py --kernel target/aarch64-unknown-none/release/alloyos-kernel --model-image .local/models/gemma-2-2b-it/model.img
 ```
 
 The test verifies continued rendering and keyboard input while Forge's independent

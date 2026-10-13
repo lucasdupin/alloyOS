@@ -1,0 +1,11 @@
+[package]
+name = "alloyos-proto"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+host-tests = ["std"]
+std = []
+
+[dependencies]

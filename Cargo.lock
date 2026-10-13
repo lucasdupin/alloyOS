@@ -24,6 +24,110 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
+name = "alloyos-boot"
+version = "0.1.0"
+dependencies = [
+ "alloyos-proto",
+]
+
+[[package]]
+name = "alloyos-dev-harness"
+version = "0.1.0"
+dependencies = [
+ "alloyos-forge",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "alloyos-ferrofluid"
+version = "0.1.0"
+dependencies = [
+ "alloyos-keyboard",
+ "alloyos-mcp",
+ "alloyos-proto",
+ "libm",
+ "png",
+ "slint",
+ "slint-build",
+]
+
+[[package]]
+name = "alloyos-forge"
+version = "0.1.0"
+dependencies = [
+ "libm",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "alloyos-js"
+version = "0.1.0"
+dependencies = [
+ "alloyos-proto",
+]
+
+[[package]]
+name = "alloyos-kernel"
+version = "0.1.0"
+dependencies = [
+ "alloyos-boot",
+ "alloyos-ferrofluid",
+ "alloyos-forge",
+ "alloyos-js",
+ "alloyos-mcp",
+ "alloyos-proto",
+ "alloyos-user",
+ "alloyos-welder",
+ "bitflags 2.13.2",
+ "linked_list_allocator",
+ "serde_json",
+ "spin",
+]
+
+[[package]]
+name = "alloyos-keyboard"
+version = "0.1.0"
+dependencies = [
+ "alloyos-proto",
+ "png",
+ "slint",
+ "slint-build",
+]
+
+[[package]]
+name = "alloyos-mcp"
+version = "0.1.0"
+dependencies = [
+ "alloyos-js",
+ "alloyos-proto",
+]
+
+[[package]]
+name = "alloyos-proto"
+version = "0.1.0"
+
+[[package]]
+name = "alloyos-user"
+version = "0.1.0"
+dependencies = [
+ "alloyos-proto",
+]
+
+[[package]]
+name = "alloyos-welder"
+version = "0.1.0"
+dependencies = [
+ "alloyos-forge",
+ "alloyos-js",
+ "alloyos-mcp",
+ "alloyos-proto",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "android-activity"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2267,110 +2371,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
-]
-
-[[package]]
-name = "metalos-boot"
-version = "0.1.0"
-dependencies = [
- "metalos-proto",
-]
-
-[[package]]
-name = "metalos-dev-harness"
-version = "0.1.0"
-dependencies = [
- "metalos-forge",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "metalos-ferrofluid"
-version = "0.1.0"
-dependencies = [
- "libm",
- "metalos-keyboard",
- "metalos-mcp",
- "metalos-proto",
- "png",
- "slint",
- "slint-build",
-]
-
-[[package]]
-name = "metalos-forge"
-version = "0.1.0"
-dependencies = [
- "libm",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "metalos-js"
-version = "0.1.0"
-dependencies = [
- "metalos-proto",
-]
-
-[[package]]
-name = "metalos-kernel"
-version = "0.1.0"
-dependencies = [
- "bitflags 2.13.2",
- "linked_list_allocator",
- "metalos-boot",
- "metalos-ferrofluid",
- "metalos-forge",
- "metalos-js",
- "metalos-mcp",
- "metalos-proto",
- "metalos-user",
- "metalos-welder",
- "serde_json",
- "spin",
-]
-
-[[package]]
-name = "metalos-keyboard"
-version = "0.1.0"
-dependencies = [
- "metalos-proto",
- "png",
- "slint",
- "slint-build",
-]
-
-[[package]]
-name = "metalos-mcp"
-version = "0.1.0"
-dependencies = [
- "metalos-js",
- "metalos-proto",
-]
-
-[[package]]
-name = "metalos-proto"
-version = "0.1.0"
-
-[[package]]
-name = "metalos-user"
-version = "0.1.0"
-dependencies = [
- "metalos-proto",
-]
-
-[[package]]
-name = "metalos-welder"
-version = "0.1.0"
-dependencies = [
- "metalos-forge",
- "metalos-js",
- "metalos-mcp",
- "metalos-proto",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -4961,10 +4961,10 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 name = "xtask"
 version = "0.1.0"
 dependencies = [
+ "alloyos-dev-harness",
+ "alloyos-proto",
  "anyhow",
  "clap",
- "metalos-dev-harness",
- "metalos-proto",
 ]
 
 [[package]]

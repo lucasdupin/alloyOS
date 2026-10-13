@@ -9,7 +9,7 @@ use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
-#[command(name = "xtask", about = "metalOS build, run, and test automation")]
+#[command(name = "xtask", about = "alloyOS build, run, and test automation")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -24,7 +24,7 @@ enum Commands {
         #[arg(long)]
         debug_shell: bool,
     },
-    /// Builds then launches metalOS in QEMU (aarch64 virt)
+    /// Builds then launches alloyOS in QEMU (aarch64 virt)
     Run {
         #[arg(long)]
         release: bool,
@@ -92,7 +92,7 @@ impl QemuHarness {
             .arg("-device")
             .arg("virtio-blk-device,drive=hd0")
             .arg("-device")
-            .arg(format!("virtio-gpu-device,xres={},yres={}", metalos_proto::display::PHONE_WIDTH, metalos_proto::display::PHONE_HEIGHT))
+            .arg(format!("virtio-gpu-device,xres={},yres={}", alloyos_proto::display::PHONE_WIDTH, alloyos_proto::display::PHONE_HEIGHT))
             .arg("-device")
             .arg("virtio-keyboard-device")
             .arg("-device")
@@ -217,11 +217,20 @@ impl Drop for QemuHarness {
 }
 
 fn get_workspace_root() -> Result<PathBuf> {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir
-        .parent()
-        .map(|p| p.to_path_buf())
-        .ok_or_else(|| anyhow!("Could not find workspace root parent directory"))
+    // Resolve at runtime: cached binaries may retain a previous checkout path.
+    let cwd = std::env::current_dir().context("Could not read current directory")?;
+    let executable = std::env::current_exe().context("Could not locate xtask executable")?;
+    find_workspace_root(&cwd)
+        .or_else(|| executable.parent().and_then(find_workspace_root))
+        .ok_or_else(|| anyhow!("Could not locate alloyOS workspace from {} or {}", cwd.display(), executable.display()))
+}
+
+fn find_workspace_root(start: &Path) -> Option<PathBuf> {
+    start.ancestors().find(|path| {
+        path.join("Cargo.toml").is_file()
+            && path.join("xtask/Cargo.toml").is_file()
+            && path.join("crates/alloyos-kernel/Cargo.toml").is_file()
+    }).map(Path::to_path_buf)
 }
 
 fn get_disk_image_path(workspace_root: &Path, release: bool) -> PathBuf {
@@ -230,7 +239,7 @@ fn get_disk_image_path(workspace_root: &Path, release: bool) -> PathBuf {
         .join("target")
         .join("aarch64-unknown-none")
         .join(profile)
-        .join("metalos-kernel")
+        .join("alloyos-kernel")
 }
 
 fn get_cobaltfs_image_path(workspace_root: &Path, release: bool) -> PathBuf {
@@ -353,7 +362,7 @@ fn build_crates_mode(release: bool, debug_shell: bool, forge: bool) -> Result<Pa
         .current_dir(&workspace_root)
         .arg("build")
         .arg("--package")
-        .arg("metalos-kernel")
+        .arg("alloyos-kernel")
         .arg("--target")
         .arg("aarch64-unknown-none");
     if debug_shell {
@@ -376,7 +385,7 @@ fn build_crates_mode(release: bool, debug_shell: bool, forge: bool) -> Result<Pa
         .current_dir(&workspace_root)
         .arg("build")
         .arg("--package")
-        .arg("metalos-user");
+        .arg("alloyos-user");
     if release {
         user_cmd.arg("--release");
     }
@@ -405,7 +414,7 @@ fn build_crates_mode(release: bool, debug_shell: bool, forge: bool) -> Result<Pa
     Ok(kernel_bin)
 }
 
-fn attach_cloud_credentials(command: &mut Command, root: &Path, mut env_names: Vec<String>, mut files: Vec<PathBuf>) -> Result<Option<metalos_dev_harness::credentials::BootCredentials>> {
+fn attach_cloud_credentials(command: &mut Command, root: &Path, mut env_names: Vec<String>, mut files: Vec<PathBuf>) -> Result<Option<alloyos_dev_harness::credentials::BootCredentials>> {
     // Explicit references take precedence over automatic discovery.
     if env_names.is_empty() && files.is_empty() {
         for name in ["ANTHROPIC_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY"] {
@@ -417,7 +426,7 @@ fn attach_cloud_credentials(command: &mut Command, root: &Path, mut env_names: V
             }
         }
     }
-    metalos_dev_harness::credentials::attach(command,&env_names,&files).map_err(|e|anyhow!(e))
+    alloyos_dev_harness::credentials::attach(command,&env_names,&files).map_err(|e|anyhow!(e))
 }
 
 fn run_qemu(release: bool, debug_shell: bool, model_image: Option<PathBuf>, memory: Option<String>, auth_env: Vec<String>, auth_file: Vec<PathBuf>) -> Result<()> {
@@ -445,7 +454,7 @@ fn run_qemu(release: bool, debug_shell: bool, model_image: Option<PathBuf>, memo
 
     let mut qemu = Command::new("qemu-system-aarch64");
     if let Some(image) = &model_image {
-        metalos_dev_harness::model_loader::attach_disk(image, &mut qemu)
+        alloyos_dev_harness::model_loader::attach_disk(image, &mut qemu)
             .context("Failed to attach model disk")?;
     }
     #[cfg(target_os = "macos")]
@@ -485,7 +494,7 @@ fn run_qemu(release: bool, debug_shell: bool, model_image: Option<PathBuf>, memo
         .arg("-device")
         .arg("virtio-blk-device,drive=hd0")
         .arg("-device")
-        .arg(format!("virtio-gpu-device,xres={},yres={}", metalos_proto::display::PHONE_WIDTH, metalos_proto::display::PHONE_HEIGHT))
+        .arg(format!("virtio-gpu-device,xres={},yres={}", alloyos_proto::display::PHONE_WIDTH, alloyos_proto::display::PHONE_HEIGHT))
         .arg("-device")
         .arg("virtio-keyboard-device")
         .arg("-device")
@@ -502,7 +511,7 @@ fn run_qemu(release: bool, debug_shell: bool, model_image: Option<PathBuf>, memo
         let status=qemu.status().context("Failed to execute qemu-system-aarch64")?;
         if !status.success() { return Err(anyhow!("QEMU exited with an error")); }
     } else {
-        metalos_dev_harness::https::run_ui(&mut qemu).map_err(|e|anyhow!(e))?;
+        alloyos_dev_harness::https::run_ui(&mut qemu).map_err(|e|anyhow!(e))?;
     }
     Ok(())
 }
@@ -511,7 +520,7 @@ struct E2eVolume(PathBuf);
 impl E2eVolume {
     fn new() -> Result<Self> {
         let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
-        let path = std::env::temp_dir().join(format!("metalos-e2e-{}-{stamp}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("alloyos-e2e-{}-{stamp}", std::process::id()));
         std::fs::create_dir(&path)?;
         Ok(Self(path))
     }
@@ -536,7 +545,7 @@ fn run_e2e_tests(kernel_image: &Path, _overall_timeout: Duration) -> Result<()> 
 
     println!("[xtask] [TEST 1/10] e2e_boot_banner...");
     harness
-        .expect_output("metalOS v0.1.0 booting...", Duration::from_secs(10))
+        .expect_output("alloyOS v0.1.0 booting...", Duration::from_secs(10))
         .context("e2e_boot_banner failed")?;
     println!("[xtask] [PASS] e2e_boot_banner");
 
@@ -549,7 +558,7 @@ fn run_e2e_tests(kernel_image: &Path, _overall_timeout: Duration) -> Result<()> 
         .context("e2e_memory_init failed")?;
     harness
         .expect_output(
-            "[splash] Static metalOS logotype visible",
+            "[splash] Static alloyOS logotype visible",
             Duration::from_secs(10),
         )
         .context("e2e_splash_init failed")?;
@@ -590,14 +599,14 @@ fn run_e2e_tests(kernel_image: &Path, _overall_timeout: Duration) -> Result<()> 
 
     println!("[xtask] [TEST 3/10] e2e_shell_prompt...");
     harness
-        .expect_output("metalos:/$", Duration::from_secs(10))
+        .expect_output("alloyos:/$", Duration::from_secs(10))
         .context("e2e_shell_prompt failed")?;
     println!("[xtask] [PASS] e2e_shell_prompt");
 
     println!("[xtask] [TEST 4/10] e2e_uname...");
     harness.send_command("uname -a");
     harness
-        .expect_output("metalOS metalos 0.1.0", Duration::from_secs(5))
+        .expect_output("alloyOS alloyos 0.1.0", Duration::from_secs(5))
         .context("e2e_uname failed")?;
     harness
         .expect_output("aarch64", Duration::from_secs(5))
@@ -619,11 +628,11 @@ fn run_e2e_tests(kernel_image: &Path, _overall_timeout: Duration) -> Result<()> 
         .context("e2e_ls_etc_glob failed")?;
     harness.send_command("cd /dev");
     harness
-        .expect_output("metalos:/dev$", Duration::from_secs(5))
+        .expect_output("alloyos:/dev$", Duration::from_secs(5))
         .context("e2e_cd_dev_prompt failed")?;
     harness.send_command("pwd && cd ..");
     harness
-        .expect_output("/dev\nmetalos:/$", Duration::from_secs(5))
+        .expect_output("/dev\nalloyos:/$", Duration::from_secs(5))
         .context("e2e_pwd_and_cd_parent failed")?;
     println!("[xtask] [PASS] e2e_ls_and_cd");
 
@@ -677,8 +686,8 @@ fn run_ci() -> Result<()> {
         .arg("test")
         .arg("--workspace")
         .arg("--features")
-        .arg("metalos-keyboard/preview")
-        .env_remove("METALOS_UPDATE_SCREENSHOTS")
+        .arg("alloyos-keyboard/preview")
+        .env_remove("ALLOYOS_UPDATE_SCREENSHOTS")
         .status()
         .context("Failed to run cargo test --workspace")?;
 
@@ -693,19 +702,19 @@ fn run_ci() -> Result<()> {
     let model_kernel = build_crates_mode(true, false, true)?;
     println!("[xtask] Checking large-file model loading in QEMU (synthetic fixture)...");
     let loader_test = Command::new("cargo").current_dir(&workspace_root)
-        .args(["test", "-p", "metalos-dev-harness", "--test", "qemu_model_loader", "--",
+        .args(["test", "-p", "alloyos-dev-harness", "--test", "qemu_model_loader", "--",
             "--ignored", "large_synthetic_image_loads_into_qemu"])
-        .env("METALOS_TEST_KERNEL", &model_kernel).status()
+        .env("ALLOYOS_TEST_KERNEL", &model_kernel).status()
         .context("Failed to run large-file QEMU loader test")?;
     if !loader_test.success() { return Err(anyhow!("large-file QEMU loader test failed")); }
-    let model_image = std::env::var_os("METALOS_TEST_MODEL_IMAGE").map(PathBuf::from)
+    let model_image = std::env::var_os("ALLOYOS_TEST_MODEL_IMAGE").map(PathBuf::from)
         .unwrap_or_else(|| workspace_root.join(".local/models/gemma-2-2b-it/model.img"));
     if model_image.exists() {
         println!("[xtask] Checking full-size model loading in QEMU...");
         let status = Command::new("cargo").current_dir(&workspace_root)
-            .args(["test", "-p", "metalos-dev-harness", "--test", "qemu_model_loader", "--", "--ignored", "full_model_loads_into_qemu_at_contiguous_addresses"])
-            .env("METALOS_TEST_MODEL_IMAGE", model_image.canonicalize()?)
-            .env("METALOS_TEST_KERNEL", &model_kernel).status()
+            .args(["test", "-p", "alloyos-dev-harness", "--test", "qemu_model_loader", "--", "--ignored", "full_model_loads_into_qemu_at_contiguous_addresses"])
+            .env("ALLOYOS_TEST_MODEL_IMAGE", model_image.canonicalize()?)
+            .env("ALLOYOS_TEST_KERNEL", &model_kernel).status()
             .context("Failed to run full-size QEMU model test")?;
         if !status.success() { return Err(anyhow!("full-size QEMU model test failed")); }
         println!("[xtask] Checking real local chat responsiveness during inference...");
@@ -716,12 +725,12 @@ fn run_ci() -> Result<()> {
             .status().context("Failed to run local QEMU chat test")?;
         if !chat.success() { return Err(anyhow!("local QEMU chat responsiveness test failed")); }
 
-    } else if std::env::var_os("METALOS_TEST_MODEL_IMAGE").is_some() {
-        return Err(anyhow!("METALOS_TEST_MODEL_IMAGE does not exist"));
+    } else if std::env::var_os("ALLOYOS_TEST_MODEL_IMAGE").is_some() {
+        return Err(anyhow!("ALLOYOS_TEST_MODEL_IMAGE does not exist"));
     } else {
         println!("[xtask] SKIP full-size QEMU model test: local model image is absent");
     }
-    println!("[xtask] Step 2: Building metalOS (aarch64) and executing E2E tests...");
+    println!("[xtask] Step 2: Building alloyOS (aarch64) and executing E2E tests...");
     let kernel_image = build_crates(false, true)?;
     run_e2e_tests(&kernel_image, Duration::from_secs(60))?;
     Ok(())
@@ -785,16 +794,16 @@ fn main() -> Result<()> {
                 .arg("-drive").arg(format!("file={},if=none,format=raw,id=hd0", disk.display()))
                 .args(["-device", "virtio-blk-device,drive=hd0"]);
             if let Some(image) = &model_image {
-                metalos_dev_harness::model_loader::attach_disk(image, &mut command)
+                alloyos_dev_harness::model_loader::attach_disk(image, &mut command)
                     .context("Failed to attach model disk")?;
             }
-            metalos_dev_harness::install_shutdown_handler();
+            alloyos_dev_harness::install_shutdown_handler();
             let _credentials = attach_cloud_credentials(&mut command, &root, auth_env, auth_file)?;
-            let mut guest = metalos_dev_harness::Guest::launch(&mut command, Duration::from_secs(timeout)).map_err(|e| anyhow!(e))?;
+            let mut guest = alloyos_dev_harness::Guest::launch(&mut command, Duration::from_secs(timeout)).map_err(|e| anyhow!(e))?;
             // A status response confirms the guest transport. Model readiness is reported in its JSON.
             let status = guest.wait_ready().map_err(|e| anyhow!(e))?;
             println!("Forge status: {status}");
-            metalos_dev_harness::serve(bind, guest).map_err(|e| anyhow!(e))
+            alloyos_dev_harness::serve(bind, guest).map_err(|e| anyhow!(e))
         },
         Commands::Ci => run_ci(),
     }
@@ -814,11 +823,20 @@ mod tests {
     }
 
     #[test]
+    fn workspace_root_resolves_runtime_paths() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        assert_eq!(find_workspace_root(root), Some(root.to_path_buf()));
+        assert_eq!(find_workspace_root(&root.join("xtask/src")), Some(root.to_path_buf()));
+        assert_eq!(find_workspace_root(&root.join("target/debug")), Some(root.to_path_buf()));
+        assert_eq!(find_workspace_root(Path::new("/")), None);
+    }
+
+    #[test]
     fn forge_launch_checks_ram_and_model_header() {
         for memory in ["", "G", "0G", "3G", "32G", "4MG", "-4G", "999999999999999999999G"] { assert!(validate_forge_launch(memory, None, 120).is_err(), "{memory}"); }
         assert!(validate_forge_launch("4096M", None, 120).is_ok());
         assert!(validate_forge_launch("16G", None, 0).is_err());
-        let path = std::env::temp_dir().join(format!("metalos-welder-image-test-{}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("alloyos-welder-image-test-{}", std::process::id()));
         let mut image = vec![0u8; 4608]; image[..8].copy_from_slice(b"FGMODEL1"); image[8..16].copy_from_slice(&24u64.to_le_bytes()); image[4096..4100].copy_from_slice(b"GGUF");
         std::fs::write(&path, &image).unwrap();
         assert!(validate_forge_launch("16G", Some(&path), 120).is_ok());
@@ -889,12 +907,12 @@ mod tests {
         let debug_img = get_disk_image_path(root, false);
         assert_eq!(
             debug_img,
-            Path::new("/tmp/test_ws/target/aarch64-unknown-none/debug/metalos-kernel")
+            Path::new("/tmp/test_ws/target/aarch64-unknown-none/debug/alloyos-kernel")
         );
         let release_img = get_disk_image_path(root, true);
         assert_eq!(
             release_img,
-            Path::new("/tmp/test_ws/target/aarch64-unknown-none/release/metalos-kernel")
+            Path::new("/tmp/test_ws/target/aarch64-unknown-none/release/alloyos-kernel")
         );
     }
 }

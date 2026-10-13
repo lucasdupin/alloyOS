@@ -16,14 +16,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--kernel', type=Path, required=True)
     args = parser.parse_args()
-    with tempfile.TemporaryDirectory(prefix='metalos-cloud-fixtures-') as directory:
+    with tempfile.TemporaryDirectory(prefix='alloyos-cloud-fixtures-') as directory:
         auth = Path(directory) / 'auth'
         auth.write_bytes(b'ANTHROPIC_API_KEY=fixture-key\0GEMINI_API_KEY=fixture-key\0OPENAI_API_KEY=fixture-key\0')
         auth.chmod(0o600)
         command = ['qemu-system-aarch64', '-M', 'virt', '-accel', 'hvf', '-cpu', 'host',
                    '-kernel', str(args.kernel), '-m', '256M', '-display', 'none', '-monitor', 'none',
                    '-device', 'virtio-gpu-device,xres=1206,yres=2622', '-serial', 'stdio',
-                   '-fw_cfg', f'name=opt/metalos/auth,file={auth}', '-no-reboot']
+                   '-fw_cfg', f'name=opt/alloyos/auth,file={auth}', '-no-reboot']
         process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=subprocess.DEVNULL, env={k: v for k, v in os.environ.items()
                                    if k not in ('ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'OPENAI_API_KEY')})

@@ -1,0 +1,11 @@
+[package]
+name = "alloyos-js"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "alloyos_js"
+path = "src/lib.rs"
+
+[dependencies]
+alloyos-proto = { path = "../alloyos-proto" }

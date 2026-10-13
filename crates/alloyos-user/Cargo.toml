@@ -1,0 +1,22 @@
+[package]
+name = "alloyos-user"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "liballoy"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sh"
+path = "src/bin/sh.rs"
+
+[dependencies]
+alloyos-proto = { path = "../alloyos-proto" }
+
+[dev-dependencies]
+# For integration tests we can use std
+
+[features]
+default = []
+host-tests = []

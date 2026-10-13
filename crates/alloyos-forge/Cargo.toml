@@ -1,0 +1,10 @@
+[package]
+name = "alloyos-forge"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+libm = "0.2"
+
+serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }

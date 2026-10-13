@@ -1,0 +1,12 @@
+[package]
+name = "alloyos-mcp"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "alloyos_mcp"
+path = "src/lib.rs"
+
+[dependencies]
+alloyos-js = { path = "../alloyos-js" }
+alloyos-proto = { path = "../alloyos-proto" }

@@ -97,7 +97,7 @@ def main():
     auth.add_argument('--auth-file')
     parser.add_argument('--setup-cloud', action='store_true', help='Show cloud setup even when a provider is already configured')
     args, launch = parser.parse_known_args()
-    print('\nWelcome to metalOS. We’ll prepare a local model, explain cloud access, then launch.\n')
+    print('\nWelcome to alloyOS. We’ll prepare a local model, explain cloud access, then launch.\n')
     print('Step 1 of 4 — Build tools')
     missing = [name for name in ('cargo', 'qemu-system-aarch64', 'curl') if not shutil.which(name)]
     if missing:

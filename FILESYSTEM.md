@@ -1,6 +1,6 @@
-# metalOS Filesystem Structure
+# alloyOS Filesystem Structure
 
-metalOS exposes a unified POSIX-inspired hierarchy managed by the kernel's Virtual Filesystem Switch ([`crates/metalos-kernel/src/fs/vfs.rs`](crates/metalos-kernel/src/fs/vfs.rs)). At boot, the VFS mounts **CobaltFS** (backed by VirtIO-Blk MMIO or ATA PIO) as the root filesystem `/`, falling back to **RamFS** when no persistent block volume is attached, and overlays virtual device nodes under `/dev`.
+alloyOS exposes a unified POSIX-inspired hierarchy managed by the kernel's Virtual Filesystem Switch ([`crates/alloyos-kernel/src/fs/vfs.rs`](crates/alloyos-kernel/src/fs/vfs.rs)). At boot, the VFS mounts **CobaltFS** (backed by VirtIO-Blk MMIO or ATA PIO) as the root filesystem `/`, falling back to **RamFS** when no persistent block volume is attached, and overlays virtual device nodes under `/dev`.
 
 ---
 
@@ -26,7 +26,7 @@ metalOS exposes a unified POSIX-inspired hierarchy managed by the kernel's Virtu
 │   ├── ai.conf             # Active AI provider, model, and shell-free security policy
 │   └── schedules.conf      # Persistent registry of scheduled local JavaScript automations
 ├── tmp/                    # Scratch directory for temporary files
-├── scripts/                # Local JavaScript ES modules executed by scriptd (metalos-js)
+├── scripts/                # Local JavaScript ES modules executed by scriptd (alloyos-js)
 │   └── heartbeat.js        # Default system telemetry heartbeat script
 ├── apps/                   # Headless MCP apps (MCP entry points, SKILL.md files & declarative Tiles)
 │   └── tasks/              # First canonical app: Tasks (exclusive ScriptScheduler access)
@@ -47,10 +47,10 @@ metalOS exposes a unified POSIX-inspired hierarchy managed by the kernel's Virtu
 
 ### `/bin` — System Binaries
 Contains executable entry points for userland tasks:
-- `/bin/sh`: Bring-up console shell (`metal-sh`) used for kernel diagnostics and serial console testing.
+- `/bin/sh`: Bring-up console shell (`alloy-sh`) used for kernel diagnostics and serial console testing.
 
-### `/dev` — Device Filesystem ([`devfs.rs`](crates/metalos-kernel/src/fs/devfs.rs))
-Routed directly by [`Vfs`](crates/metalos-kernel/src/fs/vfs.rs) to [`DevFS`](crates/metalos-kernel/src/fs/devfs.rs) without touching disk storage. Creation and unlinking inside `/dev` return `PermissionDenied`.
+### `/dev` — Device Filesystem ([`devfs.rs`](crates/alloyos-kernel/src/fs/devfs.rs))
+Routed directly by [`Vfs`](crates/alloyos-kernel/src/fs/vfs.rs) to [`DevFS`](crates/alloyos-kernel/src/fs/devfs.rs) without touching disk storage. Creation and unlinking inside `/dev` return `PermissionDenied`.
 
 | Path | Inode | Kind | Behavior |
 |---|---|---|---|
@@ -58,32 +58,32 @@ Routed directly by [`Vfs`](crates/metalos-kernel/src/fs/vfs.rs) to [`DevFS`](cra
 | `/dev/null` | `10` | `CharDevice` | Reads return `0` bytes (`EOF`); writes discard all bytes |
 | `/dev/zero` | `11` | `CharDevice` | Reads fill destination buffer with `0x00`; writes discard all bytes |
 | `/dev/serial` | `12` | `CharDevice` | Reads/writes directly to ARM PL011 UART0 (`0x0900_0000`). Pre-bound to FDs `0`, `1`, `2` |
-| `/dev/urandom` (`/dev/random`) | `13` | `CharDevice` | Reads fill buffer from the kernel hardware CSPRNG ([`drivers/rng.rs`](crates/metalos-kernel/src/drivers/rng.rs)) |
+| `/dev/urandom` (`/dev/random`) | `13` | `CharDevice` | Reads fill buffer from the kernel hardware CSPRNG ([`drivers/rng.rs`](crates/alloyos-kernel/src/drivers/rng.rs)) |
 
 ### `/proc` — Kernel Telemetry
-Populated during [`Vfs::with_root`](crates/metalos-kernel/src/fs/vfs.rs) initialization with system state:
-- `/proc/meminfo`: Reports `MemTotal`, `MemFree`, and `MemUsed` in KiB from the physical bitmap frame allocator ([`mm/frame_allocator.rs`](crates/metalos-kernel/src/mm/frame_allocator.rs)).
+Populated during [`Vfs::with_root`](crates/alloyos-kernel/src/fs/vfs.rs) initialization with system state:
+- `/proc/meminfo`: Reports `MemTotal`, `MemFree`, and `MemUsed` in KiB from the physical bitmap frame allocator ([`mm/frame_allocator.rs`](crates/alloyos-kernel/src/mm/frame_allocator.rs)).
 - `/proc/uptime`: Monotonic system uptime and idle time in seconds.
 - `/proc/cpuinfo`: Processor architecture (`AArch64`) and feature flags (`fp asimd evtstrm aes pmull sha1 sha2 crc32`).
-- `/proc/version`: Kernel release string (`metalOS version 0.1.0 (rustc nightly aarch64)`).
+- `/proc/version`: Kernel release string (`alloyOS version 0.1.0 (rustc nightly aarch64)`).
 
 ### `/etc` — System & AI Configuration
-Holds system-wide configuration files shared between the kernel, `metal-sh`, and the AI runtime ([`metalos-welder`](crates/metalos-welder)):
-- `/etc/motd`: Welcome banner (`Welcome to metalOS v0.1.0 (aarch64 POSIX-compliant Rust kernel)`).
+Holds system-wide configuration files shared between the kernel, `alloy-sh`, and the AI runtime ([`alloyos-welder`](crates/alloyos-welder)):
+- `/etc/motd`: Welcome banner (`Welcome to alloyOS v0.1.0 (aarch64 POSIX-compliant Rust kernel)`).
 - `/etc/ai.conf`: Default AI operator settings (`provider=forge`, `model=gemma-2-2b-it`, `shell_access=disabled`).
 - `/etc/schedules.conf`: Registry of time- and event-triggered JavaScript jobs managed exclusively through the `Tasks` app (`tasks.create`, `tasks.edit`, `tasks.delete`).
 
-### `/scripts` — Local JavaScript Automation ([`metalos-js`](crates/metalos-js))
-Stores sandboxed JavaScript scripts executed by `scriptd` via the `MetalOS.*` host bindings (`MetalOS.fs`, `MetalOS.net`, `MetalOS.ui`, `MetalOS.sys`):
-- `/scripts/heartbeat.js`: Built-in health-check script (`export function main() { return MetalOS.sys.status(); }`).
+### `/scripts` — Local JavaScript Automation ([`alloyos-js`](crates/alloyos-js))
+Stores sandboxed JavaScript scripts executed by `scriptd` via the `AlloyOS.*` host bindings (`AlloyOS.fs`, `AlloyOS.net`, `AlloyOS.ui`, `AlloyOS.sys`):
+- `/scripts/heartbeat.js`: Built-in health-check script (`export function main() { return AlloyOS.sys.status(); }`).
 
-### `/apps` — Headless MCP Applications, SKILLs & Tiles ([`metalos-mcp`](crates/metalos-mcp))
+### `/apps` — Headless MCP Applications, SKILLs & Tiles ([`alloyos-mcp`](crates/alloyos-mcp))
 Package directory for headless Model Context Protocol (MCP) applications. Each app under `/apps/<app_id>/` can expose:
 - **MCP entry points**: Tools, resources, and prompts (`<app_id>.mcp` manifest).
 - **SKILLs**: Plain-text Markdown instruction files (`/apps/<app_id>/SKILL.md`) read by Welder.
 - **Tiles**: Declarative, UI-agnostic `AppTile` descriptors that Ferrofluid can embed in the chat stream or pin to the Dashboard.
 
-Isolation invariants enforced by `metalos-mcp` and `metalos-welder`:
+Isolation invariants enforced by `alloyos-mcp` and `alloyos-welder`:
 - `/apps/tasks/` (**Tasks**) is the first canonical app and is the **only** app allowed to access `ScriptScheduler` (`/etc/schedules.conf` and `/scripts/*.js`). Welder routes all schedule management through `Tasks`.
 - No app can access or invoke another app; **only Welder centralizes app access and orchestration**.
 
@@ -107,23 +107,23 @@ General-purpose scratch directory for transient files created during runtime or 
 
 | Backend | Implementation | Persistence | Description |
 |---|---|---|---|
-| **CobaltFS** | [`crates/metalos-kernel/src/fs/cobaltfs/`](crates/metalos-kernel/src/fs/cobaltfs/README.md) | Persistent (Disk) | ext2-compatible filesystem supporting 1 KiB–4 KiB blocks, direct/single-indirect/double-indirect block pointers, inode/block bitmaps, and directory entry management over VirtIO-Blk (`virtio-blk-device`) or ATA PIO. |
-| **RamFS** | [`crates/metalos-kernel/src/fs/ramfs.rs`](crates/metalos-kernel/src/fs/ramfs.rs) | Volatile (RAM) | In-memory `BTreeMap`-backed filesystem with automatic parent directory creation and path normalization (`..`, `.`). Used when no block device is present. |
-| **DevFS** | [`crates/metalos-kernel/src/fs/devfs.rs`](crates/metalos-kernel/src/fs/devfs.rs) | Virtual | Kernel device node multiplexer mounted at `/dev/*`. |
+| **CobaltFS** | [`crates/alloyos-kernel/src/fs/cobaltfs/`](crates/alloyos-kernel/src/fs/cobaltfs/README.md) | Persistent (Disk) | ext2-compatible filesystem supporting 1 KiB–4 KiB blocks, direct/single-indirect/double-indirect block pointers, inode/block bitmaps, and directory entry management over VirtIO-Blk (`virtio-blk-device`) or ATA PIO. |
+| **RamFS** | [`crates/alloyos-kernel/src/fs/ramfs.rs`](crates/alloyos-kernel/src/fs/ramfs.rs) | Volatile (RAM) | In-memory `BTreeMap`-backed filesystem with automatic parent directory creation and path normalization (`..`, `.`). Used when no block device is present. |
+| **DevFS** | [`crates/alloyos-kernel/src/fs/devfs.rs`](crates/alloyos-kernel/src/fs/devfs.rs) | Virtual | Kernel device node multiplexer mounted at `/dev/*`. |
 
 ---
 
 ## Accessing the Filesystem
 
 ### 1. System Calls (`svc #0` ABI)
-Userland processes interact with the VFS through [`libmetal::fs`](crates/metalos-user/src/fs/mod.rs) and [`crates/metalos-kernel/src/syscall/handlers.rs`](crates/metalos-kernel/src/syscall/handlers.rs):
+Userland processes interact with the VFS through [`liballoy::fs`](crates/alloyos-user/src/fs/mod.rs) and [`crates/alloyos-kernel/src/syscall/handlers.rs`](crates/alloyos-kernel/src/syscall/handlers.rs):
 - `SyscallNo::Open (2)`: Opens a file or directory handle (allocating FDs `3..255`; FDs `0`, `1`, `2` are pre-allocated to `/dev/serial`).
 - `SyscallNo::Read (0)`: Reads file bytes or, when invoked on an open directory handle, returns a newline-delimited directory listing (`Vfs::readdir`) with `/` suffixes on subdirectories.
 - `SyscallNo::Write (1)`: Writes bytes to an open file or character device.
 - `SyscallNo::Close (3)`: Closes an open file descriptor.
 - `SyscallNo::Stat (4)`: Resolves a path in the VFS and returns `1` for `InodeKind::Directory`, `0` for `InodeKind::File` / `InodeKind::CharDevice`, or `ENOENT (-2)` if not found.
 
-### 2. Structured AI Tools ([`metalos-welder`](crates/metalos-welder/src/tools.rs))
+### 2. Structured AI Tools ([`alloyos-welder`](crates/alloyos-welder/src/tools.rs))
 Because the AI agent operates under a strict shell-free policy, it accesses the filesystem exclusively through native structured tools:
 
 These interfaces currently use an in-memory map in `NativeToolRegistry`.

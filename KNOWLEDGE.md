@@ -9,7 +9,7 @@ The main agent maintains a local `/knowledge/` repository as the user expresses
 facts, preferences, interests, and goals in conversation. Markdown files are the
 initial storage format; a database is not required for the first implementation.
 The repository belongs to the device owner and is runtime data, not personal
-information checked into the metalOS source repository.
+information checked into the alloyOS source repository.
 
 ```text
 /knowledge/
@@ -34,7 +34,7 @@ After relevant conversation turns, the agent identifies durable information,
 merges it into existing entries, and records the source, update time, scope, and
 whether it was explicitly stated or inferred. A one-off request should not
 automatically become a global preference. For example, a monochrome boot-screen
-request is initially scoped to metalOS, not to every future design task.
+request is initially scoped to alloyOS, not to every future design task.
 
 At the start of a conversation, the agent loads a bounded profile summary. It
 retrieves additional project or preference records only when relevant, rather
@@ -50,7 +50,7 @@ Example entry format:
 - Basis: Explicit user statement.
 - Source: Conversation turn identifier.
 - Updated: Timestamp supplied by the runtime.
-- Scope: metalOS boot screen.
+- Scope: alloyOS boot screen.
 ```
 
 ## Agent tools and user controls

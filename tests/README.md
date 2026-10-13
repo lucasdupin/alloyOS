@@ -14,7 +14,7 @@ order causing motion or displacement drift.
 Run the existing baselines:
 
 ```sh
-cargo test -p metalos-keyboard -p metalos-ferrofluid --features metalos-keyboard/preview --test screenshots
+cargo test -p alloyos-keyboard -p alloyos-ferrofluid --features alloyos-keyboard/preview --test screenshots
 ```
 
 System UI covers boot, the workspace, a rising/open keyboard, a pressed-key
@@ -36,7 +36,7 @@ Missing baselines and changed dimensions also fail.
 For an intentional visual change, explicitly generate new baselines:
 
 ```sh
-METALOS_UPDATE_SCREENSHOTS=1 cargo test -p metalos-keyboard -p metalos-ferrofluid --features metalos-keyboard/preview --test screenshots
+ALLOYOS_UPDATE_SCREENSHOTS=1 cargo test -p alloyos-keyboard -p alloyos-ferrofluid --features alloyos-keyboard/preview --test screenshots
 ```
 
 Review the changed PNGs before committing them, then run the first command
@@ -44,6 +44,6 @@ without the update variable to verify them. Do not regenerate baselines merely
 to silence an unexpected failure.
 
 `xtask ci` and the pre-push hook include these tests and remove
-`METALOS_UPDATE_SCREENSHOTS` from the test environment, so uploads cannot silently
+`ALLOYOS_UPDATE_SCREENSHOTS` from the test environment, so uploads cannot silently
 accept new baselines. The PNG dependency and screenshot helpers are host-only;
 they are excluded from the bare-metal runtime.

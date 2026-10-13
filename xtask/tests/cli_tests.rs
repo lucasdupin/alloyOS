@@ -9,7 +9,7 @@ fn xtask_help_output() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("metalOS build, run, and test automation"));
+    assert!(stdout.contains("alloyOS build, run, and test automation"));
     assert!(stdout.contains("build"));
     assert!(stdout.contains("run"));
     assert!(stdout.contains("test"));

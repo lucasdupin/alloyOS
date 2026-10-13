@@ -81,6 +81,23 @@ same-named private `.secrets` files and removes referenced secrets from QEMU's
 inherited environment. The host HTTPS relay needs `curl` and verifies certificates.
 Requests may incur provider charges. Live account access is not covered by fixture tests.
 
+The host relay retries explicit HTTP 502/503/504 failures up to three times,
+with 1/2/4-second exponential delays plus up to 500 ms jitter. The entire
+operation has a 50-second budget, below the guest's 55-second timeout.
+Authentication, quota (429), and ambiguous transport failures are not retried.
+Persistent provider outages still return the final HTTP error.
+
+To verify live Gemini generation through QEMU, fw_cfg credentials, and the
+production HTTPS relay (incurs API usage), build the kernel and run:
+
+```sh
+cargo test -p alloyos-dev-harness --test gemini_live -- --ignored
+```
+
+This uses `GEMINI_API_KEY` from the environment or `.secrets/GEMINI_API_KEY`;
+credentials and provider response bodies are not printed.
+
+
 Run a guest-to-host API integration check without network access or real keys:
 
 ```sh

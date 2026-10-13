@@ -49,11 +49,11 @@ fn quote(value: &str) -> String {
             .replace('\r', "\\r")
     )
 }
-fn config(request: &HttpRequest) -> Result<String, String> {
+fn config(request: &HttpRequest, timeout: std::time::Duration) -> Result<String, String> {
     if !allowed(request) {
         return Err("destination_rejected".into());
     }
-    let mut config=format!("url = {}\nrequest = \"POST\"\nproto = \"=https\"\nconnect-timeout = 10\nmax-time = 45\nmax-filesize = {}\nsilent\nwrite-out = \"\\n%{{http_code}}\"\n",quote(&request.url),HTTP_BODY_LIMIT);
+    let mut config=format!("url = {}\nrequest = \"POST\"\nproto = \"=https\"\nconnect-timeout = 10\nmax-time = {:.3}\nmax-filesize = {}\nsilent\nwrite-out = \"\\n%{{http_code}}\"\n",quote(&request.url),timeout.as_secs_f64(),HTTP_BODY_LIMIT);
     for (name, value) in &request.headers {
         config.push_str(&format!(
             "header = {}\n",
@@ -64,7 +64,49 @@ fn config(request: &HttpRequest) -> Result<String, String> {
     Ok(config)
 }
 pub fn post(request: &HttpRequest) -> Result<HttpResponse, String> {
-    let mut config = config(request)?;
+    // Keep the entire relay below HostHttps's 55-second guest deadline.
+    let started = std::time::Instant::now();
+    retry_post(
+        |timeout| post_once(request, timeout),
+        || started.elapsed(),
+        std::thread::sleep,
+    )
+}
+
+fn retry_post(
+    mut execute: impl FnMut(std::time::Duration) -> Result<HttpResponse, String>,
+    elapsed: impl Fn() -> std::time::Duration,
+    mut sleep: impl FnMut(std::time::Duration),
+) -> Result<HttpResponse, String> {
+    use std::time::Duration;
+    const BUDGET: Duration = Duration::from_secs(50);
+    for attempt in 0..4 {
+        let remaining = BUDGET.saturating_sub(elapsed());
+        if remaining.is_zero() {
+            return Err("https_transport_failed".into());
+        }
+        let response = execute(remaining.min(Duration::from_secs(45)))?;
+        // Only retry explicit temporary HTTP failures, never ambiguous transport
+        // failures (which could have completed/billed) or authentication errors.
+        if !matches!(response.status, 502 | 503 | 504) || attempt == 3 {
+            return Ok(response);
+        }
+        let jitter = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos() as u64
+            % 501;
+        let delay = Duration::from_millis((1000 << attempt) + jitter);
+        if BUDGET.saturating_sub(elapsed()) <= delay + Duration::from_secs(1) {
+            return Ok(response);
+        }
+        sleep(delay);
+    }
+    unreachable!()
+}
+
+fn post_once(request: &HttpRequest, timeout: std::time::Duration) -> Result<HttpResponse, String> {
+    let mut config = config(request, timeout)?;
     // No redirect following, no insecure TLS flag, no credentials in argv or logs.
     let mut child = Command::new("curl")
         .args(["--disable", "--config", "-"])
@@ -219,6 +261,78 @@ mod tests {
         }
     }
     #[test]
+    fn transient_failures_recover_with_bounded_backoff() {
+        use std::{cell::Cell, time::Duration};
+        let elapsed = Cell::new(Duration::ZERO);
+        let mut calls = 0;
+        let mut delays = Vec::new();
+        let result = retry_post(
+            |timeout| {
+                assert!(timeout <= Duration::from_secs(45));
+                calls += 1;
+                Ok(HttpResponse {
+                    status: if calls < 4 { 503 } else { 200 },
+                    body: "ok".into(),
+                })
+            },
+            || elapsed.get(),
+            |delay| {
+                elapsed.set(elapsed.get() + delay);
+                delays.push(delay);
+            },
+        )
+        .unwrap();
+        assert_eq!(result.status, 200);
+        assert_eq!(calls, 4);
+        for (index, delay) in delays.iter().enumerate() {
+            let base = Duration::from_secs(1 << index);
+            assert!(*delay >= base && *delay <= base + Duration::from_millis(500));
+        }
+    }
+
+    #[test]
+    fn retries_stop_on_exhaustion_permanent_errors_and_deadline() {
+        use std::{cell::Cell, time::Duration};
+        for (status, expected) in [(503, 4), (401, 1), (403, 1), (400, 1), (429, 1), (200, 1)] {
+            let mut calls = 0;
+            let result = retry_post(
+                |_| {
+                    calls += 1;
+                    Ok(HttpResponse {
+                        status,
+                        body: String::new(),
+                    })
+                },
+                || Duration::ZERO,
+                |_| {},
+            )
+            .unwrap();
+            assert_eq!(result.status, status);
+            assert_eq!(calls, expected);
+        }
+        let time = Cell::new(Duration::ZERO);
+        let result = retry_post(
+            |_| {
+                time.set(Duration::from_secs(49));
+                Ok(HttpResponse {
+                    status: 503,
+                    body: String::new(),
+                })
+            },
+            || time.get(),
+            |_| panic!("deadline exceeded"),
+        )
+        .unwrap();
+        assert_eq!(result.status, 503);
+        assert!(retry_post(
+            |_| Err("https_transport_failed".into()),
+            || Duration::ZERO,
+            |_| panic!("ambiguous failure retried")
+        )
+        .is_err());
+    }
+
+    #[test]
     fn rejects_other_hosts_redirects_and_header_injection() {
         for url in [
             "http://api.openai.com/v1/responses",
@@ -257,9 +371,9 @@ mod tests {
     }
     #[test]
     fn curl_uses_private_stdin_config_and_verified_https() {
-        let config = config(&request()).unwrap();
+        let config = config(&request(), std::time::Duration::from_secs(45)).unwrap();
         assert!(config.contains("proto = \"=https\""));
-        assert!(config.contains("max-time = 45"));
+        assert!(config.contains("max-time = 45.000"));
         assert!(!config.contains("insecure"));
         assert!(!config.contains("location"));
     }

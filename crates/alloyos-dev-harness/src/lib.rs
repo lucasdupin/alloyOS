@@ -80,7 +80,7 @@ impl Guest {
                     break;
                 }
                 if let Ok(line) = String::from_utf8(line) {
-                    if (line.starts_with("FORGE1\t") || line.starts_with("FORGEHTTP1\t")) && tx.try_send(line).is_err() {
+                    if (line.starts_with("FORGE1\t") || line.starts_with("FORGEHTTP1\t") || line.contains("[systemui] Slint window online;")) && tx.try_send(line).is_err() {
                         break;
                     }
                 }
@@ -93,6 +93,18 @@ impl Guest {
             next_id: 0,
             timeout,
         })
+    }
+    /// Wait for the UI to initialize its UART polling before sending RPC frames.
+    pub fn wait_ui_boot(&mut self) -> Result<(), String> {
+        let deadline = Instant::now() + self.timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let line = self.replies.recv_timeout(remaining)
+                .map_err(|_| "guest UI boot timeout".to_string())?;
+            if line.contains("[systemui] Slint window online;") {
+                return Ok(());
+            }
+        }
     }
     pub fn request(&mut self, operation: &str) -> Result<String, String> {
         self.next_id += 1;

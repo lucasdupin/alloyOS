@@ -32,8 +32,8 @@ pub fn run(
     let mut transcript =
         String::from("Welcome to alloyOS.\n\nYour workspace takes shape around what you need.");
     ui.set_active_model(agent.active_model_id());
-    if let Err(error) = agent.initialize_dashboard_tiles() {
-        transcript.push_str(&alloc::format!("\n\nWelder: {}", error));
+    for id in agent.pinned_tile_ids().to_vec() {
+        let _ = agent.refresh_tile(&id);
     }
     ui.set_tiles(&agent.synthesized_tiles());
     ui.restore_dashboard(agent.pinned_tile_ids());

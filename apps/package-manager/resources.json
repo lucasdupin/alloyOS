@@ -1,0 +1,8 @@
+[
+  {
+    "uri": "packages://inventory",
+    "name": "Package Inventory",
+    "mime_type": "application/json",
+    "description": "Full system package inventory and diagnostics"
+  }
+]

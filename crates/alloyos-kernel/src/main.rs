@@ -204,7 +204,11 @@ pub extern "C" fn aarch64_kernel_entry() -> ! {
 
     // 11. Init Headless MCP Developer App Registry (Phase 7)
     let mut mcp_registry = alloyos_mcp::McpRegistry::new();
-    let _ = alloyos_mcp::register_builtin_apps(&mut mcp_registry);
+    if let Some(vfs) = fs::vfs::VFS.lock().as_ref() {
+        if let Ok(snapshot) = fs::packages::snapshot(vfs) {
+            let _ = mcp_registry.discover_and_register_packages(&snapshot, None);
+        }
+    }
     serial_println!(
         "[mcp] Headless MCP app platform online ({} apps registered; zero app-owned UI).",
         mcp_registry.app_count()

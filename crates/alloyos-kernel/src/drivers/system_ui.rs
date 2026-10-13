@@ -170,6 +170,7 @@ pub fn run(
         if let Ok(changes) = package_watcher.poll(now_ms) {
             if !changes.is_empty() {
                 let _ = package_watcher.publish_inventory();
+                let _ = agent.tool_registry.refresh_app_packages();
                 for change in changes {
                     if let alloyos_mcp::packages::PackageChange::Updated(status) = change {
                         if !status.ready {

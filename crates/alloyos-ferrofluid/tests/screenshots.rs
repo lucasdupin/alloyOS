@@ -1,7 +1,10 @@
+#[path = "../../../tests/support/apps.rs"]
+mod fixture_apps;
+use fixture_apps::register_test_apps;
 #[path = "../../../tests/support/screenshots.rs"]
 mod golden;
 use alloyos_ferrofluid::FerrofluidSystemUi;
-use alloyos_mcp::{register_builtin_apps, McpRegistry};
+use alloyos_mcp::McpRegistry;
 use alloyos_proto::{
     display::{PHONE_HEIGHT, PHONE_SCALE, PHONE_WIDTH},
     InputEvent, InputEventKind,
@@ -36,6 +39,13 @@ fn system_ui_screenshots() {
     ui.set_booting(false);
     ui.render(Duration::from_millis(16));
     snapshot(&mut suite, "workspace", &ui);
+    pointer(&mut ui, InputEventKind::PointerButtonDown, 1050, 110);
+    pointer(&mut ui, InputEventKind::PointerButtonUp, 1050, 110);
+    ui.render(Duration::from_millis(16));
+    snapshot(&mut suite, "settings", &ui);
+    pointer(&mut ui, InputEventKind::PointerButtonDown, 1050, 110);
+    pointer(&mut ui, InputEventKind::PointerButtonUp, 1050, 110);
+    ui.render(Duration::from_millis(16));
     pointer(&mut ui, InputEventKind::PointerButtonDown, 300, 2500);
     pointer(&mut ui, InputEventKind::PointerButtonUp, 300, 2500);
     for frame in 2..=61 {
@@ -72,13 +82,17 @@ fn system_ui_screenshots() {
     }
     snapshot(&mut suite, "keyboard-dismissed", &ui);
 
-    ui.set_transcript("You: What time is it?\n\nWelder: Here's your clock.");
+    let fixture =
+        alloyos_mcp::McpValue::from_json(include_str!("../../../tests/fixtures/dashboard.json"))
+            .unwrap();
+    let fixture = fixture.as_map().unwrap();
+    ui.set_transcript(fixture["transcript"].as_str().unwrap());
     let mut registry = McpRegistry::new();
-    register_builtin_apps(&mut registry).unwrap();
+    register_test_apps(&mut registry).unwrap();
     registry.update_uptime(45_296_000);
-    ui.set_tiles(&[registry.render_tile("clock.now").unwrap()]);
+    ui.set_tiles(&[registry.render_tile("sample_timer.now").unwrap()]);
     ui.render(Duration::from_millis(2600));
-    snapshot(&mut suite, "clock-tile", &ui);
+    snapshot(&mut suite, fixture["snapshot"].as_str().unwrap(), &ui);
 
     ui.set_tiles(&[]);
     ui.set_transcript("You: Help me plan the afternoon.");
@@ -161,12 +175,11 @@ fn system_ui_screenshots() {
     ui.set_transcript("Welder: Your apps are ready.");
     use alloyos_mcp::protocol::{AppTile, TileItem};
     let mut cards = Vec::new();
-    for (id, title, value) in [
-        ("clock.now", "Clock", "10:42"),
-        ("weather.now", "Weather", "Sunny · 23°C"),
-        ("tasks.board", "Tasks", "Review trip plans"),
-        ("notes.summary", "Notes", "Three ideas saved"),
-    ] {
+    for card in fixture["cards"].as_array().unwrap() {
+        let fields = card.as_array().unwrap();
+        let id = fields[0].as_str().unwrap();
+        let title = fields[1].as_str().unwrap();
+        let value = fields[2].as_str().unwrap();
         cards.push(AppTile {
             tile_id: id.into(),
             title: title.into(),
@@ -193,14 +206,20 @@ fn system_ui_screenshots() {
             .collect::<Vec<_>>(),
     );
     ui.render(Duration::from_millis(4616));
-    // Drag to the dashboard at the start of the shared conversation scroll.
-    pointer(&mut ui, InputEventKind::PointerButtonDown, 400, 500);
-    for (frame, y) in [600, 800, 1200, 1700, 2200].into_iter().enumerate() {
-        pointer(&mut ui, InputEventKind::PointerMove, 400, y);
-        ui.render(Duration::from_millis(4632 + frame as u64 * 16));
-    }
-    pointer(&mut ui, InputEventKind::PointerButtonUp, 400, 2200);
-    ui.render(Duration::from_millis(5000));
+    ui.set_chat_items(&[alloyos_ferrofluid::ChatItem::Text("Welder: Your apps are ready.".into())]);
+    ui.render(Duration::from_millis(5016));
+    snapshot(&mut suite, "pins-collapsed", &ui);
+    let collapsed = ui.pixels().to_vec();
+    pointer(&mut ui, InputEventKind::PointerButtonDown, 600, 290);
+    pointer(&mut ui, InputEventKind::PointerButtonUp, 600, 290);
+    ui.render(Duration::from_millis(5032));
+    assert_ne!(ui.pixels(), collapsed.as_slice(), "tapping Pinned expands the cards");
     snapshot(&mut suite, "dashboard-bento", &ui);
+    let expanded = ui.pixels().to_vec();
+    pointer(&mut ui, InputEventKind::PointerButtonDown, 520, 600);
+    pointer(&mut ui, InputEventKind::PointerButtonUp, 520, 600);
+    ui.render(Duration::from_millis(5048));
+    assert_ne!(ui.pixels(), expanded.as_slice(), "tile options open through pointer input");
+    snapshot(&mut suite, "tile-menu", &ui);
     suite.finish();
 }

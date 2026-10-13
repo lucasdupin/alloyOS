@@ -184,12 +184,12 @@ fn validate_package(id: &str, files: &BTreeMap<String, String>, revision: u64) -
 mod tests {
     use super::*;
     use alloc::boxed::Box;
-    use crate::{ClockApp, McpRegistry};
+    use crate::{JsApp, McpRegistry};
 
     fn sample() -> PackageSnapshot {
         let mut files = BTreeMap::new();
-        files.insert("/apps/clock/clock.mcp".into(), "name=Clock\nversion=1.0.0\ncapabilities=ExposeMcpTools\n".into());
-        files.insert("/apps/clock/main.js".into(), "function callTool(name,args) { return '{}'; }".into());
+        files.insert("/apps/sample_timer/sample_timer.mcp".into(), "name=Sample Timer\nversion=1.0.0\ncapabilities=ExposeMcpTools\n".into());
+        files.insert("/apps/sample_timer/main.js".into(), "function callTool(name,args) { return '{}'; }".into());
         PackageSnapshot { files, ..PackageSnapshot::default() }
     }
 
@@ -207,11 +207,11 @@ mod tests {
         let mut service = PackageService::new();
         let mut snapshot = sample();
         service.apply_snapshot(snapshot.clone());
-        let first = service.validated_revision("clock").unwrap();
-        snapshot.directories.push("/apps/clock/nested/empty".into());
+        let first = service.validated_revision("sample_timer").unwrap();
+        snapshot.directories.push("/apps/sample_timer/nested/empty".into());
         assert_eq!(service.apply_snapshot(snapshot.clone()).len(), 1);
         assert!(!service.is_current(&first));
-        let second = service.validated_revision("clock").unwrap();
+        let second = service.validated_revision("sample_timer").unwrap();
         snapshot.directories.clear();
         assert_eq!(service.apply_snapshot(snapshot).len(), 1);
         assert!(!service.is_current(&second));
@@ -221,31 +221,31 @@ mod tests {
     fn legacy_entrypoint_cannot_replace_main_js() {
         let mut service = PackageService::new();
         let mut snapshot = sample();
-        snapshot.files.get_mut("/apps/clock/clock.mcp").unwrap()
-            .push_str("entrypoint = /apps/clock/other.js\n");
-        snapshot.files.insert("/apps/clock/other.js".into(), "function other() {}".into());
+        snapshot.files.get_mut("/apps/sample_timer/sample_timer.mcp").unwrap()
+            .push_str("entrypoint = /apps/sample_timer/other.js\n");
+        snapshot.files.insert("/apps/sample_timer/other.js".into(), "function other() {}".into());
         service.apply_snapshot(snapshot.clone());
-        assert!(service.status("clock").unwrap().ready);
+        assert!(service.status("sample_timer").unwrap().ready);
 
-        let main = snapshot.files.remove("/apps/clock/main.js").unwrap();
-        snapshot.files.insert("/apps/clock/other.js".into(), main);
+        let main = snapshot.files.remove("/apps/sample_timer/main.js").unwrap();
+        snapshot.files.insert("/apps/sample_timer/other.js".into(), main);
         service.apply_snapshot(snapshot);
-        let status = service.status("clock").unwrap();
+        let status = service.status("sample_timer").unwrap();
         assert!(!status.ready);
         assert!(status.diagnostics.iter().any(|error|
-            error.path == "/apps/clock/main.js" && error.message == "missing required main.js"));
+            error.path == "/apps/sample_timer/main.js" && error.message == "missing required main.js"));
     }
 
     #[test]
-    fn canonical_tasks_package_validates() {
+    fn filesystem_fixture_package_validates() {
         let files = BTreeMap::from([
-            (crate::TASKS_MANIFEST_PATH.to_string(), crate::TASKS_MANIFEST_MCP.to_string()),
-            (crate::TASKS_MAIN_PATH.to_string(), crate::TASKS_MAIN_JS.to_string()),
-            (crate::TASKS_SKILL_PATH.to_string(), crate::TASKS_SKILL_MD.to_string()),
+            ("/apps/sample_scheduler/sample_scheduler.mcp".to_string(), include_str!("../../../tests/fixtures/apps/sample_scheduler/sample_scheduler.mcp").to_string()),
+            ("/apps/sample_scheduler/main.js".to_string(), include_str!("../../../tests/fixtures/apps/sample_scheduler/main.js").to_string()),
+            ("/apps/sample_scheduler/SKILL.md".to_string(), include_str!("../../../tests/fixtures/apps/sample_scheduler/SKILL.md").to_string()),
         ]);
         let mut service = PackageService::new();
         service.scan_startup(PackageSnapshot { files, ..PackageSnapshot::default() });
-        let status = service.status("tasks").unwrap();
+        let status = service.status("sample_scheduler").unwrap();
         assert!(status.ready, "{:?}", status.diagnostics);
     }
 
@@ -254,18 +254,18 @@ mod tests {
         let mut service = PackageService::new();
         let mut snapshot = sample();
         assert_eq!(service.scan_startup(snapshot.clone()).len(), 1);
-        let first = service.validated_revision("clock").unwrap();
+        let first = service.validated_revision("sample_timer").unwrap();
         assert!(service.apply_snapshot(snapshot.clone()).is_empty());
-        snapshot.files.insert("/apps/clock/assets/icons/a.txt".into(), "first".into());
+        snapshot.files.insert("/apps/sample_timer/assets/icons/a.txt".into(), "first".into());
         assert_eq!(service.apply_snapshot(snapshot.clone()).len(), 1);
         assert!(!service.is_current(&first));
-        let added = service.validated_revision("clock").unwrap();
-        snapshot.files.insert("/apps/clock/assets/icons/a.txt".into(), "second".into());
+        let added = service.validated_revision("sample_timer").unwrap();
+        snapshot.files.insert("/apps/sample_timer/assets/icons/a.txt".into(), "second".into());
         service.apply_snapshot(snapshot.clone());
         assert!(!service.is_current(&added));
-        snapshot.files.remove("/apps/clock/assets/icons/a.txt");
+        snapshot.files.remove("/apps/sample_timer/assets/icons/a.txt");
         assert_eq!(service.apply_snapshot(snapshot).len(), 1);
-        assert!(matches!(&service.apply_snapshot(PackageSnapshot::default())[..], [PackageChange::Removed { app_id, .. }] if app_id == "clock"));
+        assert!(matches!(&service.apply_snapshot(PackageSnapshot::default())[..], [PackageChange::Removed { app_id, .. }] if app_id == "sample_timer"));
         assert!(service.inventory().is_empty());
     }
 
@@ -274,16 +274,16 @@ mod tests {
         let mut service = PackageService::new();
         let mut snapshot = sample();
         service.apply_snapshot(snapshot.clone());
-        let previous = service.validated_revision("clock").unwrap();
-        snapshot.files.insert("/apps/clock/main.js".into(), "function callTool(".into());
+        let previous = service.validated_revision("sample_timer").unwrap();
+        snapshot.files.insert("/apps/sample_timer/main.js".into(), "function callTool(".into());
         service.apply_snapshot(snapshot);
-        let status = service.status("clock").unwrap();
+        let status = service.status("sample_timer").unwrap();
         assert!(!status.ready);
-        assert!(status.diagnostics.iter().any(|error| error.path == "/apps/clock/main.js"));
-        assert!(service.validated_revision("clock").is_none());
+        assert!(status.diagnostics.iter().any(|error| error.path == "/apps/sample_timer/main.js"));
+        assert!(service.validated_revision("sample_timer").is_none());
         assert!(!service.is_current(&previous));
         service.apply_snapshot(sample());
-        assert!(service.status("clock").unwrap().ready);
+        assert!(service.status("sample_timer").unwrap().ready);
         assert!(!service.is_current(&previous));
     }
 
@@ -303,43 +303,43 @@ mod tests {
     fn missing_layout_handlers_and_permissions_remain_visible_invalid() {
         let mut service = PackageService::new();
         let mut snapshot = sample();
-        snapshot.files.insert("/apps/clock/main.js".into(), "// function callTool(name,args) {}\nfunction other() {}".into());
+        snapshot.files.insert("/apps/sample_timer/main.js".into(), "// function callTool(name,args) {}\nfunction other() {}".into());
         service.apply_snapshot(snapshot.clone());
-        assert!(!service.status("clock").unwrap().ready);
-        snapshot.files.insert("/apps/clock/clock.mcp".into(), "name=Clock\nversion=1\ncapabilities=ExposeMcpTools,ScriptSchedulerAccess\n".into());
+        assert!(!service.status("sample_timer").unwrap().ready);
+        snapshot.files.insert("/apps/sample_timer/sample_timer.mcp".into(), "name=Sample Timer\nversion=1\ncapabilities=ExposeMcpTools,CreateWindow\n".into());
         service.apply_snapshot(snapshot.clone());
-        assert!(service.status("clock").unwrap().diagnostics.iter().any(|error| error.path.ends_with("clock.mcp")));
-        snapshot.files.remove("/apps/clock/clock.mcp");
+        assert!(service.status("sample_timer").unwrap().diagnostics.iter().any(|error| error.path.ends_with("sample_timer.mcp")));
+        snapshot.files.remove("/apps/sample_timer/sample_timer.mcp");
         service.apply_snapshot(snapshot);
-        assert!(service.status("clock").unwrap().diagnostics[0].message.contains("missing"));
+        assert!(service.status("sample_timer").unwrap().diagnostics[0].message.contains("missing"));
     }
 
     #[test]
     fn registry_blocks_unbound_changed_invalid_and_deleted_revisions() {
         let mut registry = McpRegistry::new();
-        registry.register_app(Box::new(ClockApp::new())).unwrap();
         let mut snapshot = sample();
-        // Match the registered built-in executor's installed version.
+        registry.register_app(Box::new(JsApp::from_package_files("sample_timer", &snapshot.files, None).unwrap())).unwrap();
+        // Match the registered executor's installed version.
         let version = registry.manifests()[0].version.clone();
-        snapshot.files.insert("/apps/clock/clock.mcp".into(), format!("name=Clock\nversion={}\ncapabilities=ExposeMcpTools\n", version));
+        snapshot.files.insert("/apps/sample_timer/sample_timer.mcp".into(), format!("name=Sample Timer\nversion={}\ncapabilities=ExposeMcpTools\n", version));
         let mut service = PackageService::new();
         service.apply_snapshot(snapshot.clone());
         registry.sync_package_inventory(&service);
         let args = BTreeMap::new();
-        assert!(registry.call_tool("clock.now", &args).is_err());
-        registry.bind_package_revision(service.validated_revision("clock").unwrap()).unwrap();
-        assert!(registry.call_tool("clock.now", &args).is_ok());
-        snapshot.files.insert("/apps/clock/notes.txt".into(), "changed".into());
+        assert!(registry.call_tool("sample_timer.now", &args).is_err());
+        registry.bind_package_revision(service.validated_revision("sample_timer").unwrap()).unwrap();
+        assert!(registry.call_tool("sample_timer.now", &args).is_ok());
+        snapshot.files.insert("/apps/sample_timer/notes.txt".into(), "changed".into());
         service.apply_snapshot(snapshot.clone());
         registry.sync_package_inventory(&service);
-        assert!(registry.call_tool("clock.now", &args).is_err());
-        registry.bind_package_revision(service.validated_revision("clock").unwrap()).unwrap();
-        snapshot.files.insert("/apps/clock/main.js".into(), "function broken(".into());
+        assert!(registry.call_tool("sample_timer.now", &args).is_err());
+        registry.bind_package_revision(service.validated_revision("sample_timer").unwrap()).unwrap();
+        snapshot.files.insert("/apps/sample_timer/main.js".into(), "function broken(".into());
         service.apply_snapshot(snapshot);
         registry.sync_package_inventory(&service);
-        assert!(registry.call_tool("clock.now", &args).is_err());
+        assert!(registry.call_tool("sample_timer.now", &args).is_err());
         service.apply_snapshot(PackageSnapshot::default());
         registry.sync_package_inventory(&service);
-        assert!(registry.call_tool("clock.now", &args).is_err());
+        assert!(registry.call_tool("sample_timer.now", &args).is_err());
     }
 }

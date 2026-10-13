@@ -124,7 +124,7 @@ impl PackageWatcher {
             &serde_json::json!({"packages": inventory}).to_string(),
         )
     }
-    fn observe(
+    pub(crate) fn observe(
         &mut self,
         now_ms: u64,
         current: PackageSnapshot,
@@ -159,7 +159,7 @@ mod tests {
         let mut watcher = PackageWatcher::default();
         assert!(watcher.observe(0, first.clone()).unwrap().is_empty());
         assert!(watcher.observe(50, first.clone()).unwrap().is_empty());
-        assert_eq!(watcher.observe(250, first).unwrap().len(), 2); // seeded Tasks plus demo
+        assert_eq!(watcher.observe(250, first).unwrap().len(), 1);
         vfs.root_fs.write(file.ino, 0, b"two").unwrap();
         let second = snapshot(&vfs).unwrap();
         assert!(watcher.observe(500, second.clone()).unwrap().is_empty());

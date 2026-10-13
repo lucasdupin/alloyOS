@@ -1,20 +1,16 @@
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use alloyos_proto::SyscallNo;
+pub use alloyos_proto::SyscallNo;
 
 use crate::protocol::McpError;
-
-/// Canonical app identifier for the `Tasks` application, which is the ONLY app
-/// permitted to hold `AppCapability::ScriptSchedulerAccess`.
-pub const TASKS_APP_ID: &str = "tasks";
 
 /// Capabilities that an application manifest may attempt to declare or invoke.
 ///
 /// In alloyOS, developer applications expose:
 /// - **Allowed**: `ExposeMcpTools`, `ExposeMcpResources`, `ExposeMcpPrompts`,
 ///   `ExposeSkills`, `ExposeTiles`, `ScopedStorage(String)`, `ScopedNetwork`,
-///   and `ScriptSchedulerAccess` (strictly exclusive to `app_id = "tasks"`).
+///   and `ScriptSchedulerAccess` (when declared).
 /// - **Forbidden**:
 ///   - Direct window/framebuffer/input ownership (`CreateWindow`, `DirectFramebuffer`, `RawInputCapture`)
 ///   - Shell execution (`ShellExecution`)
@@ -27,7 +23,7 @@ pub enum AppCapability {
     ExposeMcpPrompts,
     ExposeSkills,
     ExposeTiles,
-    /// Exclusive capability allowing ONLY the `tasks` app (`app_id == "tasks"`) to access `ScriptScheduler`.
+    /// Exclusive capability allowing a declaring app to access `ScriptScheduler`.
     ScriptSchedulerAccess,
     ScopedStorage(String),
     ScopedNetwork,
@@ -147,8 +143,8 @@ pub enum McpSandboxError {
         app_id: String,
         capability: AppCapability,
     },
-    /// Non-`tasks` app attempted to declare or invoke `ScriptSchedulerAccess` or access scheduler storage.
-    /// Only the `Tasks` app (`app_id = "tasks"`) is permitted to access `ScriptScheduler`.
+    /// App attempted to access scheduler storage without declaring scheduler access.
+    /// An app with the declared capability is permitted to access `ScriptScheduler`.
     SchedulerAccessForbidden { app_id: String },
     /// An app attempted to access or invoke another app directly.
     /// No app can access another app; only Welder centralizes app access and orchestration.
@@ -186,7 +182,7 @@ impl McpSandboxError {
             }
             McpSandboxError::SchedulerAccessForbidden { app_id } => {
                 McpError::sandbox_violation(format!(
-                    "Scheduler isolation violation in app '{}': only the 'tasks' app may access ScriptScheduler",
+                    "Scheduler isolation violation in app '{}': ScriptSchedulerAccess capability is required",
                     app_id
                 ))
             }
@@ -293,7 +289,7 @@ impl AppManifest {
                 "name" => name = Some(val.to_string()),
                 "version" => version = Some(val.to_string()),
                 // Obsolete: every package uses main.js; accept legacy manifests.
-                "entrypoint" => {},
+                "entrypoint" => {}
                 "capabilities" => {
                     if !val.is_empty() {
                         for item in val.split(',') {
@@ -326,7 +322,13 @@ impl AppManifest {
             name.trim()
                 .to_ascii_lowercase()
                 .chars()
-                .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
                 .collect()
         });
         let version = version.ok_or_else(|| {
@@ -359,9 +361,7 @@ impl AppManifest {
 }
 
 fn is_scheduler_protected_path(path: &str) -> bool {
-    path == "/etc/schedules.conf"
-        || path == "/scripts"
-        || path.starts_with("/scripts/")
+    path == "/etc/schedules.conf" || path == "/scripts" || path.starts_with("/scripts/")
 }
 
 /// Returns the allow-listed writable data root `/var/<app_id>` for an MCP application.
@@ -390,9 +390,9 @@ pub fn is_within_app_write_allowlist(app_id: &str, path: &str) -> bool {
 /// 3. **No Shell Execution**: Rejects `ShellExecution` with `McpSandboxError::ShellCapabilityForbidden`.
 /// 4. **No Cross-App Access**: Rejects `CrossAppAccess` with `McpSandboxError::CrossAppAccessForbidden`.
 /// 5. **Exclusive ScriptScheduler Access**: Rejects `ScriptSchedulerAccess` (and `/etc/schedules.conf` or `/scripts`
-///    storage scopes) for any app other than `tasks` (`app_id == "tasks"`).
+///    storage scopes) unless the manifest declares scheduler access.
 /// 6. **Allow-List Scoped Storage**: MCP app write permissions are allow-list based; an app `<app_id>` may only
-///    declare or write to `/var/<app_id>/` (with `tasks` additionally allowed its scheduler paths).
+///    declare or write to `/var/<app_id>/` (with scheduler-capable apps additionally allowed scheduler paths).
 /// 7. **At Least One Surface**: Requires at least one MCP/Skill/Tile surface capability.
 pub fn validate_app_manifest(manifest: &AppManifest) -> Result<(), McpSandboxError> {
     if manifest.app_id.trim().is_empty()
@@ -445,13 +445,7 @@ pub fn validate_app_manifest(manifest: &AppManifest) -> Result<(), McpSandboxErr
                     target_app_id: "*".to_string(),
                 });
             }
-            AppCapability::ScriptSchedulerAccess => {
-                if manifest.app_id != TASKS_APP_ID {
-                    return Err(McpSandboxError::SchedulerAccessForbidden {
-                        app_id: manifest.app_id.clone(),
-                    });
-                }
-            }
+            AppCapability::ScriptSchedulerAccess => {}
             AppCapability::ScopedStorage(_) => {}
             AppCapability::ExposeMcpTools
             | AppCapability::ExposeMcpResources
@@ -481,13 +475,16 @@ pub fn validate_app_manifest(manifest: &AppManifest) -> Result<(), McpSandboxErr
                     ),
                 });
             }
-            if manifest.app_id != TASKS_APP_ID && is_scheduler_protected_path(path) {
+            if !manifest.has_capability(&AppCapability::ScriptSchedulerAccess)
+                && is_scheduler_protected_path(path)
+            {
                 return Err(McpSandboxError::SchedulerAccessForbidden {
                     app_id: manifest.app_id.clone(),
                 });
             }
             let allowlisted = is_within_app_write_allowlist(&manifest.app_id, path)
-                || (manifest.app_id == TASKS_APP_ID && is_scheduler_protected_path(path));
+                || (manifest.has_capability(&AppCapability::ScriptSchedulerAccess)
+                    && is_scheduler_protected_path(path));
             if !allowlisted {
                 return Err(McpSandboxError::InvalidManifest {
                     app_id: manifest.app_id.clone(),
@@ -503,7 +500,7 @@ pub fn validate_app_manifest(manifest: &AppManifest) -> Result<(), McpSandboxErr
     Ok(())
 }
 
-/// Runtime capability guard that enforces Zero App-Owned UI, exclusive `Tasks` scheduler access,
+/// Runtime capability guard that enforces Zero App-Owned UI, manifest-declared scheduler access,
 /// no cross-app access, and allow-list based `/var/<app_id>/` write permissions on every operation
 /// invoked by or against an MCP application.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -523,7 +520,7 @@ impl RuntimeCapabilityGuard {
     }
 
     /// Enforce allow-list write permissions for an MCP app:
-    /// Only paths inside `/var/<app_id>/` are writable (plus scheduler paths exclusively for `tasks`).
+    /// Only paths inside `/var/<app_id>/` are writable (plus scheduler paths for apps declaring scheduler access).
     pub fn enforce_write_path(&self, target_path: &str) -> Result<(), McpSandboxError> {
         self.enforce_capability(&AppCapability::ScopedStorage(target_path.to_string()))
     }
@@ -546,11 +543,6 @@ impl RuntimeCapabilityGuard {
                 target_app_id: "*".to_string(),
             }),
             AppCapability::ScriptSchedulerAccess => {
-                if self.manifest.app_id != TASKS_APP_ID {
-                    return Err(McpSandboxError::SchedulerAccessForbidden {
-                        app_id: self.manifest.app_id.clone(),
-                    });
-                }
                 if self.manifest.has_capability(requested) {
                     Ok(())
                 } else {
@@ -569,16 +561,21 @@ impl RuntimeCapabilityGuard {
                         capability: requested.clone(),
                     });
                 }
-                if self.manifest.app_id != TASKS_APP_ID && is_scheduler_protected_path(target_path)
+                if !self
+                    .manifest
+                    .has_capability(&AppCapability::ScriptSchedulerAccess)
+                    && is_scheduler_protected_path(target_path)
                 {
                     return Err(McpSandboxError::SchedulerAccessForbidden {
                         app_id: self.manifest.app_id.clone(),
                     });
                 }
                 // Allow-list: every MCP app is only allowed to write to `/var/<app_id>/`
-                // (plus `tasks` scheduler paths when declared by `tasks`).
+                // (plus scheduler paths when the capability is declared).
                 let allowlisted = is_within_app_write_allowlist(&self.manifest.app_id, target_path)
-                    || (self.manifest.app_id == TASKS_APP_ID
+                    || (self
+                        .manifest
+                        .has_capability(&AppCapability::ScriptSchedulerAccess)
                         && is_scheduler_protected_path(target_path)
                         && self.manifest.declared_capabilities.iter().any(|cap| {
                             if let AppCapability::ScopedStorage(prefix) = cap {
@@ -599,6 +596,10 @@ impl RuntimeCapabilityGuard {
                         capability: requested.clone(),
                     })
                 }
+            }
+            AppCapability::ScopedNetwork => {
+                // Outbound network access is provided by default for all MCP apps
+                Ok(())
             }
             other => {
                 if self.manifest.has_capability(other) {

@@ -1,0 +1,5 @@
+# alloyOS Headless MCP App Manifest (/apps/package-manager/package-manager.mcp)
+app_id = package-manager
+name = Package Manager
+version = 0.1.0
+capabilities = ExposeMcpTools, ExposeMcpResources, ExposeSkills, ExposeTiles

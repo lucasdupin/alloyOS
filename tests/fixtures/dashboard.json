@@ -1,0 +1,10 @@
+{
+  "transcript": "You: What time is it?\n\nWelder: Here's your clock.",
+  "snapshot": "clock-tile",
+  "cards": [
+    ["fixture_a.now", "Clock", "10:42"],
+    ["fixture_b.now", "Weather", "Sunny · 23°C"],
+    ["fixture_c.board", "Tasks", "Review trip plans"],
+    ["fixture_d.summary", "Notes", "Three ideas saved"]
+  ]
+}

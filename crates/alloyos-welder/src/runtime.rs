@@ -498,10 +498,132 @@ impl AgentRuntime {
         }
     }
 
+    fn handle_apps_command(
+        &mut self,
+        rest: &str,
+        on_token: &mut dyn FnMut(&str),
+    ) -> Result<ConsoleTurnOutput, AiError> {
+        let filter = rest.trim();
+        let filter_app = if filter.is_empty() || filter == "list" || filter == "status" {
+            None
+        } else if let Some(app) = filter.strip_prefix("inspect ") {
+            Some(app.trim())
+        } else if let Some(app) = filter.strip_prefix("status ") {
+            Some(app.trim())
+        } else {
+            Some(filter)
+        };
+
+        let packages_json = self.tool_registry.vfs_read("/proc/app-packages.json");
+        let mut msg = String::new();
+
+        if let Some(ref json_str) = packages_json {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(json_str) {
+                if let Some(pkgs) = value.get("packages").and_then(|v| v.as_array()) {
+                    let total = pkgs.len();
+                    let ready_count = pkgs
+                        .iter()
+                        .filter(|p| p.get("ready").and_then(|r| r.as_bool()).unwrap_or(false))
+                        .count();
+
+                    msg.push_str(&format!(
+                        "Installed Application Packages (/apps): {} package(s), {} ready.",
+                        total, ready_count
+                    ));
+
+                    for pkg in pkgs {
+                        let app_id = pkg.get("app_id").and_then(|v| v.as_str()).unwrap_or("unknown");
+                        if let Some(target) = filter_app {
+                            if app_id != target {
+                                continue;
+                            }
+                        }
+
+                        let ver = pkg.get("version").and_then(|v| v.as_str()).unwrap_or("unknown");
+                        let ready = pkg.get("ready").and_then(|v| v.as_bool()).unwrap_or(false);
+                        let rev = pkg.get("revision").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let val_rev = pkg.get("validated_revision").and_then(|v| v.as_u64());
+
+                        let status_label = if ready {
+                            "Ready".to_string()
+                        } else if val_rev.is_none() {
+                            "Validation Pending".to_string()
+                        } else if val_rev.unwrap() < rev {
+                            "Stale Revision (Revalidation Pending)".to_string()
+                        } else {
+                            "Validation Error".to_string()
+                        };
+
+                        msg.push_str(&format!(
+                            "\n- [{}] v{} · Status: {} (rev: {}, validated_rev: {})",
+                            app_id,
+                            ver,
+                            status_label,
+                            rev,
+                            val_rev.map(|r| r.to_string()).unwrap_or_else(|| "none".to_string())
+                        ));
+
+                        if let Some(diags) = pkg.get("diagnostics").and_then(|v| v.as_array()) {
+                            for diag in diags {
+                                let path = diag.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                                let err_msg = diag.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                                msg.push_str(&format!("\n    * Error in {}: {}", path, err_msg));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if msg.is_empty() {
+            let reg = self.tool_registry.mcp_registry();
+            let manifests = reg.manifests();
+            msg = format!(
+                "Installed Application Packages (/apps): {} package(s).\n",
+                manifests.len()
+            );
+            for m in manifests {
+                if let Some(target) = filter_app {
+                    if m.app_id != target {
+                        continue;
+                    }
+                }
+                msg.push_str(&format!(
+                    "\n- [{}] {} v{} · Ready",
+                    m.app_id, m.name, m.version
+                ));
+            }
+        }
+
+        on_token(&msg);
+        Ok(ConsoleTurnOutput {
+            active_provider: self.active_provider_name(),
+            active_model: self.active_model_id().to_string(),
+            response_text: msg,
+            tool_outputs: Vec::new(),
+            config_persisted: false,
+        })
+    }
+
+    /// Preferred name of the active user retrieved from `/knowledge/profile.md`, if known.
+    pub fn user_preferred_name(&mut self) -> Option<String> {
+        let entries = self
+            .tool_registry
+            .knowledge_entries_for(&crate::knowledge::KnowledgeCategory::Profile);
+        entries
+            .into_iter()
+            .find(|e| {
+                let norm = crate::knowledge::normalize_topic_key(&e.title);
+                norm == "preferred name" || norm == "name"
+            })
+            .map(|e| e.value)
+    }
+
     /// Processes a user input line from the Ferrofluid AI Console:
     /// - Rejects `!` shell escapes and `sh`/`bash` commands with `AiError::ShellAccessForbidden`
     /// - Handles `/model gemini`, `/model claude`, `/model chatgpt` hot-swapping and persists `/etc/ai.conf`
     /// - Handles `/knowledge` inspection, search, pause/resume, forget, and correction commands
+    /// - Handles `/apps` and `/packages` installed package status and diagnostics inspection
     /// - Automatically extracts and merges durable user knowledge from conversational turns and injects
     ///   bounded profile + relevant retrieved context into the model request.
     /// - Streams tokens from the active `AiModelProvider` and executes any emitted native OS `ToolCall`s.
@@ -562,6 +684,15 @@ impl AgentRuntime {
             }
         }
 
+        if let Some(rest) = trimmed
+            .strip_prefix("/apps")
+            .or_else(|| trimmed.strip_prefix("/packages"))
+        {
+            if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+                return self.handle_apps_command(rest, on_token);
+            }
+        }
+
         let report = self.tool_registry.learn_from_conversation_turn(trimmed);
         if report.has_changes() {
             self.refresh_knowledge_tile_if_present();
@@ -592,6 +723,10 @@ impl AgentRuntime {
         if trimmed.starts_with("/model")
             || trimmed == "/knowledge"
             || trimmed.starts_with("/knowledge ")
+            || trimmed == "/apps"
+            || trimmed.starts_with("/apps ")
+            || trimmed == "/packages"
+            || trimmed.starts_with("/packages ")
         {
             return self.handle_console_input(input, &mut |_| {}).map(Some);
         }
@@ -794,7 +929,7 @@ impl AgentRuntime {
         Ok(())
     }
 
-    /// Populate built-in app cards locally without a model request.
+    /// Populate filesystem-discovered app cards without a model request.
     pub fn initialize_dashboard_tiles(&mut self) -> Result<(), AiError> {
         let descriptors = {
             let registry = self.tool_registry.mcp_registry();
@@ -831,25 +966,50 @@ impl AgentRuntime {
 }
 
 #[cfg(test)]
+#[path = "../../../tests/support/apps.rs"]
+mod fixture_apps;
+
+#[cfg(test)]
 mod tests {
+    use super::fixture_apps;
+    fn runtime_with_apps() -> AgentRuntime {
+        let backend = crate::SharedMapVfsBackend::shared();
+        backend.borrow_mut().files.extend(fixture_apps::files());
+        backend.borrow_mut().files.insert("/etc/ai.conf".into(), "provider=gemini\nmodel=gemini-3.8-flash\n".into());
+        AgentRuntime::with_vfs_backend(backend)
+    }
+
     use super::*;
     use crate::{ProviderToolCall as ToolCall, ToolSpec, UiCallerOrigin, ViewKind};
     use alloyos_forge::provider::TokenUsage;
     #[test]
+    fn app_inventory_comes_only_from_the_filesystem() {
+        let backend = crate::SharedMapVfsBackend::shared();
+        let mut runtime = AgentRuntime::with_vfs_backend(backend.clone());
+        assert_eq!(runtime.tool_registry.mcp_registry().app_count(), 0);
+        backend.borrow_mut().files.extend(fixture_apps::files());
+        assert_eq!(runtime.tool_registry.refresh_app_packages().unwrap(), 3);
+        backend.borrow_mut().files.retain(|path, _| !path.starts_with("/apps/"));
+        assert_eq!(runtime.tool_registry.refresh_app_packages().unwrap(), 0);
+        assert_eq!(runtime.tool_registry.mcp_registry().app_count(), 0);
+        assert!(backend.borrow().files["/proc/app-packages.json"].contains("[]"));
+    }
+
+    #[test]
     fn shared_action_requires_tile_identity_and_stale_actions_are_rejected() {
-        let mut runtime = AgentRuntime::new();
+        let mut runtime = runtime_with_apps();
         runtime.initialize_dashboard_tiles().unwrap();
-        let mut clock = runtime.synthesized_tiles().into_iter().find(|tile| tile.tile_id == "clock.now").unwrap();
-        let action = clock.actions[0].clone();
-        clock.tile_id = "clock.copy".into();
+        let mut sample_timer = runtime.synthesized_tiles().into_iter().find(|tile| tile.tile_id == "sample_timer.now").unwrap();
+        let action = sample_timer.actions[0].clone();
+        sample_timer.tile_id = "sample_timer.copy".into();
         runtime.ui_synthesizer.synthesize_from_mcp_output_with_tile(
-            &crate::ui_synth::UiCallerOrigin::AiAgent, "clock", "copy", "{}", Some(clock.clone())).unwrap();
+            &crate::ui_synth::UiCallerOrigin::AiAgent, "sample_timer", "copy", "{}", Some(sample_timer.clone())).unwrap();
         assert!(matches!(runtime.execute_tile_action(&action), Err(AiError::PolicyViolation(_))));
-        runtime.execute_tile_action_for("clock.now", &action).unwrap();
-        clock.actions.clear();
+        runtime.execute_tile_action_for("sample_timer.now", &action).unwrap();
+        sample_timer.actions.clear();
         runtime.ui_synthesizer.synthesize_from_mcp_output_with_tile(
-            &crate::ui_synth::UiCallerOrigin::AiAgent, "clock", "copy", "{}", Some(clock)).unwrap();
-        assert!(matches!(runtime.execute_tile_action_for("clock.copy", &action), Err(AiError::PolicyViolation(_))));
+            &crate::ui_synth::UiCallerOrigin::AiAgent, "sample_timer", "copy", "{}", Some(sample_timer)).unwrap();
+        assert!(matches!(runtime.execute_tile_action_for("sample_timer.copy", &action), Err(AiError::PolicyViolation(_))));
     }
 
     #[test]
@@ -857,38 +1017,38 @@ mod tests {
         let backend = Rc::new(RefCell::new(crate::tools::SharedMapVfsBackend::new()));
         let mut runtime = AgentRuntime::with_vfs_backend(backend.clone());
         assert!(runtime.pinned_tile_ids().is_empty());
-        runtime.set_pinned_tile_ids(&["tasks.board".into(), "clock.now".into(), "tasks.board".into()]).unwrap();
+        runtime.set_pinned_tile_ids(&["sample_scheduler.board".into(), "sample_timer.now".into(), "sample_scheduler.board".into()]).unwrap();
         let mut restored = AgentRuntime::with_vfs_backend(backend.clone());
-        assert_eq!(restored.pinned_tile_ids(), &["tasks.board", "clock.now"]);
+        assert_eq!(restored.pinned_tile_ids(), &["sample_scheduler.board", "sample_timer.now"]);
         restored.set_pinned_tile_ids(&[]).unwrap();
         assert!(AgentRuntime::with_vfs_backend(backend).pinned_tile_ids().is_empty());
     }
 
     #[test]
     fn resource_refresh_is_scoped_to_current_tile() {
-        let mut runtime = AgentRuntime::new();
+        let mut runtime = runtime_with_apps();
         runtime.initialize_dashboard_tiles().unwrap();
         runtime.tick_scheduler(2000, None);
-        let output = runtime.refresh_tile("clock.now").unwrap();
-        assert_eq!(output.synthesized_view.unwrap().tile.unwrap().tile_id, "clock.now");
-        assert!(runtime.synthesized_tiles().iter().any(|tile| tile.tile_id == "clock.now" && tile.items[0].title == "00:00:02"));
-        assert!(matches!(runtime.refresh_tile("clock.unknown"), Err(AiError::PolicyViolation(_))));
-        let action = runtime.synthesized_tiles().iter().find(|tile| tile.tile_id == "clock.now").unwrap().actions[0].clone();
-        assert!(matches!(runtime.execute_tile_action_for("tasks.board", &action), Err(AiError::PolicyViolation(_))));
+        let output = runtime.refresh_tile("sample_timer.now").unwrap();
+        assert_eq!(output.synthesized_view.unwrap().tile.unwrap().tile_id, "sample_timer.now");
+        assert!(runtime.synthesized_tiles().iter().any(|tile| tile.tile_id == "sample_timer.now" && tile.items[0].title == "00:00:02"));
+        assert!(matches!(runtime.refresh_tile("sample_timer.unknown"), Err(AiError::PolicyViolation(_))));
+        let action = runtime.synthesized_tiles().iter().find(|tile| tile.tile_id == "sample_timer.now").unwrap().actions[0].clone();
+        assert!(matches!(runtime.execute_tile_action_for("sample_scheduler.board", &action), Err(AiError::PolicyViolation(_))));
         let mut stale = action;
         stale.label.push_str("stale");
-        assert!(matches!(runtime.execute_tile_action_for("clock.now", &stale), Err(AiError::PolicyViolation(_))));
+        assert!(matches!(runtime.execute_tile_action_for("sample_timer.now", &stale), Err(AiError::PolicyViolation(_))));
     }
 
     #[test]
-    fn clock_tile_refresh_uses_live_host_uptime() {
-        let mut runtime = AgentRuntime::new();
+    fn app_tile_refresh_uses_live_host_uptime() {
+        let mut runtime = runtime_with_apps();
         runtime.tick_scheduler(45_296_000, None);
-        let call = ToolCall::new("clock", "mcp_call_tool",
-            "{\"app\":\"clock\",\"tool\":\"clock.now\",\"args\":\"{}\"}");
+        let call = ToolCall::new("sample_timer", "mcp_call_tool",
+            "{\"app\":\"sample_timer\",\"tool\":\"sample_timer.now\",\"args\":\"{}\"}");
         runtime.tool_registry.execute_tool(&call, &mut runtime.ui_synthesizer).unwrap();
         let tile = runtime.synthesized_tiles().remove(0);
-        assert_eq!(tile.tile_id, "clock.now");
+        assert_eq!(tile.tile_id, "sample_timer.now");
         assert_eq!(tile.items[0].title, "12:34:56");
         runtime.tick_scheduler(45_297_000, None);
         let refreshed = runtime.execute_tile_action(&tile.actions[0]).unwrap();
@@ -899,25 +1059,25 @@ mod tests {
 
     #[test]
     fn tile_refresh_routes_through_welder_and_replaces_latest_descriptor() {
-        let mut runtime = AgentRuntime::new();
+        let mut runtime = runtime_with_apps();
         let call = ToolCall::new("initial", "mcp_call_tool",
-            "{\"app\":\"tasks\",\"tool\":\"tasks.list\",\"args\":\"{}\"}");
+            "{\"app\":\"sample_scheduler\",\"tool\":\"sample_scheduler.list\",\"args\":\"{}\"}");
         runtime.tool_registry.execute_tool(&call, &mut runtime.ui_synthesizer).unwrap();
         let initial = runtime.synthesized_tiles();
         assert_eq!(initial.len(), 1);
-        let action = initial[0].actions.iter().find(|a| a.tool_name == "tasks.list").unwrap().clone();
+        let action = initial[0].actions.iter().find(|a| a.tool_name == "sample_scheduler.list").unwrap().clone();
         let output = runtime.execute_tile_action(&action).unwrap();
         assert_eq!(output.tool_name, "mcp_call_tool");
         assert_eq!(runtime.synthesized_tiles().len(), 1);
         assert_eq!(output.synthesized_view.unwrap().tile.unwrap(), runtime.synthesized_tiles()[0]);
         let mut forged = action;
-        forged.tool_name = "tasks.delete".into();
+        forged.tool_name = "sample_scheduler.delete".into();
         assert!(matches!(runtime.execute_tile_action(&forged), Err(AiError::PolicyViolation(_))));
     }
 
     #[test]
     fn runtime_hot_swapping_and_etc_ai_conf_persistence() {
-        let mut runtime = AgentRuntime::new();
+        let mut runtime = runtime_with_apps();
         assert_eq!(runtime.active_provider_name(), "gemini");
         assert_eq!(runtime.active_model_id(), "gemini-3.8-flash");
 
@@ -952,7 +1112,7 @@ mod tests {
         assert_eq!(out_gemini.active_model, "gemini-3.8-flash");
 
         // Test loading a custom /etc/ai.conf into a fresh runtime
-        let mut restored = AgentRuntime::new();
+        let mut restored = runtime_with_apps();
         restored
             .load_config_str("provider=claude\nmodel=claude-sonnet-4-6\n")
             .expect("config should load");
@@ -962,7 +1122,7 @@ mod tests {
 
     #[test]
     fn shell_commands_and_tools_are_strictly_blocked() {
-        let mut runtime = AgentRuntime::new();
+        let mut runtime = runtime_with_apps();
 
         // 1. Reject `!ls` and `!sh` shell escapes in console input
         for forbidden_input in [
@@ -1011,7 +1171,7 @@ mod tests {
 
     #[test]
     fn agent_exclusive_ui_synthesis_from_mcp_and_os_tools() {
-        let mut runtime = AgentRuntime::new();
+        let mut runtime = runtime_with_apps();
         runtime.switch_provider("gemini").unwrap();
         // Initial boot view is ViewKind::Console
         assert_eq!(runtime.synthesized_views().len(), 1);
@@ -1026,14 +1186,14 @@ mod tests {
         );
         assert!(matches!(direct_attempt, Err(AiError::PolicyViolation(_))));
 
-        // AI Agent invokes Tasks MCP tool and synthesizes ViewKind::McpAppView with declarative AppTile
+        // AI Agent invokes Sample Scheduler MCP tool and synthesizes ViewKind::McpAppView with declarative AppTile
         let turn = runtime
             .apply_response(Response::new(
-                "Listing scheduled tasks via Tasks app",
+                "Listing scheduled sample_scheduler via Sample Scheduler app",
                 vec![ToolCall::new(
                     "mcp-1",
                     "mcp_call_tool",
-                    "{\"app\":\"tasks\",\"tool\":\"tasks.list\",\"args\":\"{}\"}",
+                    "{\"app\":\"sample_scheduler\",\"tool\":\"sample_scheduler.list\",\"args\":\"{}\"}",
                 )],
                 "fixture",
                 TokenUsage::new(0, 0),
@@ -1045,10 +1205,10 @@ mod tests {
             .as_ref()
             .expect("MCP tool call should synthesize a UI view");
         assert_eq!(mcp_view.kind, ViewKind::McpAppView);
-        assert_eq!(mcp_view.source_app.as_deref(), Some("tasks"));
-        assert_eq!(mcp_view.title, "Tasks");
+        assert_eq!(mcp_view.source_app.as_deref(), Some("sample_scheduler"));
+        assert_eq!(mcp_view.title, "Sample Scheduler");
         assert!(mcp_view.tile.is_some());
-        assert_eq!(mcp_view.tile.as_ref().unwrap().tile_id, "tasks.board");
+        assert_eq!(mcp_view.tile.as_ref().unwrap().tile_id, "sample_scheduler.board");
 
         assert!(!mcp_view.metrics.is_empty());
 
@@ -1067,7 +1227,7 @@ mod tests {
             .expect("sys_status should synthesize MetricDashboard");
         assert_eq!(sys_view.kind, ViewKind::MetricDashboard);
 
-        // AI Agent schedules a JS script (routed through TasksApp) and synthesizes ViewKind::ScriptScheduleList
+        // AI Agent schedules a JS script (routed through the scheduler service) and synthesizes ViewKind::ScriptScheduleList
         let sched_turn = runtime
             .apply_response(Response::new(
                 "Scheduling",
@@ -1086,12 +1246,12 @@ mod tests {
             .expect("script_schedule should synthesize ScriptScheduleList");
         assert_eq!(sched_view.kind, ViewKind::ScriptScheduleList);
         assert_eq!(sched_view.schedules.len(), 1);
-        assert_eq!(sched_view.source_app.as_deref(), Some("tasks"));
-        assert!(sched_view.tile.is_some());
+        assert_eq!(sched_view.source_app.as_deref(), None);
+        assert!(sched_view.tile.is_none());
     }
     #[test]
     fn cloud_is_default_and_explicit_local_never_silently_uses_cloud() {
-        let mut ai = AgentRuntime::new();
+        let mut ai = runtime_with_apps();
         assert_eq!(ai.active_provider_name(), "gemini");
         assert_eq!(ai.active_model_id(), "gemini-3.8-flash");
         assert!(ai.serialize_config().contains("provider=gemini"));
@@ -1117,14 +1277,14 @@ mod tests {
 
     #[test]
     fn live_script_create_run_schedule_and_event_triggers() {
-        let mut runtime = AgentRuntime::new();
+        let mut runtime = runtime_with_apps();
         let mut ui = AgentUiSynthesizer::new();
 
         // 1. Create and immediately run a script via Welder tools
         let create_call = ToolCall::new(
             "c1",
             "script_create",
-            r#"{"path":"/scripts/compute.js","code":"let s = AlloyOS.sys.status(); AlloyOS.fs.write('/var/computed.txt', 'tasks=' + s.activeTasks); AlloyOS.ui.notify('Compute: Done'); s.activeTasks * 10;"}"#,
+            r#"{"path":"/scripts/compute.js","code":"let s = AlloyOS.sys.status(); AlloyOS.fs.write('/var/computed.txt', 'sample_scheduler=' + s.activeTasks); AlloyOS.ui.notify('Compute: Done'); s.activeTasks * 10;"}"#,
         );
         runtime
             .tool_registry
@@ -1140,7 +1300,7 @@ mod tests {
         assert!(run_out.output_json.contains(r#""value":60"#));
         assert_eq!(
             runtime.tool_registry.vfs_read("/var/computed.txt").as_deref(),
-            Some("tasks=6")
+            Some("sample_scheduler=6")
         );
         assert_eq!(
             runtime.tool_registry.notifications(),
@@ -1294,7 +1454,7 @@ mod tests {
             Some("booted-ok")
         );
 
-        // Advancing the scheduler clock executes the restored `/scripts/tick_counter.js`
+        // Advancing the scheduler sample_timer executes the restored `/scripts/tick_counter.js`
         let tick1 = rebooted.tick_scheduler(10_000, None);
         assert_eq!(tick1.len(), 1);
         assert_eq!(
@@ -1311,8 +1471,8 @@ mod tests {
     }
 
     #[test]
-    fn tasks_app_crud_tiles_and_cross_app_isolation() {
-        let mut runtime = AgentRuntime::new();
+    fn filesystem_app_crud_tiles_and_cross_app_isolation() {
+        let mut runtime = runtime_with_apps();
         let mut ui = AgentUiSynthesizer::new();
 
         // 1. Discover apps, tools, SKILLs, and Tiles via mcp_list_tools
@@ -1320,52 +1480,52 @@ mod tests {
             .tool_registry
             .execute_tool(&ToolCall::new("l1", "mcp_list_tools", "{}"), &mut ui)
             .expect("mcp_list_tools must succeed");
-        assert!(list_out.output_json.contains(r#""headless_mcp_apps":["clock","tasks"]"#));
-        assert!(list_out.output_json.contains(r#""tasks.list""#));
-        assert!(list_out.output_json.contains(r#""tasks.create""#));
-        assert!(list_out.output_json.contains(r#""tasks.edit""#));
-        assert!(list_out.output_json.contains(r#""tasks.delete""#));
-        assert!(list_out.output_json.contains(r#""/apps/tasks/SKILL.md""#));
-        assert!(list_out.output_json.contains(r#""tasks.board""#));
+        assert!(list_out.output_json.contains(r#""headless_mcp_apps":["sample-inventory","sample_scheduler","sample_timer"]"#));
+        assert!(list_out.output_json.contains(r#""sample_scheduler.list""#));
+        assert!(list_out.output_json.contains(r#""sample_scheduler.create""#));
+        assert!(list_out.output_json.contains(r#""sample_scheduler.edit""#));
+        assert!(list_out.output_json.contains(r#""sample_scheduler.delete""#));
+        assert!(list_out.output_json.contains(r#""/apps/sample_scheduler/SKILL.md""#));
+        assert!(list_out.output_json.contains(r#""sample_scheduler.board""#));
 
-        // 2. Create a scheduled task through Tasks app via Welder
+        // 2. Create a scheduled task through Sample Scheduler app via Welder
         let create_task = runtime
             .tool_registry
             .execute_tool(
                 &ToolCall::new(
                     "t1",
                     "mcp_call_tool",
-                    r#"{"app":"tasks","tool":"tasks.create","id":"daily-check","path":"/scripts/heartbeat.js","trigger":"every:60s"}"#,
+                    r#"{"app":"sample_scheduler","tool":"sample_scheduler.create","id":"daily-check","path":"/scripts/heartbeat.js","trigger":"every:60s"}"#,
                 ),
                 &mut ui,
             )
-            .expect("tasks.create must succeed");
+            .expect("sample_scheduler.create must succeed");
         assert!(create_task.output_json.contains(r#""status":"created""#));
         assert!(create_task.output_json.contains(r#""id":"daily-check""#));
         let tile = create_task
             .synthesized_view
             .as_ref()
             .and_then(|v| v.tile.as_ref())
-            .expect("tasks.create must synthesize view with tasks.board AppTile");
-        assert_eq!(tile.tile_id, "tasks.board");
+            .expect("sample_scheduler.create must synthesize view with sample_scheduler.board AppTile");
+        assert_eq!(tile.tile_id, "sample_scheduler.board");
         assert_eq!(tile.items.len(), 1);
         assert_eq!(tile.items[0].id, "daily-check");
         assert_eq!(tile.items[0].badge, "interval:60000");
 
 
 
-        // 3. Edit the scheduled task through Tasks app via Welder
+        // 3. Edit the scheduled task through Sample Scheduler app via Welder
         let edit_task = runtime
             .tool_registry
             .execute_tool(
                 &ToolCall::new(
                     "t2",
                     "mcp_call_tool",
-                    r#"{"app":"tasks","tool":"tasks.edit","id":"daily-check","trigger":"cron:*/5 * * * *"}"#,
+                    r#"{"app":"sample_scheduler","tool":"sample_scheduler.edit","id":"daily-check","trigger":"cron:*/5 * * * *"}"#,
                 ),
                 &mut ui,
             )
-            .expect("tasks.edit must succeed");
+            .expect("sample_scheduler.edit must succeed");
         assert!(edit_task.output_json.contains(r#""status":"edited""#));
         assert!(edit_task.output_json.contains(r#""cron:*/5 * * * *""#));
 
@@ -1375,14 +1535,14 @@ mod tests {
             .unwrap()
             .contains("cron:*/5 * * * *"));
 
-        // 4. Reject any cross-app invocation (another app trying to call Tasks)
+        // 4. Reject any cross-app invocation (another app trying to call Sample Scheduler)
         let cross_app_err = runtime
             .tool_registry
             .execute_tool(
                 &ToolCall::new(
                     "t3",
                     "mcp_call_tool",
-                    r#"{"caller_app":"other_app","app":"tasks","tool":"tasks.list"}"#,
+                    r#"{"caller_app":"other_app","app":"sample_scheduler","tool":"sample_scheduler.list"}"#,
                 ),
                 &mut ui,
             )
@@ -1441,7 +1601,7 @@ mod tests {
             runtime.knowledge_storage_kind(),
             KnowledgeStorageKind::VolatileRamFs
         );
-        runtime.set_vfs_backend(crate::tools::SharedMapVfsBackend::shared());
+        let _ = runtime.set_vfs_backend(crate::tools::SharedMapVfsBackend::shared());
         runtime
             .switch_provider("gemini")
             .expect("switch to gemini-3.8-flash");
@@ -1640,4 +1800,65 @@ mod tests {
             KnowledgeStorageKind::VolatileRamFs
         );
     }
+
+    #[test]
+    fn apps_and_packages_command_inspects_inventory_and_diagnostics() {
+        let mut runtime = runtime_with_apps();
+
+        // 1. Slash command /apps lists installed packages from registry fallback when /proc/app-packages.json is not present
+        let mut tokens = Vec::new();
+        let out = runtime
+            .handle_console_input("/apps", &mut |t| tokens.push(t.to_string()))
+            .expect("/apps should succeed");
+        assert!(out.response_text.contains("Installed Application Packages (/apps)"));
+        assert!(out.response_text.contains("sample_scheduler"));
+        assert!(out.response_text.contains("sample-inventory"));
+
+        // 2. Set mock /proc/app-packages.json with valid and errored packages
+        let proc_json = serde_json::json!({
+            "packages": [
+                {
+                    "app_id": "sample_scheduler",
+                    "version": "1.0.0",
+                    "revision": 2,
+                    "validated_revision": 2,
+                    "ready": true,
+                    "diagnostics": []
+                },
+                {
+                    "app_id": "broken-app",
+                    "version": "0.2.0",
+                    "revision": 5,
+                    "validated_revision": 4,
+                    "ready": false,
+                    "diagnostics": [
+                        {
+                            "path": "/apps/broken-app/main.js",
+                            "message": "ReferenceError: callTool is not defined"
+                        }
+                    ]
+                }
+            ]
+        });
+        runtime
+            .tool_registry
+            .vfs_write("/proc/app-packages.json", proc_json.to_string());
+
+        // 3. Command /packages inspects status, readiness, revisions, and diagnostics
+        let out_packages = runtime
+            .handle_console_input("/packages", &mut |_| {})
+            .expect("/packages should succeed");
+        assert!(out_packages.response_text.contains("2 package(s), 1 ready"));
+        assert!(out_packages.response_text.contains("[sample_scheduler] v1.0.0 · Status: Ready (rev: 2, validated_rev: 2)"));
+        assert!(out_packages.response_text.contains("[broken-app] v0.2.0 · Status: Stale Revision (Revalidation Pending)"));
+        assert!(out_packages.response_text.contains("Error in /apps/broken-app/main.js: ReferenceError: callTool is not defined"));
+
+        // 4. Command /apps inspect <app_id> filters to the requested app
+        let out_single = runtime
+            .handle_console_input("/apps inspect broken-app", &mut |_| {})
+            .expect("/apps inspect broken-app should succeed");
+        assert!(out_single.response_text.contains("[broken-app]"));
+        assert!(!out_single.response_text.contains("[sample_scheduler]"));
+    }
+
 }

@@ -43,6 +43,7 @@ dependencies = [
 name = "alloyos-ferrofluid"
 version = "0.1.0"
 dependencies = [
+ "alloyos-js",
  "alloyos-keyboard",
  "alloyos-mcp",
  "alloyos-proto",
@@ -4962,6 +4963,8 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "alloyos-dev-harness",
+ "alloyos-kernel",
+ "alloyos-mcp",
  "alloyos-proto",
  "anyhow",
  "clap",

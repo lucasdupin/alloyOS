@@ -1,0 +1,4 @@
+# alloyOS Headless MCP App Manifest (/apps/sample_scheduler/sample_scheduler.mcp)
+name = Sample Scheduler
+version = 1.0.0
+capabilities = ExposeMcpTools, ExposeMcpResources, ExposeMcpPrompts, ExposeSkills, ExposeTiles, ScriptSchedulerAccess, ScopedStorage(/scripts), ScopedStorage(/etc/schedules.conf)

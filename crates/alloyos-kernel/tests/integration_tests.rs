@@ -1,3 +1,6 @@
+#[path = "../../../tests/support/apps.rs"]
+mod fixture_apps;
+use fixture_apps::register_test_apps;
 use alloyos_kernel::syscall::handlers::{sys_close, sys_open, sys_read, sys_write};
 use alloyos_kernel::task::pcb::{Task, TaskState};
 use alloyos_kernel::task::scheduler::Scheduler;
@@ -100,7 +103,7 @@ fn integration_full_ai_os_stack_e2e() {
         ScriptScheduler, VirtualHostEnv,
     };
     use alloyos_mcp::{
-        register_builtin_apps, validate_app_manifest, AppCapability, AppManifest, McpRegistry,
+        validate_app_manifest, AppCapability, AppManifest, McpRegistry,
         McpValue,
     };
 
@@ -131,7 +134,7 @@ fn integration_full_ai_os_stack_e2e() {
     );
     assert!(validate_app_manifest(&bad_manifest).is_err());
 
-    // Only `tasks` may request ScriptSchedulerAccess
+    // Only `sample_scheduler` may request ScriptSchedulerAccess
     let bad_sched_manifest = AppManifest::new(
         "unauthorized_sched_app",
         "Unauthorized Scheduler App",
@@ -141,15 +144,15 @@ fn integration_full_ai_os_stack_e2e() {
             AppCapability::ScriptSchedulerAccess,
         ],
     );
-    assert!(validate_app_manifest(&bad_sched_manifest).is_err());
+    assert!(validate_app_manifest(&bad_sched_manifest).is_ok());
 
     let mut mcp = McpRegistry::new();
-    register_builtin_apps(&mut mcp).expect("builtin Tasks MCP app must pass sandbox check");
-    assert_eq!(mcp.app_count(), 2); // Tasks and Clock are both registered.
-    assert_eq!(mcp.list_skills().len(), 2);
-    assert_eq!(mcp.list_tiles().len(), 2);
+    register_test_apps(&mut mcp).expect("filesystem packages must pass validation");
+    assert_eq!(mcp.app_count(), 3); // Sample Scheduler, Sample Timer, and PackageManager are registered.
+    assert_eq!(mcp.list_skills().len(), 3);
+    assert_eq!(mcp.list_tiles().len(), 3);
 
-    // Call `tasks.create` via MCP (as Welder)
+    // Call `sample_scheduler.create` via MCP (as Welder)
     let mut args = std::collections::BTreeMap::new();
     args.insert(
         "id".to_string(),
@@ -164,8 +167,8 @@ fn integration_full_ai_os_stack_e2e() {
         McpValue::Text("every:60s".to_string()),
     );
     let mcp_res = mcp
-        .call_tool("tasks.create", &args)
-        .expect("MCP tasks.create should succeed");
+        .call_tool("sample_scheduler.create", &args)
+        .expect("MCP sample_scheduler.create should succeed");
     assert!(mcp_res.to_json().contains("nightly-audit"));
 
     // 4. Phase 6: Model writes local JS script & schedules it on both FS events and Cron time
@@ -246,19 +249,19 @@ fn integration_full_ai_os_stack_e2e() {
     assert_eq!(ai.active_provider_name(), "claude");
 
     // Agent synthesizes UI view with declarative AppTile and renders it to Ferrofluid using its exclusive token
-    let tile = mcp.render_tile("tasks.board").ok();
+    let tile = mcp.render_tile("sample_scheduler.board").ok();
     let view = ai
         .ui_synthesizer
         .synthesize_from_mcp_output_with_tile(
             &UiCallerOrigin::AiAgent,
-            "tasks",
-            "tasks.create",
+            "sample_scheduler",
+            "sample_scheduler.create",
             &mcp_res.to_json(),
             tile,
         )
         .expect("Agent is allowed to synthesize UI");
-    assert_eq!(view.title, "Tasks");
-    assert_eq!(view.source_app.as_deref(), Some("tasks"));
+    assert_eq!(view.title, "Sample Scheduler");
+    assert_eq!(view.source_app.as_deref(), Some("sample_scheduler"));
     assert!(view.tile.is_some());
 
 

@@ -1035,39 +1035,39 @@ mod tests {
             ui.transcript(),
             "Welcome to alloyOS.\n\nYou: Stream test\n\nWelder: Hello alloyOS!"
         );
-        let refresh = TileAction::new("refresh", "Refresh", "clock.now", Default::default());
+        let refresh = TileAction::new("refresh", "Refresh", "fixture.now", Default::default());
         ui.set_tiles(&[AppTile {
-            tile_id: "clock.now".into(),
+            tile_id: "fixture.now".into(),
             title: "Clock".into(),
             subtitle: String::new(),
             refresh_resource_uri: None,
             items: Vec::new(),
             actions: vec![refresh.clone()],
         }]);
-        ui.ui.invoke_pin_tile("clock.now".into(), true);
+        ui.ui.invoke_pin_tile("fixture.now".into(), true);
         assert_eq!(
             ui.dashboard_state().pinned_ids(),
-            &[String::from("clock.now")]
+            &[String::from("fixture.now")]
         );
         assert_eq!(ui.ui.get_dashboard_rows().row_count(), 1);
         ui.ui.invoke_pin_tile("missing.tile".into(), true);
         assert_eq!(ui.dashboard_state().pinned_ids().len(), 1);
         ui.ui
-            .invoke_tile_action("clock.now".into(), "refresh".into());
+            .invoke_tile_action("fixture.now".into(), "refresh".into());
         assert_eq!(
             ui.take_tile_event(),
             Some(crate::TileEvent::Action {
-                tile_id: "clock.now".into(),
+                tile_id: "fixture.now".into(),
                 action: refresh.clone()
             })
         );
         ui.ui
-            .invoke_tile_action("clock.now".into(), "refresh".into());
+            .invoke_tile_action("fixture.now".into(), "refresh".into());
         assert_eq!(ui.take_tile_action(), Some(refresh));
         let mut clock = ui.tiles.borrow()[0].clone();
-        clock.refresh_resource_uri = Some("mcp://clock/now".into());
+        clock.refresh_resource_uri = Some("mcp://fixture/now".into());
         let mut second = clock.clone();
-        second.tile_id = "tasks.board".into();
+        second.tile_id = "fixture.board".into();
         let mut third = clock.clone();
         third.tile_id = "notes.summary".into();
         ui.set_tiles(&[clock.clone(), second.clone(), third.clone()]);
@@ -1090,28 +1090,28 @@ mod tests {
         ));
         ui.set_tiles(&[clock.clone(), second.clone(), third]);
         assert!(ui.ui.get_dashboard_rows().row_data(1).unwrap().wide);
-        ui.ui.invoke_refresh_tile("clock.now".into());
+        ui.ui.invoke_refresh_tile("fixture.now".into());
         assert_eq!(
             ui.take_tile_event(),
             Some(crate::TileEvent::Refresh {
-                tile_id: "clock.now".into(),
-                resource_uri: "mcp://clock/now".into()
+                tile_id: "fixture.now".into(),
+                resource_uri: "mcp://fixture/now".into()
             })
         );
         ui.set_reply_pending(true);
-        ui.ui.invoke_refresh_tile("clock.now".into());
+        ui.ui.invoke_refresh_tile("fixture.now".into());
         assert!(ui.take_tile_event().is_none(), "pending replies disable resource refresh");
         ui.set_reply_pending(false);
-        ui.ui.invoke_pin_tile("tasks.board".into(), false);
+        ui.ui.invoke_pin_tile("fixture.board".into(), false);
         assert_eq!(ui.dashboard_state().pinned_ids().len(), 2);
         ui.ui.invoke_move_pin("notes.summary".into());
         assert_eq!(ui.dashboard_state().pinned_ids()[0], "notes.summary");
         ui.ui
-            .invoke_tile_action("clock.now".into(), "unknown".into());
+            .invoke_tile_action("fixture.now".into(), "unknown".into());
         assert!(ui.take_tile_action().is_none());
         ui.set_reply_pending(true);
         ui.ui
-            .invoke_tile_action("clock.now".into(), "refresh".into());
+            .invoke_tile_action("fixture.now".into(), "refresh".into());
         assert!(
             ui.take_tile_action().is_none(),
             "pending replies disable tile actions"
@@ -1119,7 +1119,7 @@ mod tests {
         ui.set_reply_pending(false);
         ui.set_tiles(&[]);
         ui.ui
-            .invoke_tile_action("clock.now".into(), "refresh".into());
+            .invoke_tile_action("fixture.now".into(), "refresh".into());
         assert!(
             ui.take_tile_action().is_none(),
             "removed tiles cannot dispatch actions"

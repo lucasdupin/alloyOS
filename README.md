@@ -46,7 +46,7 @@ must be connected before profile learning can work across reboots.
 | [`crates/alloyos-ferrofluid`](crates/alloyos-ferrofluid) | **Ferrofluid System UI**: Slint window, bare-metal platform adapter, software rendering, Quicksand typography, and the agent capability gate |
 | [`crates/alloyos-keyboard`](crates/alloyos-keyboard) | Reusable soft keyboard: transparent keys, tap feedback, slide/scroll behavior, typed actions, liquid displacement, and a standalone preview |
 | [`crates/alloyos-js`](crates/alloyos-js) | Embedded `#![no_std]` JavaScript engine (`V8Isolate` / `JsRuntime`), `AlloyOS.*` bindings (zero shell access), and event/time scheduler (`scriptd`) |
-| [`crates/alloyos-mcp`](crates/alloyos-mcp) | Headless **Model Context Protocol (MCP)** developer app SDK, zero-UI capability sandbox, and built-in MCP servers |
+| [`crates/alloyos-mcp`](crates/alloyos-mcp) | Headless **Model Context Protocol (MCP)** developer app SDK, zero-UI capability sandbox, and filesystem-discovered JavaScript apps |
 | [`crates/alloyos-forge`](crates/alloyos-forge) | Model gateway, resident Gemma inference, cloud provider adapters, and model selection |
 | [`crates/alloyos-welder`](crates/alloyos-welder) | Agent orchestration, conversation and setup, shell-free native tools, persistent console configuration, and agent-exclusive UI synthesis |
 | [`xtask`](xtask) | Build, QEMU (`-M virt -accel hvf`) runner, and headless E2E test harness |

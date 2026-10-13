@@ -1,0 +1,4 @@
+# alloyOS Headless MCP App Manifest (/apps/sample_timer/sample_timer.mcp)
+name = Sample Timer
+version = 1.0.0
+capabilities = ExposeMcpTools, ExposeMcpResources, ExposeMcpPrompts, ExposeSkills, ExposeTiles, ScopedStorage(/var/sample_timer)

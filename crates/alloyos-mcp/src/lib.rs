@@ -4,6 +4,12 @@
 extern crate std;
 
 extern crate alloc;
+#[cfg(test)]
+extern crate self as alloyos_mcp;
+
+#[cfg(test)]
+#[path = "../../../tests/support/apps.rs"]
+mod fixture_apps;
 
 pub mod apps;
 pub mod protocol;
@@ -11,10 +17,7 @@ pub mod packages;
 pub mod registry;
 pub mod sandbox;
 
-pub use apps::{
-    register_builtin_apps, register_builtin_apps_with_scheduler, ScheduledTask, TasksApp, ClockApp,
-    TASKS_MAIN_JS, TASKS_MAIN_PATH, TASKS_MANIFEST_MCP, TASKS_MANIFEST_PATH, TASKS_SKILL_MD, TASKS_SKILL_PATH,
-};
+pub use apps::JsApp;
 pub use protocol::{
     mcp_map, methods, tool_text_result, AppSkill, AppTile, McpError, McpParamSpec, McpPrompt,
     McpRequest, McpResource, McpResourceContent, McpResponse, McpTool, McpValue, TileAction,
@@ -25,11 +28,13 @@ pub use packages::{PackageSnapshot, PackageService, PackageStatus, PackageDiagno
 pub use registry::{McpApp, McpCaller, McpRegistry};
 pub use sandbox::{
     app_allowed_write_root, is_within_app_write_allowlist, validate_app_manifest, AppCapability,
-    AppManifest, McpSandboxError, RuntimeCapabilityGuard, TASKS_APP_ID,
+    AppManifest, McpSandboxError, RuntimeCapabilityGuard,
 };
 
 #[cfg(test)]
 mod tests {
+    use crate::fixture_apps;
+    use fixture_apps::register_test_apps;
     use super::*;
     use alloc::boxed::Box;
     use alloc::collections::BTreeMap;
@@ -87,16 +92,16 @@ mod tests {
     }
 
     #[test]
-    fn manifest_validation_accepts_tasks_app_and_rejects_unauthorized_scheduler_or_cross_app_access()
+    fn manifest_validation_checks_capabilities_independently_of_app_identity()
     {
-        let tasks = AppManifest::parse(TASKS_MANIFEST_MCP).expect("parse tasks.mcp");
-        assert_eq!(tasks.app_id, "tasks");
-        assert!(validate_app_manifest(&tasks).is_ok());
+        let sample_scheduler = AppManifest::parse(include_str!("../../../tests/fixtures/apps/sample_scheduler/sample_scheduler.mcp")).expect("parse sample_scheduler.mcp");
+        assert_eq!(sample_scheduler.app_id, "sample_scheduler");
+        assert!(validate_app_manifest(&sample_scheduler).is_ok());
 
-        let roundtrip = AppManifest::parse(&tasks.to_mcp_config()).expect("roundtrip parse");
-        assert_eq!(roundtrip, tasks);
+        let roundtrip = AppManifest::parse(&sample_scheduler.to_mcp_config()).expect("roundtrip parse");
+        assert_eq!(roundtrip, sample_scheduler);
 
-        // Non-tasks app attempting ScriptSchedulerAccess is rejected
+        // Scheduler access is a manifest capability, independent of package identity.
         let rogue_scheduler = AppManifest::new(
             "rogue_cron",
             "Rogue Cron",
@@ -106,14 +111,9 @@ mod tests {
                 AppCapability::ScriptSchedulerAccess,
             ],
         );
-        assert_eq!(
-            validate_app_manifest(&rogue_scheduler),
-            Err(McpSandboxError::SchedulerAccessForbidden {
-                app_id: "rogue_cron".to_string(),
-            })
-        );
+        assert!(validate_app_manifest(&rogue_scheduler).is_ok());
 
-        // Non-tasks app attempting ScopedStorage(/etc/schedules.conf) or ScopedStorage(/scripts) is rejected
+        // Non-sample_scheduler app attempting ScopedStorage(/etc/schedules.conf) or ScopedStorage(/scripts) is rejected
         for protected_path in ["/etc/schedules.conf", "/scripts", "/scripts/hack.js"] {
             let rogue_storage = AppManifest::new(
                 "rogue_storage",
@@ -132,17 +132,17 @@ mod tests {
             );
         }
 
-        // CrossAppAccess is rejected for all apps (even tasks)
+        // CrossAppAccess is rejected for all apps (even sample_scheduler)
         let cross_app = AppManifest::new(
-            "tasks",
-            "Tasks",
+            "sample_scheduler",
+            "Sample Scheduler",
             "1.0.0",
             vec![AppCapability::ExposeMcpTools, AppCapability::CrossAppAccess],
         );
         assert_eq!(
             validate_app_manifest(&cross_app),
             Err(McpSandboxError::CrossAppAccessForbidden {
-                caller_app_id: "tasks".to_string(),
+                caller_app_id: "sample_scheduler".to_string(),
                 target_app_id: "*".to_string(),
             })
         );
@@ -200,8 +200,8 @@ mod tests {
     }
 
     #[test]
-    fn runtime_capability_guard_enforces_zero_ui_scheduler_exclusivity_and_no_cross_app() {
-        let manifest = AppManifest::parse(TASKS_MANIFEST_MCP).unwrap();
+    fn runtime_guard_enforces_zero_ui_declared_scheduler_access_and_no_cross_app() {
+        let manifest = AppManifest::parse(include_str!("../../../tests/fixtures/apps/sample_scheduler/sample_scheduler.mcp")).unwrap();
         let guard = RuntimeCapabilityGuard::new(manifest).expect("valid guard");
 
         assert!(guard
@@ -230,11 +230,11 @@ mod tests {
             .enforce_capability(&AppCapability::ScopedStorage("/etc/passwd".to_string()))
             .is_err());
 
-        // Even TasksApp cannot access another app
+        // Even Sample Scheduler cannot access another app
         assert_eq!(
             guard.enforce_no_cross_app_access("other_app"),
             Err(McpSandboxError::CrossAppAccessForbidden {
-                caller_app_id: "tasks".to_string(),
+                caller_app_id: "sample_scheduler".to_string(),
                 target_app_id: "other_app".to_string(),
             })
         );
@@ -247,7 +247,7 @@ mod tests {
         assert!(is_within_app_write_allowlist("notes", "/var/notes/state.json"));
         assert!(is_within_app_write_allowlist("notes", "/var/notes/sub/item.md"));
         assert!(!is_within_app_write_allowlist("notes", "/var/notes_other/state.json"));
-        assert!(!is_within_app_write_allowlist("notes", "/var/clock/state.json"));
+        assert!(!is_within_app_write_allowlist("notes", "/var/sample_timer/state.json"));
         assert!(!is_within_app_write_allowlist("notes", "/knowledge/profile.md"));
         assert!(!is_within_app_write_allowlist("notes", "/apps/notes/main.js"));
         assert!(!is_within_app_write_allowlist("notes", "/etc/ai.conf"));
@@ -302,27 +302,39 @@ mod tests {
         assert!(notes_guard
             .enforce_write_path("/var/notes/../other_app/file.txt")
             .is_err());
+        // /apps/ remains strictly read-only to apps
+        assert!(notes_guard
+            .enforce_write_path("/apps/notes/main.js")
+            .is_err());
+
+        // Default outbound network access granted without manifest declaration
+        assert!(notes_guard
+            .enforce_capability(&AppCapability::ScopedNetwork)
+            .is_ok());
+        use crate::sandbox::SyscallNo;
+        assert!(notes_guard.enforce_syscall(SyscallNo::Socket).is_ok());
+        assert!(notes_guard.enforce_syscall(SyscallNo::Connect).is_ok());
     }
 
     #[test]
-    fn end_to_end_tasks_app_mcp_skills_tiles_and_welder_centralized_orchestration() {
+    fn filesystem_app_mcp_skills_tiles_and_welder_orchestration() {
         let mut registry = McpRegistry::new();
-        register_builtin_apps(&mut registry).expect("register builtin Tasks app");
-        assert_eq!(registry.app_count(), 2);
+        register_test_apps(&mut registry).expect("discover filesystem fixtures");
+        assert_eq!(registry.app_count(), 3);
 
-        // 1. Verify initialize reports tasks app and welderCentralizedOrchestration
+        // 1. Verify initialize reports sample_scheduler app and welderCentralizedOrchestration
         let init_resp = McpResponse::from_json(&registry.handle_json_rpc(
             r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
         ))
         .unwrap();
         assert!(init_resp.is_ok());
 
-        // 2. Verify tools/list returns the 4 Tasks tools: list, create, edit, delete
+        // 2. Verify tools/list returns Sample Scheduler, Sample Timer, and PackageManager tools
         let tools = registry.list_tools();
-        assert_eq!(tools.len(), 5);
+        assert_eq!(tools.len(), 8);
 
-        // 3. Create a scheduled task via tasks.create
-        let create_json = r#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"tasks.create","arguments":{"id":"heartbeat_60s","title":"System Heartbeat","script_path":"/scripts/heartbeat.js","trigger":"every:60s","source":"export function main() { return AlloyOS.sys.status(); }"}}}"#;
+        // 3. Create a scheduled task via sample_scheduler.create
+        let create_json = r#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"sample_scheduler.create","arguments":{"id":"heartbeat_60s","title":"System Heartbeat","script_path":"/scripts/heartbeat.js","trigger":"every:60s","source":"export function main() { return AlloyOS.sys.status(); }"}}}"#;
         let create_resp = McpResponse::from_json(&registry.handle_json_rpc(create_json)).unwrap();
         assert!(create_resp.is_ok());
         let create_map = create_resp.result.as_ref().unwrap().as_map().unwrap();
@@ -331,14 +343,14 @@ mod tests {
             Some("created")
         );
 
-        // 4. List scheduled tasks via tasks.list
-        let list_json = r#"{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"tasks.list","arguments":{}}}"#;
+        // 4. List scheduled sample_scheduler via sample_scheduler.list
+        let list_json = r#"{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"sample_scheduler.list","arguments":{}}}"#;
         let list_resp = McpResponse::from_json(&registry.handle_json_rpc(list_json)).unwrap();
         let list_map = list_resp.result.as_ref().unwrap().as_map().unwrap();
         assert_eq!(list_map.get("count").and_then(|v| v.as_i64()), Some(1));
 
-        // 5. Edit the scheduled task via tasks.edit (change trigger to cron and title, then pause it)
-        let edit_json = r#"{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"tasks.edit","arguments":{"id":"heartbeat_60s","title":"5m Cron Heartbeat","trigger":"cron:*/5 * * * *","enabled":false}}}"#;
+        // 5. Edit the scheduled task via sample_scheduler.edit (change trigger to cron and title, then pause it)
+        let edit_json = r#"{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"sample_scheduler.edit","arguments":{"id":"heartbeat_60s","title":"5m Cron Heartbeat","trigger":"cron:*/5 * * * *","enabled":false}}}"#;
         let edit_resp = McpResponse::from_json(&registry.handle_json_rpc(edit_json)).unwrap();
         assert!(edit_resp.is_ok());
         let edited_task = edit_resp
@@ -364,30 +376,30 @@ mod tests {
             Some("paused")
         );
 
-        // 6. Verify SKILL exposure (skills/list, skills/read, and mcp://tasks/skill)
+        // 6. Verify SKILL exposure (skills/list, skills/read, and mcp://sample_scheduler/skill)
         let skills: alloc::vec::Vec<_> = registry.list_skills().into_iter()
-            .filter(|skill| skill.app_id == "tasks").collect();
+            .filter(|skill| skill.app_id == "sample_scheduler").collect();
         assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].path, "/apps/tasks/SKILL.md");
-        assert!(skills[0].content.contains("tasks.create"));
+        assert_eq!(skills[0].path, "/apps/sample_scheduler/SKILL.md");
+        assert!(skills[0].content.contains("sample_scheduler.create"));
 
-        let skill_read_json = r#"{"jsonrpc":"2.0","id":20,"method":"skills/read","params":{"app_id":"tasks"}}"#;
+        let skill_read_json = r#"{"jsonrpc":"2.0","id":20,"method":"skills/read","params":{"app_id":"sample_scheduler"}}"#;
         let skill_resp =
             McpResponse::from_json(&registry.handle_json_rpc(skill_read_json)).unwrap();
         assert!(skill_resp.is_ok());
 
         // 7. Verify Declarative Tile exposure (tiles/list and tiles/render)
         let tiles: alloc::vec::Vec<_> = registry.list_tiles().into_iter()
-            .filter(|tile| tile.folder() == Some("tasks")).collect();
+            .filter(|tile| tile.folder() == Some("sample_scheduler")).collect();
         assert_eq!(tiles.len(), 1);
-        assert_eq!(tiles[0].tile_id, "tasks.board");
-        assert_eq!(tiles[0].folder(), Some("tasks"));
+        assert_eq!(tiles[0].tile_id, "sample_scheduler.board");
+        assert_eq!(tiles[0].folder(), Some("sample_scheduler"));
         assert_eq!(tiles[0].items.len(), 1);
         assert_eq!(tiles[0].items[0].title, "5m Cron Heartbeat");
         assert_eq!(tiles[0].items[0].badge, "cron:*/5 * * * *");
         assert_eq!(tiles[0].items[0].status, "paused");
 
-        let tile_render_json = r#"{"jsonrpc":"2.0","id":21,"method":"tiles/render","params":{"tile_id":"tasks.board"}}"#;
+        let tile_render_json = r#"{"jsonrpc":"2.0","id":21,"method":"tiles/render","params":{"tile_id":"sample_scheduler.board"}}"#;
         let tile_resp =
             McpResponse::from_json(&registry.handle_json_rpc(tile_render_json)).unwrap();
         assert!(tile_resp.is_ok());
@@ -395,7 +407,7 @@ mod tests {
         // 8. Verify No App Can Access Another App (only Welder centralizes app access)
         let cross_app_call = registry.call_tool_as(
             &McpCaller::App("other_app".to_string()),
-            "tasks.list",
+            "sample_scheduler.list",
             &BTreeMap::new(),
         );
         assert_eq!(
@@ -403,7 +415,7 @@ mod tests {
             ERR_SANDBOX_VIOLATION
         );
 
-        let cross_app_json = r#"{"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"caller_app":"rogue_app","name":"tasks.list","arguments":{}}}"#;
+        let cross_app_json = r#"{"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"caller_app":"rogue_app","name":"sample_scheduler.list","arguments":{}}}"#;
         let cross_app_resp =
             McpResponse::from_json(&registry.handle_json_rpc(cross_app_json)).unwrap();
         assert_eq!(
@@ -411,8 +423,8 @@ mod tests {
             Some(ERR_SANDBOX_VIOLATION)
         );
 
-        // 9. Delete the scheduled task via tasks.delete
-        let del_json = r#"{"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"tasks.delete","arguments":{"id":"heartbeat_60s"}}}"#;
+        // 9. Delete the scheduled task via sample_scheduler.delete
+        let del_json = r#"{"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"sample_scheduler.delete","arguments":{"id":"heartbeat_60s"}}}"#;
         let del_resp = McpResponse::from_json(&registry.handle_json_rpc(del_json)).unwrap();
         assert_eq!(
             del_resp

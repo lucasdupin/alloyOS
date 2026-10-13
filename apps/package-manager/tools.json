@@ -1,0 +1,24 @@
+[
+  {
+    "name": "package_manager.list",
+    "description": "List all installed application packages, versions, and validation readiness",
+    "params": []
+  },
+  {
+    "name": "package_manager.status",
+    "description": "Query specific package status and detailed diagnostics by app_id",
+    "params": [
+      {
+        "name": "app_id",
+        "type": "string",
+        "required": true,
+        "description": "Application identifier (e.g. 'tasks')"
+      }
+    ]
+  },
+  {
+    "name": "package_manager.diagnostics",
+    "description": "List all packages currently in an invalid or errored state",
+    "params": []
+  }
+]

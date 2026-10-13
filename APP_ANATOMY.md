@@ -5,17 +5,16 @@ Your app exposes tools and data to **Welder**, which presents them through
 **Ferrofluid**. The Clock example below shows the complete path from a developer's
 files to a time display and a Refresh action.
 
-**Implementation status:** this guide defines the agreed app architecture and the
-contract the app host must implement. The migration is in progress: existing Rust
-app implementations remain, and the manifest extensions, JavaScript app loader,
-and clock binding illustrated below are not yet a complete working SDK. Examples
-marked as the target contract guide that implementation; they are not installation
-commands that work on the current kernel.
+**Implementation status:** app discovery and JavaScript execution are implemented.
+App packages are copied from the repository's `apps/` tree into the CobaltFS disk
+image by the image build. The OS lists `/apps/` at runtime, validates each package,
+and loads its `main.js`. App identities, source files, and package lists are never
+embedded in Rust. An empty `/apps/` exposes no apps.
 
 ## How your app runs
 
 The kernel, CobaltFS, Forge, Welder, Ferrofluid, and the MCP app host are Rust OS
-services. **All apps, including built-in apps, are JavaScript files on disk.**
+services. **All apps are JavaScript packages on disk.**
 
 `alloyos-mcp` owns app execution through `alloyos-js`. Welder invokes the MCP host;
 it does not import `alloyos-js`, create app isolates, or execute app source itself.
@@ -54,7 +53,7 @@ The folder is the app's identifier; all public names use it as their namespace.
 
 ```text
 /apps/clock/        # Installed package; read-only to apps
-├── clock.mcp       # Identity, entrypoint, permissions, and public schemas
+├── clock.mcp       # Identity, permissions, and public schemas
 ├── SKILL.md        # Instructions that help Welder use Clock
 └── main.js         # JavaScript handlers
 
@@ -62,10 +61,19 @@ The folder is the app's identifier; all public names use it as their namespace.
 ```
 
 The repository currently contains [Clock's manifest](apps/clock/clock.mcp) and
-[skill](apps/clock/SKILL.md). Its JavaScript implementation is the migration target
-shown below. **`/apps/` is read-only to apps.** App data and preferences belong
+[skill](apps/clock/SKILL.md), and [JavaScript implementation](apps/clock/main.js).
+The longer example below illustrates the target SDK contract. **`/apps/` is read-only to apps.** App data and preferences belong
 under **`/var/<app_id>/`**, with writes confined to that app's own directory. For Clock, this is `/var/clock/`. The OS manages package installation
 and updates under `/apps/` through Welder's authorized app-update flow.
+
+The current package loader also reads `tools.json`, `resources.json`,
+`prompts.json`, and `tiles.json` alongside the manifest. `tiles.json` is a JSON
+array of tile IDs, such as `["clock.now"]`; the host passes those IDs to
+`renderTile`. These metadata files make each package discoverable without
+application-specific Rust code. Apps that declare `ScriptSchedulerAccess` receive
+the scheduler bindings and scheduler storage scopes, regardless of folder name.
+Runtime scans detect installed, changed, invalid, and removed packages. Boot does
+not install or repair application files.
 
 Use these names consistently:
 
@@ -86,15 +94,12 @@ what the host will accept. JavaScript implements the declared behavior, and
 
 The **target manifest contract** retains `key = value` configuration. Descriptor
 keys (`tool`, `resource`, `prompt`, and `tile`) are repeatable, with one JSON object
-per line. The descriptor keys require extending the existing manifest parser;
-`entrypoint` is already parsed and checked to stay inside the app package. The `ReadClock` grant and `AlloyOS.clock.now()` binding below are also part
-of the target contract.
-
+per line. The descriptor keys require extending the existing manifest parser.
+The `ReadClock` grant and `AlloyOS.clock.now()` binding below are also part of
 ```ini
 # /apps/clock/clock.mcp
 name = Clock
 version = 1.0.0
-entrypoint = /apps/clock/main.js
 capabilities = ExposeMcpTools, ExposeMcpResources, ExposeMcpPrompts, ExposeSkills, ExposeTiles, ReadClock
 
 tool = {"name":"clock.now","description":"Read the current time and uptime.","inputSchema":{"type":"object","properties":{"utc_offset_hours":{"type":"integer","minimum":-12,"maximum":14,"default":0},"format_24h":{"type":"boolean","default":true}},"additionalProperties":false}}

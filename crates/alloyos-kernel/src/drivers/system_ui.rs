@@ -32,8 +32,8 @@ pub fn run(
     let mut transcript =
         String::from("Welcome to alloyOS.\n\nYour workspace takes shape around what you need.");
     ui.set_active_model(agent.active_model_id());
-    if let Err(error) = agent.initialize_dashboard_tiles() {
-        transcript.push_str(&alloc::format!("\n\nWelder: {}", error));
+    for id in agent.pinned_tile_ids().to_vec() {
+        let _ = agent.refresh_tile(&id);
     }
     ui.set_tiles(&agent.synthesized_tiles());
     ui.restore_dashboard(agent.pinned_tile_ids());
@@ -170,6 +170,7 @@ pub fn run(
         if let Ok(changes) = package_watcher.poll(now_ms) {
             if !changes.is_empty() {
                 let _ = package_watcher.publish_inventory();
+                let _ = agent.tool_registry.refresh_app_packages();
                 for change in changes {
                     if let alloyos_mcp::packages::PackageChange::Updated(status) = change {
                         if !status.ready {

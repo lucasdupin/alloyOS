@@ -139,7 +139,6 @@ impl Vfs {
         let _ = root_fs.create("/tmp", InodeKind::Directory);
         let _ = root_fs.create("/scripts", InodeKind::Directory);
         let _ = root_fs.create("/apps", InodeKind::Directory);
-        let _ = root_fs.create("/apps/tasks", InodeKind::Directory);
         let _ = root_fs.create("/knowledge", InodeKind::Directory);
         let _ = root_fs.create("/knowledge/projects", InodeKind::Directory);
 
@@ -184,29 +183,7 @@ impl Vfs {
                 );
             }
         }
-        if root_fs.lookup("/apps/tasks/tasks.mcp").is_err() {
-            if let Ok(ino) = root_fs.create("/apps/tasks/tasks.mcp", InodeKind::File) {
-                let _ = root_fs.write(
-                    ino.ino,
-                    0,
-                    alloyos_mcp::TASKS_MANIFEST_MCP.as_bytes(),
-                );
-            }
-        }
-        if root_fs.lookup(alloyos_mcp::TASKS_MAIN_PATH).is_err() {
-            if let Ok(ino) = root_fs.create(alloyos_mcp::TASKS_MAIN_PATH, InodeKind::File) {
-                let _ = root_fs.write(ino.ino, 0, alloyos_mcp::TASKS_MAIN_JS.as_bytes());
-            }
-        }
-        if root_fs.lookup(alloyos_mcp::TASKS_SKILL_PATH).is_err() {
-            if let Ok(ino) = root_fs.create(alloyos_mcp::TASKS_SKILL_PATH, InodeKind::File) {
-                let _ = root_fs.write(
-                    ino.ino,
-                    0,
-                    alloyos_mcp::TASKS_SKILL_MD.as_bytes(),
-                );
-            }
-        }
+
 
 
         let (total_f, used_f, free_f) = crate::mm::frame_allocator::memory_stats();

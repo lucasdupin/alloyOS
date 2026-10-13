@@ -1,0 +1,13 @@
+[
+  {
+    "name": "tasks.manage",
+    "description": "Guided prompt template for inspecting and managing scheduled tasks",
+    "params": [
+      {
+        "name": "goal",
+        "description": "Natural language automation goal",
+        "required": false
+      }
+    ]
+  }
+]

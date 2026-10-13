@@ -22,6 +22,6 @@ impl ToolVfsBackend for FailedStorage {
 fn failed_pin_write_keeps_previous_dashboard() {
     let mut runtime = AgentRuntime::with_vfs_backend(Rc::new(RefCell::new(FailedStorage)));
     let previous = runtime.pinned_tile_ids().to_vec();
-    assert!(runtime.set_pinned_tile_ids(&["clock.now".into()]).is_err());
+    assert!(runtime.set_pinned_tile_ids(&["fixture.now".into()]).is_err());
     assert_eq!(runtime.pinned_tile_ids(), previous);
 }

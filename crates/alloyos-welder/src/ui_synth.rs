@@ -266,7 +266,7 @@ impl AgentUiSynthesizer {
     }
 
     /// Synthesizes a `ScriptScheduleList` view along with an optional declarative `AppTile`
-    /// (such as the `tasks.board` tile from the `Tasks` app).
+    /// (such as the `sample_scheduler.board` tile from the test package).
     pub fn synthesize_schedule_list_with_tile(
         &mut self,
         title: impl Into<String>,

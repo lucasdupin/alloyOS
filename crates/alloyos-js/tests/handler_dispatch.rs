@@ -9,11 +9,11 @@ fn named_handler_receives_arguments_without_running_main() {
         .call_function(
             source,
             "callTool",
-            &[JsValue::String("clock.now".into())],
+            &[JsValue::String("fixture.now".into())],
             &mut host,
         )
         .unwrap();
-    assert_eq!(result, JsValue::String("clock.now".into()));
+    assert_eq!(result, JsValue::String("fixture.now".into()));
     assert_eq!(runtime.get_global("calls"), Some(&JsValue::Number(1)));
 }
 

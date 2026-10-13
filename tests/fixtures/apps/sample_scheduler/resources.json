@@ -1,0 +1,20 @@
+[
+  {
+    "uri": "mcp://sample_scheduler/schedules",
+    "name": "Sample Scheduler Schedules",
+    "mime_type": "application/json",
+    "description": "Live JSON snapshot of all scheduled sample_scheduler and /etc/schedules.conf state"
+  },
+  {
+    "uri": "mcp://sample_scheduler/tiles",
+    "name": "Sample Scheduler Tiles",
+    "mime_type": "application/json",
+    "description": "Declarative Tile descriptors"
+  },
+  {
+    "uri": "mcp://sample_scheduler/skill",
+    "name": "Sample Scheduler Skill",
+    "mime_type": "text/markdown",
+    "description": "Instruction document"
+  }
+]

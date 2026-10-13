@@ -1,0 +1,20 @@
+[
+  {
+    "uri": "mcp://tasks/schedules",
+    "name": "Tasks Schedules",
+    "mime_type": "application/json",
+    "description": "Live JSON snapshot of all scheduled tasks and /etc/schedules.conf state"
+  },
+  {
+    "uri": "mcp://tasks/tiles",
+    "name": "Tasks Tiles",
+    "mime_type": "application/json",
+    "description": "Declarative Tile descriptors"
+  },
+  {
+    "uri": "mcp://tasks/skill",
+    "name": "Tasks Skill",
+    "mime_type": "text/markdown",
+    "description": "Instruction document"
+  }
+]

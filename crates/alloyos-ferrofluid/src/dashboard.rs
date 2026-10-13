@@ -85,17 +85,17 @@ mod tests {
     fn pins_are_unique_ordered_and_restorable() {
         let mut state = DashboardState::default();
         assert!(!state.pin(&"x".repeat(129)));
-        assert!(state.pin("clock.now"));
-        assert!(!state.pin("clock.now"));
-        assert!(state.pin("tasks.board"));
-        assert!(state.move_to("tasks.board", 0));
-        assert_eq!(state.pinned_ids()[0], "tasks.board");
+        assert!(state.pin("sample_timer.now"));
+        assert!(!state.pin("sample_timer.now"));
+        assert!(state.pin("sample_scheduler.board"));
+        assert!(state.move_to("sample_scheduler.board", 0));
+        assert_eq!(state.pinned_ids()[0], "sample_scheduler.board");
         let revision = state.revision();
-        assert!(!state.move_to("tasks.board", 0));
+        assert!(!state.move_to("sample_scheduler.board", 0));
         assert_eq!(revision, state.revision());
-        state.restore(&["clock.now".into(), "clock.now".into(), "".into()]);
-        assert_eq!(state.pinned_ids(), &[String::from("clock.now")]);
-        assert!(state.unpin("clock.now"));
-        assert!(!state.unpin("clock.now"));
+        state.restore(&["sample_timer.now".into(), "sample_timer.now".into(), "".into()]);
+        assert_eq!(state.pinned_ids(), &[String::from("sample_timer.now")]);
+        assert!(state.unpin("sample_timer.now"));
+        assert!(!state.unpin("sample_timer.now"));
     }
 }

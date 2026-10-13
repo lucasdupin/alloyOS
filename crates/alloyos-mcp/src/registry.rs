@@ -1,9 +1,11 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::format;
+use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
+use core::cell::RefCell;
 
 use crate::packages::{PackageService, ValidatedPackageRevision};
 
@@ -53,11 +55,7 @@ pub trait McpApp {
         args: &BTreeMap<String, McpValue>,
     ) -> Result<McpValue, McpError>;
     fn read_resource(&self, uri: &str) -> Result<McpResourceContent, McpError>;
-    fn get_prompt(
-        &self,
-        name: &str,
-        args: &BTreeMap<String, String>,
-    ) -> Result<String, McpError>;
+    fn get_prompt(&self, name: &str, args: &BTreeMap<String, String>) -> Result<String, McpError>;
     fn render_tile(&self, tile_id: &str) -> Result<AppTile, McpError> {
         self.tiles()
             .into_iter()
@@ -84,6 +82,7 @@ pub struct McpRegistry {
     apps: BTreeMap<String, RegisteredApp>,
     package_inventory: PackageService,
     package_revisions: BTreeMap<String, Option<ValidatedPackageRevision>>,
+    runtime_files: Rc<RefCell<BTreeMap<String, String>>>,
 }
 
 impl Default for McpRegistry {
@@ -104,6 +103,7 @@ impl McpRegistry {
             apps: BTreeMap::new(),
             package_inventory: PackageService::new(),
             package_revisions: BTreeMap::new(),
+            runtime_files: Rc::new(RefCell::new(BTreeMap::new())),
         }
     }
 
@@ -111,38 +111,58 @@ impl McpRegistry {
     /// packages remain blocked until the execution owner binds a current revision.
     pub fn sync_package_inventory(&mut self, service: &PackageService) {
         for status in service.inventory() {
-            self.package_revisions.entry(status.app_id.clone()).or_insert(None);
+            self.package_revisions
+                .entry(status.app_id.clone())
+                .or_insert(None);
         }
         self.package_inventory = service.clone();
     }
 
     /// The owner must call this only after loading this exact immutable revision.
     /// This binds validation to a registered executor; it does not load JS itself.
-    pub fn bind_package_revision(&mut self, revision: ValidatedPackageRevision) -> Result<(), McpError> {
+    pub fn bind_package_revision(
+        &mut self,
+        revision: ValidatedPackageRevision,
+    ) -> Result<(), McpError> {
         if !self.package_inventory.is_current(&revision) {
-            return Err(McpError::invalid_params("package revision is not currently validated"));
+            return Err(McpError::invalid_params(
+                "package revision is not currently validated",
+            ));
         }
-        let app = self.apps.get(revision.app_id()).ok_or_else(|| McpError::invalid_params("package executor is not registered"))?;
+        let app = self
+            .apps
+            .get(revision.app_id())
+            .ok_or_else(|| McpError::invalid_params("package executor is not registered"))?;
         let status = self.package_inventory.status(revision.app_id()).unwrap();
         if status.installed_version.as_deref() != Some(app.app.manifest().version.as_str()) {
-            return Err(McpError::invalid_params("registered executor version differs from package"));
+            return Err(McpError::invalid_params(
+                "registered executor version differs from package",
+            ));
         }
-        self.package_revisions.insert(revision.app_id().into(), Some(revision));
+        self.package_revisions
+            .insert(revision.app_id().into(), Some(revision));
         Ok(())
     }
 
     fn verify_package_revision(&self, app_id: &str) -> Result<(), McpError> {
         if let Some(revision) = self.package_revisions.get(app_id) {
-            if !revision.as_ref().map(|revision| self.package_inventory.is_current(revision)).unwrap_or(false) {
-                return Err(McpError::invalid_params(format!("package '{}' has no loaded current validated revision", app_id)));
+            if !revision
+                .as_ref()
+                .map(|revision| self.package_inventory.is_current(revision))
+                .unwrap_or(false)
+            {
+                return Err(McpError::invalid_params(format!(
+                    "package '{}' has no loaded current validated revision",
+                    app_id
+                )));
             }
         }
         Ok(())
     }
 
     /// Register a developer MCP app after validating its manifest against the
-    /// Zero App-Owned UI, exclusive `Tasks` scheduler access, and sandbox rules.
-    pub fn register_app(&mut self, app: Box<dyn McpApp>) -> Result<(), McpSandboxError> {
+    /// Zero App-Owned UI, manifest-declared scheduler access, and sandbox rules.
+    pub(crate) fn register_app(&mut self, app: Box<dyn McpApp>) -> Result<(), McpSandboxError> {
         let manifest = app.manifest().clone();
         validate_app_manifest(&manifest)?;
 
@@ -159,6 +179,114 @@ impl McpRegistry {
         Ok(())
     }
 
+    /// Unregister an MCP application by app_id.
+    pub fn unregister_app(&mut self, app_id: &str) -> bool {
+        self.package_revisions.remove(app_id);
+        self.apps.remove(app_id).is_some()
+    }
+
+    /// Dynamically discover and register all valid applications from a package snapshot.
+    /// Loads only packages present under `/apps/<app_id>/` in the snapshot.
+    pub fn discover_and_register_packages(
+        &mut self,
+        snapshot: &crate::packages::PackageSnapshot,
+        scheduler: Option<Rc<RefCell<alloyos_js::ScriptScheduler>>>,
+    ) -> Result<usize, McpSandboxError> {
+        let _ = self.package_inventory.scan_startup(snapshot.clone());
+        let app_ids: Vec<_> = self
+            .package_inventory
+            .inventory()
+            .iter()
+            .map(|status| status.app_id.clone())
+            .collect();
+        let removed: Vec<_> = self
+            .package_revisions
+            .keys()
+            .filter(|id| !app_ids.contains(id))
+            .cloned()
+            .collect();
+        for id in removed {
+            self.unregister_app(&id);
+        }
+        {
+            let mut files = self.runtime_files.borrow_mut();
+            files.retain(|path, _| !path.starts_with("/apps/"));
+            files.extend(snapshot.files.clone());
+            let packages = self
+                .package_inventory
+                .inventory()
+                .iter()
+                .map(|status| {
+                    let diagnostics = status
+                        .diagnostics
+                        .iter()
+                        .map(|diagnostic| {
+                            McpValue::Map(mcp_map(&[
+                                ("path", McpValue::Text(diagnostic.path.clone())),
+                                ("message", McpValue::Text(diagnostic.message.clone())),
+                            ]))
+                        })
+                        .collect();
+                    McpValue::Map(mcp_map(&[
+                        ("app_id", McpValue::Text(status.app_id.clone())),
+                        (
+                            "version",
+                            status
+                                .installed_version
+                                .clone()
+                                .map(McpValue::Text)
+                                .unwrap_or(McpValue::Null),
+                        ),
+                        ("revision", McpValue::Int(status.revision as i64)),
+                        (
+                            "validated_revision",
+                            status
+                                .validated_revision
+                                .map(|revision| McpValue::Int(revision as i64))
+                                .unwrap_or(McpValue::Null),
+                        ),
+                        ("ready", McpValue::Bool(status.ready)),
+                        ("diagnostics", McpValue::Array(diagnostics)),
+                    ]))
+                })
+                .collect();
+            files.insert(
+                "/proc/app-packages.json".into(),
+                McpValue::Map(mcp_map(&[("packages", McpValue::Array(packages))])).to_json(),
+            );
+        }
+        let vfs = self.runtime_files.clone();
+        let mut count = 0;
+        for app_id in app_ids {
+            // Invalid packages remain in inventory, but must never execute.
+            self.unregister_app(&app_id);
+            let Some(revision) = self.package_inventory.validated_revision(&app_id) else {
+                continue;
+            };
+            let app = crate::apps::JsApp::from_package_files(
+                &app_id,
+                &snapshot.files,
+                scheduler.clone(),
+            )?
+            .with_vfs_files(vfs.clone());
+            self.register_app(Box::new(app))?;
+            self.bind_package_revision(revision).map_err(|error| {
+                McpSandboxError::InvalidManifest {
+                    app_id: app_id.clone(),
+                    reason: error.message,
+                }
+            })?;
+            count += 1;
+        }
+
+        Ok(count)
+    }
+
+    /// App writes captured by the host; the OS owner persists these after calls.
+    pub fn runtime_files(&self) -> BTreeMap<String, String> {
+        self.runtime_files.borrow().clone()
+    }
+
     /// Number of registered MCP apps.
     pub fn app_count(&self) -> usize {
         self.apps.len()
@@ -166,7 +294,10 @@ impl McpRegistry {
 
     /// Returns the manifests of all registered MCP apps.
     pub fn manifests(&self) -> Vec<&AppManifest> {
-        self.apps.values().map(|entry| entry.guard.manifest()).collect()
+        self.apps
+            .values()
+            .map(|entry| entry.guard.manifest())
+            .collect()
     }
 
     /// Retrieve the runtime capability guard for a registered app.
@@ -342,9 +473,10 @@ impl McpRegistry {
 
         self.verify_caller_access(caller, app_id)?;
 
-        let entry = self.apps.get_mut(app_id).ok_or_else(|| {
-            McpError::method_not_found(format!("unknown MCP app '{}'", app_id))
-        })?;
+        let entry = self
+            .apps
+            .get_mut(app_id)
+            .ok_or_else(|| McpError::method_not_found(format!("unknown MCP app '{}'", app_id)))?;
 
         entry
             .guard
@@ -370,10 +502,7 @@ impl McpRegistry {
         uri: &str,
     ) -> Result<McpResourceContent, McpError> {
         let without_scheme = uri.strip_prefix("mcp://").ok_or_else(|| {
-            McpError::invalid_params(format!(
-                "resource URI '{}' must start with 'mcp://'",
-                uri
-            ))
+            McpError::invalid_params(format!("resource URI '{}' must start with 'mcp://'", uri))
         })?;
 
         let (app_id, _rest) = without_scheme
@@ -426,7 +555,9 @@ impl McpRegistry {
         }
 
         for (app_id, entry) in &self.apps {
-            if self.verify_package_revision(app_id).is_err() { continue; }
+            if self.verify_package_revision(app_id).is_err() {
+                continue;
+            }
             if entry
                 .guard
                 .enforce_capability(&AppCapability::ExposeMcpPrompts)
@@ -670,10 +801,7 @@ impl McpRegistry {
             .into_iter()
             .map(|t| t.to_mcp_value())
             .collect();
-        Ok(McpValue::Map(mcp_map(&[(
-            "tiles",
-            McpValue::Array(tiles),
-        )])))
+        Ok(McpValue::Map(mcp_map(&[("tiles", McpValue::Array(tiles))])))
     }
 
     fn handle_tiles_render(

@@ -764,7 +764,7 @@ mod tests {
         );
         ui.render(Duration::from_millis(32));
         ui.render(Duration::from_millis(560));
-        assert_eq!(ui.ui.get_keyboard_reveal(), 260.0);
+        assert_eq!(ui.ui.get_keyboard_reveal(), 213.0);
         // Tap Q through the real soft-key hit area; focus must stay in the editor.
         for kind in [
             InputEventKind::PointerButtonDown,
@@ -774,7 +774,7 @@ mod tests {
                 kind,
                 code: 0x110,
                 x: 75,
-                y: 2000,
+                y: 2073,
             });
         }
         assert_eq!(ui.ui.get_draft().as_str(), "q");
@@ -814,7 +814,7 @@ mod tests {
         ui.render(Duration::from_millis(1136));
         ui.render(Duration::from_millis(1680));
         assert!(ui.ui.get_keyboard_visible(), "composer reopens keyboard");
-        assert_eq!(ui.ui.get_keyboard_reveal(), 260.0);
+        assert_eq!(ui.ui.get_keyboard_reveal(), 213.0);
         ui.handle_input(InputEvent {
             kind: InputEventKind::PointerButtonDown,
             code: 0x110,
@@ -867,10 +867,10 @@ mod tests {
         ui.render(Duration::from_millis(2944));
         assert_eq!(
             ui.ui.get_keyboard_reveal(),
-            260.0,
+            213.0,
             "composer reopens after scrolling"
         );
-        let key_y = 2000;
+        let key_y = 2073;
         for kind in [
             InputEventKind::PointerButtonDown,
             InputEventKind::PointerButtonUp,

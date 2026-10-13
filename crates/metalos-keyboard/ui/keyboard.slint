@@ -84,7 +84,8 @@ export component SoftKeyboard inherits Rectangle {
         }
     }
     public function reopen() { root.dismissed = false; }
-    height: 260px;
+    // Four 44px key rows, three 7px gaps, and 8px padding on both ends.
+    height: 213px;
     callback key(string);
     callback dismiss();
     property <bool> shifted: false;
@@ -94,11 +95,6 @@ export component SoftKeyboard inherits Rectangle {
     VerticalLayout {
         padding: 8px;
         spacing: 7px;
-        HorizontalLayout {
-            height: 22px;
-            Text { text: ""; horizontal-stretch: 1; }
-
-        }
         HorizontalLayout {
             spacing: 4px;
             for letter in (root.symbols ? ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"] : root.shifted ? ["Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"] : ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"]): SoftKey {

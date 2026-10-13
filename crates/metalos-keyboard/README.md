@@ -15,7 +15,7 @@ The component exposes `shown` and animated `reveal`; anchor its `y` to
 `parent.height - self.reveal` and reserve `reveal` above it for the host content.
 Changing `scroll-offset` dismisses the keyboard completely and emits `dismiss()`
 so the host can relinquish editor focus. Scroll reversal keeps it hidden until
-a new focus request or `reopen()`. Keyboard height defaults to 260px.
+a new focus request or `reopen()`. Keyboard height defaults to 213px.
 `key(string)` emits text or the reserved `backspace` and `return` actions;
 `SoftKey` translates these into typed actions and Slint key text. `dismiss()`
 lets the host relinquish editor focus; `reopen()` clears manual dismissal.

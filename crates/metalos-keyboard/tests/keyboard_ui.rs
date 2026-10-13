@@ -45,7 +45,7 @@ fn standalone_keyboard_types_switches_pages_and_dismisses() {
     ui.on_key(move |value| captured.borrow_mut().push(value.to_string()));
     let mut rgb = vec![slint::Rgb8Pixel::default(); (PHONE_WIDTH * PHONE_HEIGHT) as usize];
     let ink = |rgb: &[slint::Rgb8Pixel]| {
-        (1940..2070)
+        (2030..2160)
             .flat_map(|y| (0..140).map(move |x| (x, y)))
             .filter(|&(x, y)| rgb[(y * PHONE_WIDTH + x) as usize].r > 128)
             .count()
@@ -58,7 +58,7 @@ fn standalone_keyboard_types_switches_pages_and_dismisses() {
             renderer.render(&mut rgb, PHONE_WIDTH as usize);
         });
         preview_ink.set(
-            (1780..1940)
+            (1910..2030)
                 .flat_map(|y| (0..160).map(move |x| (x, y)))
                 .filter(|&(x, y)| rgb[(y * PHONE_WIDTH + x) as usize].r > 128)
                 .count(),
@@ -82,10 +82,10 @@ fn standalone_keyboard_types_switches_pages_and_dismisses() {
     for frame in 1..=35 {
         render(frame * 16);
     }
-    assert_eq!(ui.get_reveal(), 260.0);
+    assert_eq!(ui.get_reveal(), 213.0);
     let resting_ink = render(560);
     assert_eq!(preview_ink.get(), 0);
-    tap(75.0, 2000.0); // q; press and release in one frame
+    tap(75.0, 2073.0); // q; press and release in one frame
     render(576);
     let expanded_ink = render(672);
     assert!(
@@ -103,13 +103,13 @@ fn standalone_keyboard_types_switches_pages_and_dismisses() {
         settled_ink, resting_ink,
         "label returns to its original size"
     );
-    tap(100.0, 2290.0); // Shift
+    tap(100.0, 2379.0); // Shift
     render(992);
-    tap(75.0, 2000.0); // Q
+    tap(75.0, 2073.0); // Q
     render(1008);
     tap(220.0, 2480.0); // 123
     render(1024);
-    tap(75.0, 2000.0); // 1
+    tap(75.0, 2073.0); // 1
     assert_eq!(*actions.borrow(), vec!["q", "Q", "1"]);
     tap(80.0, 2480.0); // Hide
     render(1040);
@@ -120,7 +120,7 @@ fn standalone_keyboard_types_switches_pages_and_dismisses() {
     ui.set_requested(true);
     render(1552);
     render(2080);
-    assert_eq!(ui.get_reveal(), 260.0, "new input request reopens keyboard");
+    assert_eq!(ui.get_reveal(), 213.0, "new input request reopens keyboard");
     ui.set_scroll_offset(1.0);
     render(2096);
     render(2640);
@@ -138,5 +138,5 @@ fn standalone_keyboard_types_switches_pages_and_dismisses() {
     ui.set_requested(true);
     render(3232);
     render(3776);
-    assert_eq!(ui.get_reveal(), 260.0, "refocusing reopens the keyboard");
+    assert_eq!(ui.get_reveal(), 213.0, "refocusing reopens the keyboard");
 }

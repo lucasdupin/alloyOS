@@ -69,7 +69,7 @@ fn keyboard_screenshots() {
         if frame == 10 {
             let reveal = ui.get_reveal();
             assert!(
-                reveal > 0.0 && reveal < 260.0,
+                reveal > 0.0 && reveal < 213.0,
                 "capture must be mid-animation"
             );
             // Extra reactive evaluations and redraws at the same virtual time
@@ -89,7 +89,7 @@ fn keyboard_screenshots() {
             screenshots.check("resting", PHONE_WIDTH, PHONE_HEIGHT, &pixels);
         }
     }
-    let point = LogicalPosition::new(75.0 / PHONE_SCALE as f32, 2000.0 / PHONE_SCALE as f32);
+    let point = LogicalPosition::new(75.0 / PHONE_SCALE as f32, 2073.0 / PHONE_SCALE as f32);
     window.dispatch_event(WindowEvent::PointerPressed {
         position: point,
         button: PointerEventButton::Left,

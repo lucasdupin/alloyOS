@@ -56,12 +56,12 @@ fn system_ui_screenshots() {
             snapshot(&mut suite, "keyboard-open", &ui);
         }
     }
-    pointer(&mut ui, InputEventKind::PointerButtonDown, 75, 2000);
+    pointer(&mut ui, InputEventKind::PointerButtonDown, 75, 2073);
     for frame in 62..=69 {
         ui.render(Duration::from_millis(frame * 16));
     }
     snapshot(&mut suite, "keyboard-pressed", &ui);
-    pointer(&mut ui, InputEventKind::PointerButtonUp, 75, 2000);
+    pointer(&mut ui, InputEventKind::PointerButtonUp, 75, 2073);
     for frame in 70..=100 {
         ui.render(Duration::from_millis(frame * 16));
     }

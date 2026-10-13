@@ -54,7 +54,7 @@ The folder is the app's identifier; all public names use it as their namespace.
 
 ```text
 /apps/clock/        # Installed package; read-only to apps
-├── clock.mcp       # Identity, entrypoint, permissions, and public schemas
+├── clock.mcp       # Identity, permissions, and public schemas
 ├── SKILL.md        # Instructions that help Welder use Clock
 └── main.js         # JavaScript handlers
 
@@ -86,15 +86,17 @@ what the host will accept. JavaScript implements the declared behavior, and
 
 The **target manifest contract** retains `key = value` configuration. Descriptor
 keys (`tool`, `resource`, `prompt`, and `tile`) are repeatable, with one JSON object
-per line. The descriptor keys require extending the existing manifest parser;
-`entrypoint` is already parsed and checked to stay inside the app package. The `ReadClock` grant and `AlloyOS.clock.now()` binding below are also part
-of the target contract.
+per line. The descriptor keys require extending the existing manifest parser.
+The `ReadClock` grant and `AlloyOS.clock.now()` binding below are also part of
+the target contract.
+
+Every package uses `/apps/<app_id>/main.js`. The obsolete `entrypoint` key is
+ignored when reading legacy manifests and is never serialized.
 
 ```ini
 # /apps/clock/clock.mcp
 name = Clock
 version = 1.0.0
-entrypoint = /apps/clock/main.js
 capabilities = ExposeMcpTools, ExposeMcpResources, ExposeMcpPrompts, ExposeSkills, ExposeTiles, ReadClock
 
 tool = {"name":"clock.now","description":"Read the current time and uptime.","inputSchema":{"type":"object","properties":{"utc_offset_hours":{"type":"integer","minimum":-12,"maximum":14,"default":0},"format_24h":{"type":"boolean","default":true}},"additionalProperties":false}}

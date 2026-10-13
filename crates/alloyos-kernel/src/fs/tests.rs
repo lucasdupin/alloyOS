@@ -117,7 +117,7 @@ pub mod tests {
     }
 
     #[test]
-    fn tasks_package_contains_its_declared_entrypoint_and_preserves_updates() {
+    fn tasks_package_contains_main_js_and_preserves_updates() {
         let vfs = Vfs::new();
         for (path, expected) in [
             (alloyos_mcp::TASKS_MANIFEST_PATH, alloyos_mcp::TASKS_MANIFEST_MCP),

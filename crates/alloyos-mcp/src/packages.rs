@@ -145,10 +145,7 @@ fn validate_package(id: &str, files: &BTreeMap<String, String>, revision: u64) -
     if let Err(error) = validate_app_manifest(&manifest) {
         status.diagnostics.push(PackageDiagnostic { path: manifest_path.clone(), message: error.to_mcp_error().message });
     }
-    let entry = manifest.entrypoint.clone().unwrap_or_else(|| format!("{}main.js", root));
-    if !entry.starts_with(&root) {
-        status.diagnostics.push(PackageDiagnostic { path: manifest_path, message: "entrypoint must remain inside the package".into() });
-    }
+    let entry = format!("{}main.js", root);
     let mut entry_parsed = false;
     // Parse every JS file, not just main.js: nested modules are part of this revision.
     for (path, source) in files.iter().filter(|(path, _)| path.ends_with(".js")) {
@@ -162,7 +159,7 @@ fn validate_package(id: &str, files: &BTreeMap<String, String>, revision: u64) -
         }
     }
     if !files.contains_key(&entry) {
-        status.diagnostics.push(PackageDiagnostic { path: entry.clone(), message: "missing JavaScript entrypoint".into() });
+        status.diagnostics.push(PackageDiagnostic { path: entry.clone(), message: "missing required main.js".into() });
     }
     if entry_parsed {
         let required: Vec<_> = [
@@ -218,6 +215,25 @@ mod tests {
         snapshot.directories.clear();
         assert_eq!(service.apply_snapshot(snapshot).len(), 1);
         assert!(!service.is_current(&second));
+    }
+
+    #[test]
+    fn legacy_entrypoint_cannot_replace_main_js() {
+        let mut service = PackageService::new();
+        let mut snapshot = sample();
+        snapshot.files.get_mut("/apps/clock/clock.mcp").unwrap()
+            .push_str("entrypoint = /apps/clock/other.js\n");
+        snapshot.files.insert("/apps/clock/other.js".into(), "function other() {}".into());
+        service.apply_snapshot(snapshot.clone());
+        assert!(service.status("clock").unwrap().ready);
+
+        let main = snapshot.files.remove("/apps/clock/main.js").unwrap();
+        snapshot.files.insert("/apps/clock/other.js".into(), main);
+        service.apply_snapshot(snapshot);
+        let status = service.status("clock").unwrap();
+        assert!(!status.ready);
+        assert!(status.diagnostics.iter().any(|error|
+            error.path == "/apps/clock/main.js" && error.message == "missing required main.js"));
     }
 
     #[test]

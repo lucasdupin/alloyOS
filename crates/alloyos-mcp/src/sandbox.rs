@@ -228,7 +228,6 @@ pub struct AppManifest {
     pub app_id: String,
     pub name: String,
     pub version: String,
-    pub entrypoint: Option<String>,
     pub declared_capabilities: Vec<AppCapability>,
 }
 
@@ -243,7 +242,6 @@ impl AppManifest {
             app_id: app_id.into(),
             name: name.into(),
             version: version.into(),
-            entrypoint: None,
             declared_capabilities,
         }
     }
@@ -274,7 +272,6 @@ impl AppManifest {
         let mut app_id: Option<String> = default_folder;
         let mut name: Option<String> = None;
         let mut version: Option<String> = None;
-        let mut entrypoint: Option<String> = None;
         let mut capabilities: Vec<AppCapability> = Vec::new();
 
         for (line_idx, raw_line) in config_text.lines().enumerate() {
@@ -295,11 +292,8 @@ impl AppManifest {
                 "app_id" | "folder" => app_id = Some(val.to_string()),
                 "name" => name = Some(val.to_string()),
                 "version" => version = Some(val.to_string()),
-                "entrypoint" => {
-                    if entrypoint.replace(val.to_string()).is_some() {
-                        return Err(McpSandboxError::ManifestParseError("duplicate entrypoint".to_string()));
-                    }
-                },
+                // Obsolete: every package uses main.js; accept legacy manifests.
+                "entrypoint" => {},
                 "capabilities" => {
                     if !val.is_empty() {
                         for item in val.split(',') {
@@ -343,7 +337,6 @@ impl AppManifest {
             app_id,
             name,
             version,
-            entrypoint,
             declared_capabilities: capabilities,
         })
     }
@@ -356,11 +349,10 @@ impl AppManifest {
             .map(|c| c.to_manifest_token())
             .collect();
         format!(
-            "app_id = {}\nname = {}\nversion = {}\n{}capabilities = {}\n",
+            "app_id = {}\nname = {}\nversion = {}\ncapabilities = {}\n",
             self.app_id,
             self.name,
             self.version,
-            self.entrypoint.as_ref().map(|path| format!("entrypoint = {path}\n")).unwrap_or_default(),
             caps.join(", ")
         )
     }
@@ -427,17 +419,6 @@ pub fn validate_app_manifest(manifest: &AppManifest) -> Result<(), McpSandboxErr
             app_id: manifest.app_id.clone(),
             reason: "version must not be empty".to_string(),
         });
-    }
-
-    if let Some(path) = &manifest.entrypoint {
-        let prefix = format!("/apps/{}/", manifest.app_id);
-        if !path.starts_with(&prefix) || !path.ends_with(".js")
-            || path.split('/').skip(1).any(|part| part.is_empty() || part == "." || part == "..") {
-            return Err(McpSandboxError::InvalidManifest {
-                app_id: manifest.app_id.clone(),
-                reason: "entrypoint must be a JavaScript file inside the app package".to_string(),
-            });
-        }
     }
 
     let mut has_mcp_surface = false;

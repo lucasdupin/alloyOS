@@ -226,22 +226,20 @@ fn registry_routes_tasks_app_skills_tiles_and_enforces_isolation() {
 }
 
 #[test]
-fn javascript_entrypoint_roundtrips_and_stays_in_its_package() {
+fn obsolete_entrypoint_is_ignored_and_omitted_on_serialization() {
     let base = "name = Clock\nversion = 1.0.0\ncapabilities = ExposeMcpTools\n";
-    let manifest = AppManifest::parse_in_folder("clock", &format!("{base}entrypoint = /apps/clock/main.js\n")).unwrap();
-    assert_eq!(manifest.entrypoint.as_deref(), Some("/apps/clock/main.js"));
-    validate_app_manifest(&manifest).unwrap();
-    assert_eq!(AppManifest::parse(&manifest.to_mcp_config()).unwrap(), manifest);
-    for path in ["/apps/other/main.js", "/apps/clock/../other/main.js", "/apps/clock//main.js", "/apps/clock/./main.js", "/var/clock/main.js", "/apps/clock/main.txt"] {
-        let bad = AppManifest::parse_in_folder("clock", &format!("{base}entrypoint = {path}\n")).unwrap();
-        assert!(validate_app_manifest(&bad).is_err(), "accepted {path}");
+    let expected = AppManifest::parse_in_folder("clock", base).unwrap();
+    for path in ["/apps/clock/other.js", "/apps/other/main.js", "/apps/clock/../other/main.js", "/var/clock/main.txt"] {
+        let manifest = AppManifest::parse_in_folder("clock", &format!("{base}entrypoint = {path}\n")).unwrap();
+        assert_eq!(manifest, expected);
+        validate_app_manifest(&manifest).unwrap();
+        assert!(!manifest.to_mcp_config().contains("entrypoint"));
+        assert_eq!(AppManifest::parse(&manifest.to_mcp_config()).unwrap(), manifest);
     }
-    assert!(AppManifest::parse_in_folder("clock", &format!("{base}entrypoint = /apps/clock/main.js\nentrypoint = /apps/clock/other.js\n")).is_err());
 }
 
 #[test]
-fn bundled_tasks_entrypoint_exists_and_parses() {
-    let manifest = AppManifest::parse(alloyos_mcp::TASKS_MANIFEST_MCP).unwrap();
-    assert_eq!(manifest.entrypoint.as_deref(), Some(alloyos_mcp::TASKS_MAIN_PATH));
+fn bundled_tasks_main_js_exists_and_parses() {
+    AppManifest::parse(alloyos_mcp::TASKS_MANIFEST_MCP).unwrap();
     alloyos_js::parse_program(alloyos_mcp::TASKS_MAIN_JS).unwrap();
 }

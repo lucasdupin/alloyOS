@@ -25,6 +25,7 @@ alloyOS exposes a unified POSIX-inspired hierarchy managed by the kernel's Virtu
 │   ├── motd                # Message of the Day boot banner
 │   ├── ai.conf             # Active AI provider, model, and shell-free security policy
 │   └── schedules.conf      # Persistent registry of scheduled local JavaScript automations
+├── var/                    # Per-app allow-listed writable state (/var/<app_id>/)
 ├── tmp/                    # Scratch directory for temporary files
 ├── scripts/                # Local JavaScript ES modules executed by scriptd (alloyos-js)
 │   └── heartbeat.js        # Default system telemetry heartbeat script
@@ -33,7 +34,7 @@ alloyOS exposes a unified POSIX-inspired hierarchy managed by the kernel's Virtu
 │       ├── tasks.mcp       # Tasks capability manifest
 │       ├── SKILL.md        # Tasks agent skill & orchestration guide
 │       └── main.js         # Bundled JS entrypoint; host execution migration pending
-└── knowledge/              # Planned local user context; not seeded yet
+└── knowledge/              # Local user context managed by Welder
     ├── profile.md          # Explicit user facts
     ├── preferences.md      # Scoped communication, visual, and workflow preferences
     ├── interests.md        # Interests and ongoing goals
@@ -70,8 +71,11 @@ Populated during [`Vfs::with_root`](crates/alloyos-kernel/src/fs/vfs.rs) initial
 ### `/etc` — System & AI Configuration
 Holds system-wide configuration files shared between the kernel, `alloy-sh`, and the AI runtime ([`alloyos-welder`](crates/alloyos-welder)):
 - `/etc/motd`: Welcome banner (`Welcome to alloyOS v0.1.0 (aarch64 POSIX-compliant Rust kernel)`).
-- `/etc/ai.conf`: Default AI operator settings (`provider=forge`, `model=gemma-2-2b-it`, `shell_access=disabled`).
+- `/etc/ai.conf`: Default AI operator settings (`provider=forge`, `model=gemma-2-2b-it`, `shell_access=disabled`, `knowledge_learning_paused=false`).
 - `/etc/schedules.conf`: Registry of time- and event-triggered JavaScript jobs managed exclusively through the `Tasks` app (`tasks.create`, `tasks.edit`, `tasks.delete`).
+
+### `/var` — Scoped MCP App Writable Storage
+Holds persistent per-application state under `/var/<app_id>/` (for example `/var/clock/`). MCP app write permissions are strictly allow-list based: an app `app_id` can only write within `/var/<app_id>/` (with `tasks` additionally allowed its scheduler paths `/scripts` and `/etc/schedules.conf`).
 
 ### `/scripts` — Local JavaScript Automation ([`alloyos-js`](crates/alloyos-js))
 Stores sandboxed JavaScript scripts executed by `scriptd` via the `AlloyOS.*` host bindings (`AlloyOS.fs`, `AlloyOS.net`, `AlloyOS.ui`, `AlloyOS.sys`):
@@ -84,19 +88,22 @@ Package directory for headless Model Context Protocol (MCP) applications. Each a
 - **Tiles**: Declarative, UI-agnostic `AppTile` descriptors that Ferrofluid can embed in the chat stream or pin to the Dashboard.
 
 Isolation invariants enforced by `alloyos-mcp` and `alloyos-welder`:
+- Write permissions for MCP apps are allow-list based and restricted to `/var/<app_id>/`.
 - `/apps/tasks/` (**Tasks**) is the first canonical app and is the **only** app allowed to access `ScriptScheduler` (`/etc/schedules.conf` and `/scripts/*.js`). Welder routes all schedule management through `Tasks`.
 - No app can access or invoke another app; **only Welder centralizes app access and orchestration**.
 
 
-### `/knowledge` — Local User Context (Planned)
+### `/knowledge` — Local User Context ([`knowledge.rs`](crates/alloyos-welder/src/knowledge.rs))
 
-The main agent will read and maintain Markdown records of user facts,
-preferences, interests, tentative observations, and project context. This is
-runtime user data, not a folder of personal information in the source checkout.
-Apps contribute context through the agent rather than rewriting the profile.
-See [KNOWLEDGE.md](KNOWLEDGE.md) for provenance, retrieval, and user controls.
-The directory is not currently seeded. Persistence requires CobaltFS; records
-on the RamFS fallback are lost on reboot.
+Welder reads and maintains Markdown records of user facts (`profile.md`),
+scoped preferences (`preferences.md`), interests (`interests.md`), tentative
+observations (`observations.md`), and project context (`projects/<slug>.md`).
+This is runtime user data, not a folder of personal information in the source
+checkout. Apps may contribute scoped project context through Welder rather than
+rewriting the user profile (MCP apps are allow-listed to write only to
+`/var/<app_id>/`). See [KNOWLEDGE.md](KNOWLEDGE.md) for provenance, retrieval,
+and user controls. Persistence requires CobaltFS (`DurableCobaltFs`); records on
+the RamFS fallback are explicitly marked volatile (`VolatileRamFs`).
 
 ### `/tmp` — Temporary Storage
 General-purpose scratch directory for transient files created during runtime or E2E testing.
@@ -124,13 +131,12 @@ Userland processes interact with the VFS through [`liballoy::fs`](crates/alloyos
 - `SyscallNo::Stat (4)`: Resolves a path in the VFS and returns `1` for `InodeKind::Directory`, `0` for `InodeKind::File` / `InodeKind::CharDevice`, or `ENOENT (-2)` if not found.
 
 ### 2. Structured AI Tools ([`alloyos-welder`](crates/alloyos-welder/src/tools.rs))
-Because the AI agent operates under a strict shell-free policy, it accesses the filesystem exclusively through native structured tools:
-
-These interfaces currently use an in-memory map in `NativeToolRegistry`.
-Connecting them to the kernel VFS and CobaltFS is pending; their current writes
-do not survive reboot. The intended persistent interfaces are:
+Because the AI agent operates under a strict shell-free policy, it accesses the filesystem exclusively through native structured tools backed by `ToolVfsBackend` (`KernelVfsBackend` on CobaltFS/VFS):
 
 - `fs_read(path)` — Read UTF-8 file contents from CobaltFS/VFS.
-- `fs_write(path, content)` — Persist UTF-8 file contents to CobaltFS/VFS.
+- `fs_write(path, content)` — Persist UTF-8 file contents to CobaltFS/VFS (direct raw writes to `/knowledge/` are rejected; use the structured knowledge tools).
 - `fs_list(path)` — List entries under a directory prefix.
 - `script_create(path, source)` — Write a JavaScript automation module under `/scripts/*.js`.
+- `knowledge_search(query, category?, scope?)` — Search `/knowledge/` records and synthesize the `knowledge.profile` `AppTile`.
+- `knowledge_upsert(category, title, value, basis?, scope?, source?)` — Validate, filter secrets, and merge a structured entry into `/knowledge/*.md` with interrupted-write protection.
+- `knowledge_forget(query, category?)` — Remove matching records from `/knowledge/*.md`, summaries, and retrieval.

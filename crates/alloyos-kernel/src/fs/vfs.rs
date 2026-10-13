@@ -135,10 +135,13 @@ impl Vfs {
         let _ = root_fs.create("/dev", InodeKind::Directory);
         let _ = root_fs.create("/proc", InodeKind::Directory);
         let _ = root_fs.create("/etc", InodeKind::Directory);
+        let _ = root_fs.create("/var", InodeKind::Directory);
         let _ = root_fs.create("/tmp", InodeKind::Directory);
         let _ = root_fs.create("/scripts", InodeKind::Directory);
         let _ = root_fs.create("/apps", InodeKind::Directory);
         let _ = root_fs.create("/apps/tasks", InodeKind::Directory);
+        let _ = root_fs.create("/knowledge", InodeKind::Directory);
+        let _ = root_fs.create("/knowledge/projects", InodeKind::Directory);
 
         if root_fs.lookup("/etc/motd").is_err() {
             if let Ok(ino) = root_fs.create("/etc/motd", InodeKind::File) {
@@ -288,7 +291,17 @@ impl Vfs {
 
         if clean_path == "/" {
             // Keep canonical root directories in standard order first
-            let canonical = ["bin/", "dev/", "proc/", "etc/", "tmp/", "scripts/", "apps/"];
+            let canonical = [
+                "bin/",
+                "dev/",
+                "proc/",
+                "etc/",
+                "var/",
+                "tmp/",
+                "scripts/",
+                "apps/",
+                "knowledge/",
+            ];
             let mut ordered = Vec::with_capacity(formatted.len());
             for &c in &canonical {
                 if formatted.iter().any(|e| e == c) {

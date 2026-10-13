@@ -269,6 +269,11 @@ impl ToolVfsBackend for KernelVfsBackend {
         })
         .unwrap_or_default()
     }
+
+    fn is_persistent(&self) -> bool {
+        self.with_vfs(|vfs| vfs.backend_name == "CobaltFS")
+            .unwrap_or(false)
+    }
 }
 
 impl AlloyOsHost for KernelVfsBackend {
@@ -304,6 +309,12 @@ impl AlloyOsHost for KernelVfsBackend {
 
     fn fs_write(&mut self, path: &str, content: &str) -> Result<(), String> {
         let norm = ScriptCapabilities::normalize_path(path);
+        if norm == "/knowledge" || norm.starts_with("/knowledge/") {
+            return Err(format!(
+                "Security violation: scripts and apps cannot directly write to user knowledge repository '{}'; profile updates are owned by Welder",
+                norm
+            ));
+        }
         let existed = self.read_file(&norm).is_some();
         self.write_file(&norm, content)?;
         if norm != SCHEDULES_CONF_PATH && norm != "/etc/ai.conf" {
@@ -318,6 +329,12 @@ impl AlloyOsHost for KernelVfsBackend {
 
     fn fs_delete(&mut self, path: &str) -> Result<bool, String> {
         let norm = ScriptCapabilities::normalize_path(path);
+        if norm == "/knowledge" || norm.starts_with("/knowledge/") {
+            return Err(format!(
+                "Security violation: scripts and apps cannot directly delete user knowledge repository '{}'; profile updates are owned by Welder",
+                norm
+            ));
+        }
         let removed = self.delete_file(&norm)?;
         if removed {
             self.emitted_events.push(OsEvent::FsDeleted { path: norm });

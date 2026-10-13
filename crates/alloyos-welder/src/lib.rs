@@ -187,6 +187,12 @@ impl Welder {
         self.allowed_tools.insert(name.into());
         Ok(())
     }
+    pub fn allow_knowledge_tools(&mut self) -> Result<(), WelderError> {
+        self.allow_tool("knowledge_search")?;
+        self.allow_tool("knowledge_upsert")?;
+        self.allow_tool("knowledge_forget")?;
+        Ok(())
+    }
     /// Local is the default. Cloud use needs a configured target and either an explicit request
     /// or an opt-in policy permitting escalation when local execution is unavailable.
     pub fn run(
@@ -441,12 +447,15 @@ mod tests {
     }
 }
 
+pub mod knowledge;
 pub mod session;
-
-
 pub mod runtime;
 pub mod tools;
 pub mod ui_synth;
+pub use knowledge::{
+    KnowledgeBasis, KnowledgeCategory, KnowledgeEntry, KnowledgeSearchMatch, KnowledgeStorageKind,
+    KnowledgeTurnReport,
+};
 pub use runtime::{AgentRuntime, ConsoleTurnOutput};
 pub use alloyos_forge::provider::{AiError, Message, Response, ToolCall as ProviderToolCall, ToolParameter, ToolSpec};
 pub use tools::{

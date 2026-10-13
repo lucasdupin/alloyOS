@@ -372,6 +372,23 @@ fn is_scheduler_protected_path(path: &str) -> bool {
         || path.starts_with("/scripts/")
 }
 
+/// Returns the allow-listed writable data root `/var/<app_id>` for an MCP application.
+pub fn app_allowed_write_root(app_id: &str) -> String {
+    format!("/var/{}", app_id)
+}
+
+/// Returns `true` iff `path` is canonical and inside the allow-listed `/var/<app_id>/` directory.
+pub fn is_within_app_write_allowlist(app_id: &str, path: &str) -> bool {
+    if !path.starts_with('/') || path.split('/').any(|part| part == "." || part == "..") {
+        return false;
+    }
+    let root = app_allowed_write_root(app_id);
+    path == root
+        || path
+            .strip_prefix(&root)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
 /// Validates an application's manifest before registration or execution.
 ///
 /// Enforces:
@@ -382,7 +399,8 @@ fn is_scheduler_protected_path(path: &str) -> bool {
 /// 4. **No Cross-App Access**: Rejects `CrossAppAccess` with `McpSandboxError::CrossAppAccessForbidden`.
 /// 5. **Exclusive ScriptScheduler Access**: Rejects `ScriptSchedulerAccess` (and `/etc/schedules.conf` or `/scripts`
 ///    storage scopes) for any app other than `tasks` (`app_id == "tasks"`).
-/// 6. **Scoped Storage Isolation**: Rejects `ScopedStorage` paths containing `..` or not rooted at `/`.
+/// 6. **Allow-List Scoped Storage**: MCP app write permissions are allow-list based; an app `<app_id>` may only
+///    declare or write to `/var/<app_id>/` (with `tasks` additionally allowed its scheduler paths).
 /// 7. **At Least One Surface**: Requires at least one MCP/Skill/Tile surface capability.
 pub fn validate_app_manifest(manifest: &AppManifest) -> Result<(), McpSandboxError> {
     if manifest.app_id.trim().is_empty()
@@ -453,22 +471,7 @@ pub fn validate_app_manifest(manifest: &AppManifest) -> Result<(), McpSandboxErr
                     });
                 }
             }
-            AppCapability::ScopedStorage(path) => {
-                if !path.starts_with('/') || path.contains("..") {
-                    return Err(McpSandboxError::InvalidManifest {
-                        app_id: manifest.app_id.clone(),
-                        reason: format!(
-                            "ScopedStorage path '{}' must be absolute and not contain '..'",
-                            path
-                        ),
-                    });
-                }
-                if manifest.app_id != TASKS_APP_ID && is_scheduler_protected_path(path) {
-                    return Err(McpSandboxError::SchedulerAccessForbidden {
-                        app_id: manifest.app_id.clone(),
-                    });
-                }
-            }
+            AppCapability::ScopedStorage(_) => {}
             AppCapability::ExposeMcpTools
             | AppCapability::ExposeMcpResources
             | AppCapability::ExposeMcpPrompts
@@ -486,11 +489,42 @@ pub fn validate_app_manifest(manifest: &AppManifest) -> Result<(), McpSandboxErr
         });
     }
 
+    for cap in &manifest.declared_capabilities {
+        if let AppCapability::ScopedStorage(path) = cap {
+            if !path.starts_with('/') || path.split('/').any(|p| p == "." || p == "..") {
+                return Err(McpSandboxError::InvalidManifest {
+                    app_id: manifest.app_id.clone(),
+                    reason: format!(
+                        "ScopedStorage path '{}' must be absolute and not contain '..'",
+                        path
+                    ),
+                });
+            }
+            if manifest.app_id != TASKS_APP_ID && is_scheduler_protected_path(path) {
+                return Err(McpSandboxError::SchedulerAccessForbidden {
+                    app_id: manifest.app_id.clone(),
+                });
+            }
+            let allowlisted = is_within_app_write_allowlist(&manifest.app_id, path)
+                || (manifest.app_id == TASKS_APP_ID && is_scheduler_protected_path(path));
+            if !allowlisted {
+                return Err(McpSandboxError::InvalidManifest {
+                    app_id: manifest.app_id.clone(),
+                    reason: format!(
+                        "ScopedStorage path '{}' is not allow-listed; MCP app '{}' may only write to '/var/{}/'",
+                        path, manifest.app_id, manifest.app_id
+                    ),
+                });
+            }
+        }
+    }
+
     Ok(())
 }
 
 /// Runtime capability guard that enforces Zero App-Owned UI, exclusive `Tasks` scheduler access,
-/// no cross-app access, and manifest boundaries on every operation invoked by or against an MCP application.
+/// no cross-app access, and allow-list based `/var/<app_id>/` write permissions on every operation
+/// invoked by or against an MCP application.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeCapabilityGuard {
     manifest: AppManifest,
@@ -505,6 +539,12 @@ impl RuntimeCapabilityGuard {
 
     pub fn manifest(&self) -> &AppManifest {
         &self.manifest
+    }
+
+    /// Enforce allow-list write permissions for an MCP app:
+    /// Only paths inside `/var/<app_id>/` are writable (plus scheduler paths exclusively for `tasks`).
+    pub fn enforce_write_path(&self, target_path: &str) -> Result<(), McpSandboxError> {
+        self.enforce_capability(&AppCapability::ScopedStorage(target_path.to_string()))
     }
 
     /// Check whether a capability can be invoked at runtime by this app.
@@ -540,7 +580,9 @@ impl RuntimeCapabilityGuard {
                 }
             }
             AppCapability::ScopedStorage(target_path) => {
-                if target_path.contains("..") || !target_path.starts_with('/') {
+                if !target_path.starts_with('/')
+                    || target_path.split('/').any(|p| p == "." || p == "..")
+                {
                     return Err(McpSandboxError::MissingCapability {
                         app_id: self.manifest.app_id.clone(),
                         capability: requested.clone(),
@@ -552,17 +594,23 @@ impl RuntimeCapabilityGuard {
                         app_id: self.manifest.app_id.clone(),
                     });
                 }
-                let allowed = self.manifest.declared_capabilities.iter().any(|cap| {
-                    if let AppCapability::ScopedStorage(prefix) = cap {
-                        target_path == prefix
-                            || (target_path.starts_with(prefix.as_str())
-                                && (prefix.ends_with('/')
-                                    || target_path.as_bytes().get(prefix.len()) == Some(&b'/')))
-                    } else {
-                        false
-                    }
-                });
-                if allowed {
+                // Allow-list: every MCP app is only allowed to write to `/var/<app_id>/`
+                // (plus `tasks` scheduler paths when declared by `tasks`).
+                let allowlisted = is_within_app_write_allowlist(&self.manifest.app_id, target_path)
+                    || (self.manifest.app_id == TASKS_APP_ID
+                        && is_scheduler_protected_path(target_path)
+                        && self.manifest.declared_capabilities.iter().any(|cap| {
+                            if let AppCapability::ScopedStorage(prefix) = cap {
+                                target_path == prefix
+                                    || (target_path.starts_with(prefix.as_str())
+                                        && (prefix.ends_with('/')
+                                            || target_path.as_bytes().get(prefix.len())
+                                                == Some(&b'/')))
+                            } else {
+                                false
+                            }
+                        }));
+                if allowlisted {
                     Ok(())
                 } else {
                     Err(McpSandboxError::MissingCapability {

@@ -214,6 +214,36 @@ impl ScriptCapabilities {
         }
     }
 
+    /// Allow-list capability policy for a headless MCP app (`app_id`).
+    ///
+    /// Write access is strictly allow-listed to `/var/<app_id>` (plus `/scripts` and
+    /// `/etc/schedules.conf` exclusively for the `tasks` app). Read access is scoped to
+    /// `/var/<app_id>` and `/apps/<app_id>`.
+    pub fn for_mcp_app(app_id: &str) -> Self {
+        let clean = app_id.trim().trim_matches('/');
+        let var_root = alloc::format!("/var/{}", clean);
+        let app_root = alloc::format!("/apps/{}", clean);
+        let mut fs_read_prefixes = alloc::vec![var_root.clone(), app_root];
+        let mut fs_write_prefixes = alloc::vec![var_root];
+        let mut allow_scheduler = false;
+        if clean == "tasks" {
+            fs_read_prefixes.push("/scripts".to_string());
+            fs_read_prefixes.push("/etc/schedules.conf".to_string());
+            fs_write_prefixes.push("/scripts".to_string());
+            fs_write_prefixes.push("/etc/schedules.conf".to_string());
+            allow_scheduler = true;
+        }
+        Self {
+            fs_read_prefixes,
+            fs_write_prefixes,
+            net_domains: Vec::new(),
+            allow_sys_status: false,
+            allow_ui_notify: false,
+            allow_forge: false,
+            allow_scheduler,
+        }
+    }
+
     /// Constructs a `ScriptCapabilities` policy from a slice of `ScriptCapability` grants.
     pub fn from_list(caps: &[ScriptCapability]) -> Self {
         let mut out = Self::none();

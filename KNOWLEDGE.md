@@ -1,15 +1,16 @@
 # Local User Knowledge
 
-This document describes the planned user knowledge repository. Profile learning,
-retrieval tools, and persistent storage are not implemented yet.
+This document describes the local user knowledge repository implemented in
+[`crates/alloyos-welder/src/knowledge.rs`](crates/alloyos-welder/src/knowledge.rs),
+[`crates/alloyos-welder/src/tools.rs`](crates/alloyos-welder/src/tools.rs), and
+[`crates/alloyos-welder/src/runtime.rs`](crates/alloyos-welder/src/runtime.rs).
 
 ## Ownership and storage
 
-The main agent maintains a local `/knowledge/` repository as the user expresses
+The main agent (**Welder**) maintains a local `/knowledge/` repository as the user expresses
 facts, preferences, interests, and goals in conversation. Markdown files are the
-initial storage format; a database is not required for the first implementation.
-The repository belongs to the device owner and is runtime data, not personal
-information checked into the alloyOS source repository.
+storage format. The repository belongs to the device owner and is runtime data,
+not personal information checked into the alloyOS source repository.
 
 ```text
 /knowledge/
@@ -20,27 +21,30 @@ information checked into the alloyOS source repository.
 └── projects/           # Context scoped to individual projects
 ```
 
-CobaltFS provides persistence when a disk is attached. A RamFS fallback is
-volatile and must not be presented as memory that survives a reboot.
+CobaltFS provides persistence when a disk is attached (`KnowledgeStorageKind::DurableCobaltFs`).
+A RamFS fallback is explicitly identified as volatile (`KnowledgeStorageKind::VolatileRamFs`)
+and is never presented as memory that survives a reboot.
 
 ## Learning and retrieval
 
-Profile learning is a built-in responsibility of the main agent. There is no
+Profile learning is a built-in responsibility of the main agent (`NativeToolRegistry::learn_from_conversation_turn`,
+invoked automatically by `AgentRuntime` and `Session` as conversations happen). There is no
 separate profile skill and no top-level `/skills/` directory. Skills and task
 instructions are supplied by applications under `/apps/`; knowledge records
 describe the user rather than instruct the agent how to perform a task.
 
-After relevant conversation turns, the agent identifies durable information,
-merges it into existing entries, and records the source, update time, scope, and
-whether it was explicitly stated or inferred. A one-off request should not
-automatically become a global preference. For example, a monochrome boot-screen
-request is initially scoped to alloyOS, not to every future design task.
+During conversation turns, Welder identifies durable information,
+merges it into existing entries (`merge_entry_into_list`), and records the source, update time, scope, and
+whether it was explicitly stated (`Explicit user statement.`) or inferred (`Inferred observation.`).
+A one-off or component-specific request does not automatically become a global preference:
+for example, a monochrome boot-screen request is scoped to `alloyOS boot screen`, not to every future design task.
 
-At the start of a conversation, the agent loads a bounded profile summary. It
-retrieves additional project or preference records only when relevant, rather
-than putting the entire repository into every model request. Stored text is
+At the start of each model turn, Welder loads a bounded profile summary (`knowledge_bounded_summary`)
+and retrieves additional project or scoped preference records only when relevant (`knowledge_retrieve_relevant`),
+rather than putting the entire repository into every model request. Stored text is framed as untrusted
 context, not authority to override current user instructions. Corrections from
-the user take precedence over earlier records and tentative observations.
+the user take precedence over earlier records and tentative observations, and tentative observations
+never overwrite explicit user statements.
 
 Example entry format:
 
@@ -55,29 +59,25 @@ Example entry format:
 
 ## Agent tools and user controls
 
-Planned structured tools are `knowledge_search`, `knowledge_upsert`, and
-`knowledge_forget`. The storage layer validates paths and updates, bounds record
-and context sizes, and protects persisted records against interrupted writes.
-Apps may supply relevant context through the agent, but do not directly rewrite
-the user profile or gain unrestricted access to the knowledge repository.
+Structured native tools registered on Welder are `knowledge_search`, `knowledge_upsert`, and
+`knowledge_forget`. The storage layer validates paths and updates against an allow-list of
+knowledge categories (`profile`, `preferences`, `interests`, `observations`, `projects/<slug>`),
+bounds record and context sizes, and protects persisted records against interrupted writes
+via staging `.tmp` writes with readback verification and rollback (`write_knowledge_markdown`).
+Apps may supply scoped project context through Welder (recorded as app-sourced observations under
+`/knowledge/projects/<app_id>.md`), while MCP app write permissions (`alloyos-mcp` and
+`ScriptCapabilities::for_mcp_app` in `alloyos-js`) are strictly allow-list based so each app
+can only write to `/var/<app_id>/`.
 
-The user can inspect what was learned, correct or delete entries, and pause
-automatic learning. Forgotten entries must also be removed from generated
-summaries and retrieval results. Profile extraction should not retain secrets
-or turn uncertain observations into asserted facts.
+The user can inspect what was learned, correct or delete entries, and pause or resume
+automatic learning via `/knowledge` commands (`/knowledge inspect`, `/knowledge search <query>`,
+`/knowledge correct <category> | <title> | <value> [| <scope>]`, `/knowledge forget <query>`,
+`/knowledge pause`, `/knowledge resume`), natural-language forget/correction requests in
+conversation, or the declarative `knowledge.profile` `AppTile` (`knowledge.pause`,
+`knowledge.resume`, `knowledge_search`). Forgotten entries are immediately removed from both
+the Markdown repository and generated summaries/retrieval results. Profile extraction filters
+secrets, API keys, tokens, and passwords so credentials are never retained in `/knowledge/`.
 
 Local storage does not imply local model processing: retrieved context included
-in a cloud provider request leaves the device. Only relevant context should be
-included; apps should receive only the information needed for their task.
-
-## Implementation sequence
-
-1. Connect Ferrofluid submissions and responses to the main agent runtime.
-2. Connect the AI filesystem tools to the real kernel VFS. Their current
-   `NativeToolRegistry` storage is an in-memory map, not persistent CobaltFS.
-3. Create the Markdown repository and implement validated read, update, and
-   delete operations with reboot-persistence tests.
-4. Add bounded retrieval and post-turn profile learning, with source tracking
-   and a distinction between explicit statements and inferred observations.
-5. Expose inspection, correction, deletion, and learning controls in Ferrofluid.
-6. Add app-provided skill discovery under `/apps/` independently of user knowledge.
+in a cloud provider request leaves the device. Only bounded, relevant context is
+included; apps receive only the information needed for their task.

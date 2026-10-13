@@ -491,4 +491,94 @@ pub mod tests {
             Some("watched:cobalt-boot-1")
         );
     }
+
+    #[test]
+    fn cobaltfs_user_knowledge_persists_across_reboot_and_distinguishes_ramfs_fallback() {
+        use crate::fs::automation::KernelVfsBackend;
+        use alloyos_welder::{
+            AgentRuntime, AgentUiSynthesizer, KnowledgeStorageKind, ProviderToolCall,
+            ToolVfsBackend,
+        };
+
+        let dev = MemBlockDevice::new_formatted_large();
+
+        // Boot 1: Mount CobaltFS on block device, learn user profile & scoped preferences
+        {
+            let fs1 = CobaltFS::mount(dev.clone()).expect("Mount CobaltFS boot 1");
+            let vfs1 = Arc::new(Mutex::new(Vfs::with_root(Arc::new(fs1), "CobaltFS")));
+            let backend1 = KernelVfsBackend::from_vfs_rc(vfs1);
+            let mut runtime1 = AgentRuntime::with_vfs_backend(backend1);
+            let mut ui = AgentUiSynthesizer::new();
+
+            assert_eq!(
+                runtime1.knowledge_storage_kind(),
+                KnowledgeStorageKind::DurableCobaltFs
+            );
+
+            let report = runtime1.tool_registry.learn_from_conversation_turn(
+                "My name is Wagner. I prefer concise answers. Use a minimal black-and-white boot screen for alloyOS.",
+            );
+            assert!(report.has_changes());
+            assert_eq!(report.storage_kind, KnowledgeStorageKind::DurableCobaltFs);
+
+            runtime1
+                .tool_registry
+                .execute_tool(
+                    &ProviderToolCall::new(
+                        "k_proj",
+                        "knowledge_upsert",
+                        r#"{"category":"projects/alloyos","title":"Target architecture","value":"Bare-metal ARM64 Rust micro-kernel","basis":"explicit","scope":"alloyos"}"#,
+                    ),
+                    &mut ui,
+                )
+                .expect("knowledge_upsert on projects/alloyos must succeed on CobaltFS");
+        }
+
+        // Boot 2: Remount CobaltFS from the raw block device into a fresh Vfs and AgentRuntime
+        let fs2 = CobaltFS::mount(dev).expect("Remount CobaltFS boot 2");
+        let vfs2 = Arc::new(Mutex::new(Vfs::with_root(Arc::new(fs2), "CobaltFS")));
+        let backend2 = KernelVfsBackend::from_vfs_rc(vfs2);
+        let mut runtime2 = AgentRuntime::with_vfs_backend(backend2.clone());
+
+        assert_eq!(
+            runtime2.knowledge_storage_kind(),
+            KnowledgeStorageKind::DurableCobaltFs
+        );
+
+        let profile_md = backend2
+            .borrow_mut()
+            .read_file("/knowledge/profile.md")
+            .expect("/knowledge/profile.md must survive CobaltFS reboot");
+        assert!(profile_md.contains("### Preferred name"));
+        assert!(profile_md.contains("- Fact: Wagner"));
+
+        let prefs_md = backend2
+            .borrow_mut()
+            .read_file("/knowledge/preferences.md")
+            .expect("/knowledge/preferences.md must survive CobaltFS reboot");
+        assert!(prefs_md.contains("- Scope: alloyOS boot screen"));
+
+        let project_md = backend2
+            .borrow_mut()
+            .read_file("/knowledge/projects/alloyos.md")
+            .expect("/knowledge/projects/alloyos.md must survive CobaltFS reboot");
+        assert!(project_md.contains("Bare-metal ARM64 Rust micro-kernel"));
+
+        let turn_ctx = runtime2
+            .tool_registry
+            .build_turn_knowledge_context("Tell me about the alloyOS boot screen architecture")
+            .expect("Restored knowledge must produce bounded turn context");
+        assert!(turn_ctx.contains("Wagner"));
+        assert!(turn_ctx.contains("alloyOS boot screen"));
+        assert!(turn_ctx.contains("Bare-metal ARM64 Rust micro-kernel"));
+
+        // Verify volatile RamFS fallback is explicitly identified as non-persistent
+        let ram_vfs = Arc::new(Mutex::new(Vfs::new()));
+        let ram_backend = KernelVfsBackend::from_vfs_rc(ram_vfs);
+        let ram_runtime = AgentRuntime::with_vfs_backend(ram_backend);
+        assert_eq!(
+            ram_runtime.knowledge_storage_kind(),
+            KnowledgeStorageKind::VolatileRamFs
+        );
+    }
 }

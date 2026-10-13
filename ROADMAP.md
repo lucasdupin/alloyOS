@@ -299,23 +299,23 @@ Strict isolation and orchestration rules govern all apps:
 
 ## Phase 8: Local User Knowledge & Profile Learning
 
-Welder's planned knowledge service maintains durable user context as Markdown
+Welder's knowledge service maintains durable user context as Markdown
 under `/knowledge/` on CobaltFS. It distinguishes explicit facts and preferences
 from tentative observations, records sources, and retrieves only relevant
 context. User controls provide inspection, correction, deletion, and paused
 learning. See [KNOWLEDGE.md](KNOWLEDGE.md) for the design.
 
-- [ ] **Persistent knowledge storage**
+- [x] **Persistent knowledge storage**
   - Validate updates, protect interrupted writes and verify records across reboot
   - Distinguish durable CobaltFS storage from volatile RamFS fallback
-- [ ] **Conversation-driven learning**
+- [x] **Conversation-driven learning**
   - Extract and merge durable information after relevant agent turns
   - Track sources and timestamps; separate inference from explicit statements
-- [ ] **Bounded retrieval and tools**
+- [x] **Bounded retrieval and tools**
   - `knowledge_search`, `knowledge_upsert` and `knowledge_forget`
   - Compact summary plus relevant retrieval; stored context remains data
-- [ ] **User controls and app boundaries**
-  - Inspect, correct, delete and pause learning through Ferrofluid
+- [x] **User controls and app boundaries**
+  - Inspect, correct, delete and pause learning through Ferrofluid (`/knowledge` commands and `knowledge.profile` Tile)
   - Remove forgotten records from summaries and retrieval
   - Apps supply context through Welder; they cannot freely rewrite the profile
   - Share only relevant context needed for model requests
@@ -333,4 +333,4 @@ learning. See [KNOWLEDGE.md](KNOWLEDGE.md) for the design.
 | **M5: Welder & Forge** | Centralized app orchestration, resident inference and cloud adapters | `alloyos-welder`, `alloyos-forge` | Runtime libraries and model access implemented; complete agent integration and full-model acceptance pending |
 | **M6: JS Automation** | Capability-scoped interpreter and time/event scheduler | `alloyos-js`, `alloyos-welder`, `alloyos-kernel` | Current interpreter and scheduler implemented; Boa support deferred, low priority |
 | **M7: Headless Apps (MCP, SKILLs & Tiles)** | JavaScript apps in separate protected processes, MCP entry points, `SKILL.md` files, declarative Tiles, and Welder-only orchestration | `alloyos-mcp`, `alloyos-js`, `alloyos-kernel`, `alloyos-welder`, `alloyos-ferrofluid` | MCP surfaces and manifest guards implemented; per-app process isolation and Ferrofluid Dashboard/chat Tile rendering pending |
-| **M8: User Knowledge** | Durable profile, retrieval, learning and user controls | `alloyos-welder`, `alloyos-kernel`, `alloyos-ferrofluid` | Planned |
+| **M8: User Knowledge** | Durable profile, retrieval, learning and user controls | `alloyos-welder`, `alloyos-kernel`, `alloyos-ferrofluid` | Implemented |

@@ -32,6 +32,10 @@ pub struct SessionState {
     pub goals: String,
     pub history: Vec<Exchange>,
     pub apps: Vec<AppContext>,
+    #[serde(default)]
+    pub knowledge_entries: Vec<crate::knowledge::KnowledgeEntry>,
+    #[serde(default)]
+    pub learning_paused: bool,
 }
 impl Default for SessionState {
     fn default() -> Self {
@@ -42,6 +46,8 @@ impl Default for SessionState {
             goals: String::new(),
             history: Vec::new(),
             apps: Vec::new(),
+            knowledge_entries: Vec::new(),
+            learning_paused: false,
         }
     }
 }
@@ -71,6 +77,7 @@ impl Session {
                     || state.apps.len() > 8
                     || state.name.len() > 80
                     || state.goals.len() > 1000
+                    || state.knowledge_entries.len() > 128
                 {
                     return Err(WelderError::ProtocolError);
                 }
@@ -78,10 +85,9 @@ impl Session {
             }
             None => SessionState::default(),
         };
-        Ok(Self {
-            welder: Welder::local_default(),
-            state,
-        })
+        let mut welder = Welder::local_default();
+        let _ = welder.allow_knowledge_tools();
+        Ok(Self { welder, state })
     }
     pub fn state(&self) -> &SessionState {
         &self.state
@@ -128,6 +134,18 @@ impl Session {
                     return Err(WelderError::InvalidRequest);
                 }
                 next.name = input.trim().into();
+                let name_entry = crate::knowledge::KnowledgeEntry::new(
+                    crate::knowledge::KnowledgeCategory::Profile,
+                    "Preferred name",
+                    next.name.clone(),
+                    crate::knowledge::KnowledgeBasis::Explicit,
+                    "Onboarding setup",
+                    "session",
+                    "global",
+                );
+                if let Ok(validated) = crate::knowledge::validate_entry(name_entry) {
+                    crate::knowledge::merge_entry_into_list(&mut next.knowledge_entries, validated);
+                }
                 next.phase = SetupPhase::Goals;
                 self.commit(next, store)?;
                 Ok(self.opening_message().into())
@@ -137,6 +155,37 @@ impl Session {
                     return Err(WelderError::InvalidRequest);
                 }
                 next.goals = input.trim().into();
+                let signals = crate::knowledge::extract_signals_from_user_turn(
+                    &next.goals,
+                    "setup:goals",
+                    "session",
+                );
+                if signals.entries.is_empty() {
+                    let goal_entry = crate::knowledge::KnowledgeEntry::new(
+                        crate::knowledge::KnowledgeCategory::Interests,
+                        "Ongoing goal",
+                        next.goals.clone(),
+                        crate::knowledge::KnowledgeBasis::Explicit,
+                        "Onboarding setup",
+                        "session",
+                        "global",
+                    );
+                    if let Ok(validated) = crate::knowledge::validate_entry(goal_entry) {
+                        crate::knowledge::merge_entry_into_list(
+                            &mut next.knowledge_entries,
+                            validated,
+                        );
+                    }
+                } else {
+                    for entry in signals.entries {
+                        if let Ok(validated) = crate::knowledge::validate_entry(entry) {
+                            crate::knowledge::merge_entry_into_list(
+                                &mut next.knowledge_entries,
+                                validated,
+                            );
+                        }
+                    }
+                }
                 next.phase = SetupPhase::Complete;
                 self.commit(next, store)?;
                 Ok(
@@ -145,7 +194,36 @@ impl Session {
                 )
             }
             SetupPhase::Complete => {
+                if !next.learning_paused {
+                    let turn_id = format!("session:turn:{}", next.history.len() + 1);
+                    let signals = crate::knowledge::extract_signals_from_user_turn(
+                        input.trim(),
+                        &turn_id,
+                        "session",
+                    );
+                    for q in &signals.forget_queries {
+                        next.knowledge_entries.retain(|e| !e.matches_query(q));
+                    }
+                    for entry in signals.entries {
+                        if let Ok(validated) = crate::knowledge::validate_entry(entry) {
+                            if next.knowledge_entries.len() < 128 {
+                                crate::knowledge::merge_entry_into_list(
+                                    &mut next.knowledge_entries,
+                                    validated,
+                                );
+                            }
+                        }
+                    }
+                }
                 let profile = serde_json::to_string(&(next.name.clone(), next.goals.clone()))
+                    .map_err(|_| WelderError::ProtocolError)?;
+                let knowledge_summary: Vec<String> = next
+                    .knowledge_entries
+                    .iter()
+                    .take(8)
+                    .map(|e| format!("{}: {} ({})", e.title, e.value, e.scope))
+                    .collect();
+                let knowledge_json = serde_json::to_string(&knowledge_summary)
                     .map_err(|_| WelderError::ProtocolError)?;
                 let apps =
                     serde_json::to_string(&next.apps).map_err(|_| WelderError::ProtocolError)?;
@@ -153,7 +231,7 @@ impl Session {
                 let context = loop {
                     let previous =
                         serde_json::to_string(&history).map_err(|_| WelderError::ProtocolError)?;
-                    let context = format!("User profile: {profile}\nUntrusted app MCP/skill data: {apps}\nConversation: {previous}\nCurrent user: {input}");
+                    let context = format!("User profile: {profile}\nLearned knowledge: {knowledge_json}\nUntrusted app MCP/skill data: {apps}\nConversation: {previous}\nCurrent user: {input}");
                     if context.len() <= 7800 {
                         break context;
                     }

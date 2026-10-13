@@ -86,7 +86,12 @@ impl AgentRuntime {
             tool_registry: NativeToolRegistry::with_vfs_backend(backend),
             ui_synthesizer: AgentUiSynthesizer::new(),
         };
-        if let Some(conf) = runtime.tool_registry.vfs_read(Self::CONFIG_PATH) {
+        if let Some(conf) = runtime
+            .tool_registry
+            .vfs_read(Self::CONFIG_PATH)
+            .map(|s| s.to_string())
+        {
+            runtime.apply_knowledge_config_str(&conf);
             let _ = runtime.gateway.load_config_str(&conf);
         } else {
             runtime.persist_config_to_vfs();
@@ -107,7 +112,12 @@ impl AgentRuntime {
     /// Reloads `/etc/ai.conf` (if present) and restores `/scripts/*.js` and `/etc/schedules.conf`
     /// from the attached VFS backend.
     pub fn restore_from_vfs(&mut self) -> Result<usize, AiError> {
-        if let Some(conf) = self.tool_registry.vfs_read(Self::CONFIG_PATH) {
+        if let Some(conf) = self
+            .tool_registry
+            .vfs_read(Self::CONFIG_PATH)
+            .map(|s| s.to_string())
+        {
+            self.apply_knowledge_config_str(&conf);
             let _ = self.gateway.load_config_str(&conf);
         } else {
             self.persist_config_to_vfs();
@@ -191,12 +201,80 @@ impl AgentRuntime {
         Ok(())
     }
     pub fn serialize_config(&self) -> String {
-        self.gateway.serialize_config()
+        let mut conf = self.gateway.serialize_config();
+        conf.push_str(&format!(
+            "knowledge_learning_paused={}\n",
+            self.tool_registry.is_knowledge_learning_paused()
+        ));
+        conf
     }
     pub fn load_config_str(&mut self, text: &str) -> Result<(), AiError> {
         self.gateway.load_config_str(text)?;
+        self.apply_knowledge_config_str(text);
         self.persist_config_to_vfs();
         Ok(())
+    }
+
+    fn apply_knowledge_config_str(&mut self, text: &str) {
+        for raw_line in text.lines() {
+            let line = raw_line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((k, v)) = line.split_once('=') {
+                if k.trim() == "knowledge_learning_paused" {
+                    let paused = matches!(
+                        v.trim().to_ascii_lowercase().as_str(),
+                        "true" | "1" | "yes" | "paused"
+                    );
+                    self.tool_registry.set_knowledge_learning_paused(paused);
+                }
+            }
+        }
+    }
+
+    /// Whether `/knowledge/` profile learning is currently paused by the user.
+    pub fn is_learning_paused(&self) -> bool {
+        self.tool_registry.is_knowledge_learning_paused()
+    }
+
+    /// Pause or resume automatic `/knowledge/` profile learning and persist to `/etc/ai.conf`.
+    pub fn set_learning_paused(&mut self, paused: bool) {
+        self.tool_registry.set_knowledge_learning_paused(paused);
+        self.persist_config_to_vfs();
+        self.refresh_knowledge_tile_if_present();
+    }
+
+    /// Storage durability classification of the `/knowledge/` repository (`DurableCobaltFs` vs `VolatileRamFs`).
+    pub fn knowledge_storage_kind(&self) -> crate::knowledge::KnowledgeStorageKind {
+        self.tool_registry.knowledge_storage_kind()
+    }
+
+    fn refresh_knowledge_tile_if_present(&mut self) {
+        let has_knowledge_tile = self
+            .ui_synthesizer
+            .views()
+            .iter()
+            .any(|v| v.tile.as_ref().map(|t| t.tile_id.as_str()) == Some("knowledge.profile"));
+        if has_knowledge_tile {
+            let call = alloyos_forge::provider::ToolCall::new(
+                "knowledge_refresh",
+                "knowledge_search",
+                r#"{"query":"*"}"#,
+            );
+            let _ = self
+                .tool_registry
+                .execute_tool(&call, &mut self.ui_synthesizer);
+        }
+    }
+
+    fn messages_with_knowledge_context(&mut self, user_turn: &str) -> Vec<Message> {
+        let mut messages = self.history.clone();
+        if let Some(ctx) = self.tool_registry.build_turn_knowledge_context(user_turn) {
+            let insert_idx = messages.len().saturating_sub(1);
+            messages.insert(insert_idx, Message::system(ctx));
+        }
+        messages
     }
 
     /// Reloads `/etc/ai.conf` directly from the virtualized CobaltFS store.
@@ -214,9 +292,218 @@ impl AgentRuntime {
         self.tool_registry.vfs_write(Self::CONFIG_PATH, serialized);
     }
 
+    fn handle_knowledge_command(
+        &mut self,
+        rest: &str,
+        on_token: &mut dyn FnMut(&str),
+    ) -> Result<ConsoleTurnOutput, AiError> {
+        let target = rest.trim();
+        let (subcmd, arg) = match target.split_once(char::is_whitespace) {
+            Some((cmd, remainder)) => (cmd.trim(), remainder.trim()),
+            None => (target, ""),
+        };
+
+        match subcmd {
+            "" | "inspect" | "status" => {
+                let call = alloyos_forge::provider::ToolCall::new(
+                    "knowledge_inspect",
+                    "knowledge_search",
+                    r#"{"query":"*"}"#,
+                );
+                let out = self
+                    .tool_registry
+                    .execute_tool(&call, &mut self.ui_synthesizer)?;
+                let entries = self.tool_registry.all_knowledge_entries();
+                let storage = self.tool_registry.knowledge_storage_kind();
+                let status = if self.tool_registry.is_knowledge_learning_paused() {
+                    "paused"
+                } else {
+                    "active"
+                };
+                let mut msg = format!(
+                    "User Knowledge (/knowledge): {} record(s), learning={}, storage={}.",
+                    entries.len(),
+                    status,
+                    storage.durability_notice()
+                );
+                for entry in &entries {
+                    msg.push_str(&format!(
+                        "\n- [{}] {}: {} (basis: {}, scope: {})",
+                        entry.category.path(),
+                        entry.title,
+                        entry.value,
+                        entry.basis.as_code(),
+                        entry.scope
+                    ));
+                }
+                on_token(&msg);
+                Ok(ConsoleTurnOutput {
+                    active_provider: self.active_provider_name(),
+                    active_model: self.active_model_id().to_string(),
+                    response_text: msg,
+                    tool_outputs: vec![out],
+                    config_persisted: false,
+                })
+            }
+            "search" => {
+                let q = if arg.is_empty() { "*" } else { arg };
+                let call = alloyos_forge::provider::ToolCall::new(
+                    "knowledge_search_cmd",
+                    "knowledge_search",
+                    format!(
+                        r#"{{"query":"{}"}}"#,
+                        alloyos_forge::provider::json_escape(q)
+                    ),
+                );
+                let out = self
+                    .tool_registry
+                    .execute_tool(&call, &mut self.ui_synthesizer)?;
+                let matches = self.tool_registry.knowledge_search(q, None, None, 32);
+                let mut msg = format!(
+                    "Found {} knowledge record(s) matching '{}'.",
+                    matches.len(),
+                    q
+                );
+                for m in &matches {
+                    msg.push_str(&format!(
+                        "\n- [{}] {}: {} (scope: {})",
+                        m.entry.category.path(),
+                        m.entry.title,
+                        m.entry.value,
+                        m.entry.scope
+                    ));
+                }
+                on_token(&msg);
+                Ok(ConsoleTurnOutput {
+                    active_provider: self.active_provider_name(),
+                    active_model: self.active_model_id().to_string(),
+                    response_text: msg,
+                    tool_outputs: vec![out],
+                    config_persisted: false,
+                })
+            }
+            "pause" => {
+                self.tool_registry.set_knowledge_learning_paused(true);
+                self.persist_config_to_vfs();
+                let call = alloyos_forge::provider::ToolCall::new(
+                    "knowledge_pause_cmd",
+                    "knowledge_search",
+                    r#"{"query":"*"}"#,
+                );
+                let out = self
+                    .tool_registry
+                    .execute_tool(&call, &mut self.ui_synthesizer)?;
+                let msg = "Knowledge profile learning paused and persisted to /etc/ai.conf."
+                    .to_string();
+                on_token(&msg);
+                Ok(ConsoleTurnOutput {
+                    active_provider: self.active_provider_name(),
+                    active_model: self.active_model_id().to_string(),
+                    response_text: msg,
+                    tool_outputs: vec![out],
+                    config_persisted: true,
+                })
+            }
+            "resume" => {
+                self.tool_registry.set_knowledge_learning_paused(false);
+                self.persist_config_to_vfs();
+                let call = alloyos_forge::provider::ToolCall::new(
+                    "knowledge_resume_cmd",
+                    "knowledge_search",
+                    r#"{"query":"*"}"#,
+                );
+                let out = self
+                    .tool_registry
+                    .execute_tool(&call, &mut self.ui_synthesizer)?;
+                let msg = "Knowledge profile learning resumed and persisted to /etc/ai.conf."
+                    .to_string();
+                on_token(&msg);
+                Ok(ConsoleTurnOutput {
+                    active_provider: self.active_provider_name(),
+                    active_model: self.active_model_id().to_string(),
+                    response_text: msg,
+                    tool_outputs: vec![out],
+                    config_persisted: true,
+                })
+            }
+            "forget" => {
+                if arg.is_empty() {
+                    return Err(AiError::InvalidToolArguments(
+                        "Usage: /knowledge forget <query>".into(),
+                    ));
+                }
+                let call = alloyos_forge::provider::ToolCall::new(
+                    "knowledge_forget_cmd",
+                    "knowledge_forget",
+                    format!(
+                        r#"{{"query":"{}"}}"#,
+                        alloyos_forge::provider::json_escape(arg)
+                    ),
+                );
+                let out = self
+                    .tool_registry
+                    .execute_tool(&call, &mut self.ui_synthesizer)?;
+                let msg = format!("Forgot knowledge entries matching '{}'.", arg);
+                on_token(&msg);
+                Ok(ConsoleTurnOutput {
+                    active_provider: self.active_provider_name(),
+                    active_model: self.active_model_id().to_string(),
+                    response_text: msg,
+                    tool_outputs: vec![out],
+                    config_persisted: false,
+                })
+            }
+            "correct" => {
+                let Some((lhs, rhs)) = arg.split_once('=') else {
+                    return Err(AiError::InvalidToolArguments(
+                        "Usage: /knowledge correct [category:]<title> = <value>".into(),
+                    ));
+                };
+                let lhs = lhs.trim();
+                let value = rhs.trim();
+                let (category, title) = match lhs.split_once(':') {
+                    Some((cat, t)) => (cat.trim(), t.trim()),
+                    None => ("profile", lhs),
+                };
+                let call = alloyos_forge::provider::ToolCall::new(
+                    "knowledge_correct_cmd",
+                    "knowledge_upsert",
+                    format!(
+                        r#"{{"category":"{}","title":"{}","value":"{}","basis":"explicit","source":"User correction (/knowledge correct)","scope":"global"}}"#,
+                        alloyos_forge::provider::json_escape(category),
+                        alloyos_forge::provider::json_escape(title),
+                        alloyos_forge::provider::json_escape(value),
+                    ),
+                );
+                let out = self
+                    .tool_registry
+                    .execute_tool(&call, &mut self.ui_synthesizer)?;
+                let msg = format!(
+                    "Corrected knowledge entry '{}' in '{}' to '{}'.",
+                    title, category, value
+                );
+                on_token(&msg);
+                Ok(ConsoleTurnOutput {
+                    active_provider: self.active_provider_name(),
+                    active_model: self.active_model_id().to_string(),
+                    response_text: msg,
+                    tool_outputs: vec![out],
+                    config_persisted: false,
+                })
+            }
+            other => Err(AiError::InvalidToolArguments(format!(
+                "Unknown /knowledge subcommand '{}'. Supported: inspect, search, pause, resume, forget, correct",
+                other
+            ))),
+        }
+    }
+
     /// Processes a user input line from the Ferrofluid AI Console:
     /// - Rejects `!` shell escapes and `sh`/`bash` commands with `AiError::ShellAccessForbidden`
     /// - Handles `/model gemini`, `/model claude`, `/model chatgpt` hot-swapping and persists `/etc/ai.conf`
+    /// - Handles `/knowledge` inspection, search, pause/resume, forget, and correction commands
+    /// - Automatically extracts and merges durable user knowledge from conversational turns and injects
+    ///   bounded profile + relevant retrieved context into the model request.
     /// - Streams tokens from the active `AiModelProvider` and executes any emitted native OS `ToolCall`s.
     pub fn handle_console_input(
         &mut self,
@@ -269,12 +556,24 @@ impl AgentRuntime {
             });
         }
 
+        if let Some(rest) = trimmed.strip_prefix("/knowledge") {
+            if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+                return self.handle_knowledge_command(rest, on_token);
+            }
+        }
+
+        let report = self.tool_registry.learn_from_conversation_turn(trimmed);
+        if report.has_changes() {
+            self.refresh_knowledge_tile_if_present();
+        }
+
         self.history.push(Message::user(trimmed));
+        let messages = self.messages_with_knowledge_context(trimmed);
         let tools_snapshot = self.tool_registry.specs().to_vec();
 
         let response = self
             .gateway
-            .chat(&self.history, &tools_snapshot, on_token)?;
+            .chat(&messages, &tools_snapshot, on_token)?;
         self.apply_response(response)
     }
 
@@ -290,11 +589,21 @@ impl AgentRuntime {
         }
         let trimmed = input.trim();
         validate_console_input_no_shell(trimmed)?;
-        if trimmed.starts_with("/model") {
+        if trimmed.starts_with("/model")
+            || trimmed == "/knowledge"
+            || trimmed.starts_with("/knowledge ")
+        {
             return self.handle_console_input(input, &mut |_| {}).map(Some);
         }
+
+        let report = self.tool_registry.learn_from_conversation_turn(trimmed);
+        if report.has_changes() {
+            self.refresh_knowledge_tile_if_present();
+        }
+
         self.history.push(Message::user(trimmed));
-        if let Err(error) = self.gateway.start_chat(&self.history) {
+        let messages = self.messages_with_knowledge_context(trimmed);
+        if let Err(error) = self.gateway.start_chat(&messages) {
             self.history.pop();
             return Err(error);
         }
@@ -353,7 +662,7 @@ impl AgentRuntime {
     }
 
     /// Execute only actions currently exposed by an agent-synthesized tile.
-    /// The native tool registry keeps MCP orchestration under Welder ownership.
+    /// The native tool registry keeps MCP and knowledge orchestration under Welder ownership.
     pub fn execute_tile_action(
         &mut self,
         action: &alloyos_mcp::TileAction,
@@ -378,6 +687,51 @@ impl AgentRuntime {
         let app = tile.folder()
             .ok_or_else(|| AiError::InvalidToolArguments("tile has no app namespace".into()))?;
 
+        if app == "knowledge" {
+            match action.tool_name.as_str() {
+                "knowledge.pause" => {
+                    self.tool_registry.set_knowledge_learning_paused(true);
+                    self.persist_config_to_vfs();
+                    let call = alloyos_forge::provider::ToolCall::new(
+                        "tile_action",
+                        "knowledge_search",
+                        r#"{"query":"*"}"#,
+                    );
+                    return self
+                        .tool_registry
+                        .execute_tool(&call, &mut self.ui_synthesizer);
+                }
+                "knowledge.resume" => {
+                    self.tool_registry.set_knowledge_learning_paused(false);
+                    self.persist_config_to_vfs();
+                    let call = alloyos_forge::provider::ToolCall::new(
+                        "tile_action",
+                        "knowledge_search",
+                        r#"{"query":"*"}"#,
+                    );
+                    return self
+                        .tool_registry
+                        .execute_tool(&call, &mut self.ui_synthesizer);
+                }
+                "knowledge_search" | "knowledge_upsert" | "knowledge_forget" => {
+                    let args = alloyos_mcp::McpValue::Map(action.default_args.clone()).to_json();
+                    let call = alloyos_forge::provider::ToolCall::new(
+                        "tile_action",
+                        &action.tool_name,
+                        args,
+                    );
+                    return self
+                        .tool_registry
+                        .execute_tool(&call, &mut self.ui_synthesizer);
+                }
+                _ => {
+                    return Err(AiError::PolicyViolation(
+                        "unsupported knowledge tile action".into(),
+                    ))
+                }
+            }
+        }
+
         let args = alloyos_mcp::McpValue::Map(action.default_args.clone()).to_json();
         let arguments = format!(
             "{{\"app\":\"{}\",\"tool\":\"{}\",\"args\":\"{}\"}}",
@@ -396,6 +750,16 @@ impl AgentRuntime {
         let tile = self.synthesized_tiles().into_iter().find(|tile| tile.tile_id == tile_id)
             .ok_or_else(|| AiError::PolicyViolation("tile is not currently exposed".into()))?;
         let app = tile.folder().ok_or_else(|| AiError::InvalidToolArguments("tile has no app namespace".into()))?.to_string();
+        if app == "knowledge" {
+            let call = alloyos_forge::provider::ToolCall::new(
+                "tile_refresh",
+                "knowledge_search",
+                r#"{"query":"*"}"#,
+            );
+            return self
+                .tool_registry
+                .execute_tool(&call, &mut self.ui_synthesizer);
+        }
         let uri = tile.refresh_resource_uri.ok_or_else(|| AiError::PolicyViolation("tile exposes no refresh resource".into()))?;
         let arguments = format!("{{\"app\":\"{}\",\"uri\":\"{}\"}}",
             alloyos_forge::provider::json_escape(&app), alloyos_forge::provider::json_escape(&uri));
@@ -1024,5 +1388,256 @@ mod tests {
             )
             .expect_err("cross-app invocation must be rejected");
         assert!(matches!(cross_app_err, AiError::PolicyViolation(_)));
+    }
+
+    #[test]
+    fn user_knowledge_framework_learns_as_conversations_happen_and_injects_context() {
+        use crate::knowledge::KnowledgeStorageKind;
+        use alloc::boxed::Box;
+        use alloyos_forge::{CloudModel, CloudTransport, ForgeError, Generation, GenerationRequest};
+
+        struct CapturingTransport;
+        impl CloudTransport for CapturingTransport {
+            fn generate(
+                &mut self,
+                model: &CloudModel,
+                request: &GenerationRequest,
+            ) -> Result<Generation, ForgeError> {
+                let sys_slice = request
+                    .prompt
+                    .lines()
+                    .filter(|l| {
+                        !l.starts_with("assistant:")
+                            && (l.contains("Stored user knowledge context")
+                                || l.contains("Wagner Zaniboni")
+                                || l.contains("concise technical explanations"))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                Ok(Generation {
+                    model: model.id.clone(),
+                    text: format!("ack: {}", sys_slice),
+                    generated_tokens: 4,
+                })
+            }
+        }
+
+        let forge = Rc::new(RefCell::new(Forge::new(0)));
+        let cloud = CloudModel::new(
+            "gemini-3.8-flash",
+            "gemini",
+            "gemini-3.8-flash",
+            "test-credential",
+        )
+        .unwrap();
+        forge.borrow_mut().register_cloud(&cloud).unwrap();
+        forge
+            .borrow_mut()
+            .attach_cloud(cloud, Box::new(CapturingTransport))
+            .unwrap();
+
+        let mut runtime = AgentRuntime::with_forge(forge);
+        assert_eq!(
+            runtime.knowledge_storage_kind(),
+            KnowledgeStorageKind::VolatileRamFs
+        );
+        runtime.set_vfs_backend(crate::tools::SharedMapVfsBackend::shared());
+        runtime
+            .switch_provider("gemini")
+            .expect("switch to gemini-3.8-flash");
+        assert_eq!(
+            runtime.knowledge_storage_kind(),
+            KnowledgeStorageKind::DurableCobaltFs
+        );
+
+        // 1. Conversation turn reveals explicit profile fact, global preference, and a component-scoped boot-screen preference
+        runtime
+            .handle_console_input(
+                "My name is Wagner. I prefer concise technical explanations. Use a minimal black-and-white boot screen for alloyOS.",
+                &mut |_| {},
+            )
+            .expect("conversation turn 1 should succeed");
+
+        let profile_md = runtime
+            .tool_registry
+            .vfs_read("/knowledge/profile.md")
+            .expect("/knowledge/profile.md must exist");
+        assert!(profile_md.contains("### Preferred name"));
+        assert!(profile_md.contains("- Fact: Wagner"));
+        assert!(profile_md.contains("- Basis: Explicit user statement."));
+        assert!(profile_md.contains("- Scope: global"));
+
+        let prefs_md = runtime
+            .tool_registry
+            .vfs_read("/knowledge/preferences.md")
+            .expect("/knowledge/preferences.md must exist");
+        assert!(prefs_md.contains("### Communication style"));
+        assert!(prefs_md.contains("- Preference: concise technical explanations"));
+        assert!(prefs_md.contains("### Visual style"));
+        assert!(prefs_md.contains("- Scope: alloyOS boot screen"));
+
+        // 2. Tentative observation goes to observations.md and never overwrites explicit facts
+        runtime
+            .handle_console_input(
+                "Maybe I prefer dark terminal borders. Also maybe my name is Bob.",
+                &mut |_| {},
+            )
+            .expect("conversation turn 2 should succeed");
+
+        let obs_md = runtime
+            .tool_registry
+            .vfs_read("/knowledge/observations.md")
+            .expect("/knowledge/observations.md must exist");
+        assert!(obs_md.contains("- Basis: Inferred observation."));
+        let profile_after_tentative = runtime
+            .tool_registry
+            .vfs_read("/knowledge/profile.md")
+            .unwrap();
+        assert!(
+            profile_after_tentative.contains("- Fact: Wagner")
+                && !profile_after_tentative.contains("Bob"),
+            "Inferred observation must never overwrite explicit Preferred name"
+        );
+
+        // 3. Explicit user correction immediately supersedes earlier entry
+        let turn3_out = runtime
+            .handle_console_input(
+                "Correction: my name is Wagner Zaniboni. My goal is building an AI-native ARM64 operating system.",
+                &mut |_| {},
+            )
+            .expect("conversation turn 3 should succeed");
+
+        let profile_after_correction = runtime
+            .tool_registry
+            .vfs_read("/knowledge/profile.md")
+            .unwrap();
+        assert!(profile_after_correction.contains("- Fact: Wagner Zaniboni"));
+
+        let interests_md = runtime
+            .tool_registry
+            .vfs_read("/knowledge/interests.md")
+            .unwrap();
+        assert!(interests_md.contains("building an AI-native ARM64 operating system"));
+
+        // 4. Verify bounded profile summary + relevant retrieved context is injected into model prompt
+        let last_prompt = &turn3_out.response_text;
+        assert!(last_prompt.contains("Stored user knowledge context"));
+        assert!(last_prompt.contains("Wagner Zaniboni"));
+        assert!(last_prompt.contains("concise technical explanations"));
+
+        // 5. Secrets / API keys are strictly filtered from both conversational turns and knowledge_upsert
+        runtime
+            .handle_console_input(
+                "My API key is sk-1234567890abcdef1234567890abcdef and my password is hunter2.",
+                &mut |_| {},
+            )
+            .unwrap();
+        for path in [
+            "/knowledge/profile.md",
+            "/knowledge/preferences.md",
+            "/knowledge/interests.md",
+            "/knowledge/observations.md",
+        ] {
+            let text = runtime.tool_registry.vfs_read(path).unwrap();
+            assert!(!text.contains("sk-123456"));
+            assert!(!text.contains("hunter2"));
+        }
+
+        let mut ui = AgentUiSynthesizer::new();
+        let secret_upsert = runtime.tool_registry.execute_tool(
+            &ToolCall::new(
+                "k_sec",
+                "knowledge_upsert",
+                r#"{"category":"profile","title":"Cloud token","value":"Bearer eyJhbGciOiJIUzI1NiJ9"}"#,
+            ),
+            &mut ui,
+        );
+        assert!(matches!(secret_upsert, Err(AiError::PolicyViolation(_))));
+
+        // Top-level /skills/ is rejected
+        let skills_upsert = runtime.tool_registry.execute_tool(
+            &ToolCall::new(
+                "k_skills",
+                "knowledge_upsert",
+                r#"{"category":"/skills/coding.md","title":"Skill","value":"Rust"}"#,
+            ),
+            &mut ui,
+        );
+        assert!(matches!(skills_upsert, Err(AiError::InvalidToolArguments(_))));
+
+        // 6. Pause learning via /knowledge pause or tile action, verify no new facts learned while paused
+        let pause_out = runtime
+            .handle_console_input("/knowledge pause", &mut |_| {})
+            .expect("/knowledge pause should succeed");
+        assert!(pause_out.config_persisted);
+        assert!(runtime.is_learning_paused());
+        assert!(runtime
+            .tool_registry
+            .vfs_read("/etc/ai.conf")
+            .unwrap()
+            .contains("knowledge_learning_paused=true"));
+
+        runtime
+            .handle_console_input("My timezone is UTC-3.", &mut |_| {})
+            .unwrap();
+        assert!(!runtime
+            .tool_registry
+            .vfs_read("/knowledge/profile.md")
+            .unwrap()
+            .contains("UTC-3"));
+
+        // Resume learning via knowledge.profile AppTile action
+        let k_tile = runtime
+            .synthesized_tiles()
+            .into_iter()
+            .find(|t| t.tile_id == "knowledge.profile")
+            .expect("knowledge.profile tile must be synthesized");
+        let resume_action = k_tile
+            .actions
+            .iter()
+            .find(|a| a.tool_name == "knowledge.resume")
+            .expect("resume action must be present while paused")
+            .clone();
+        runtime
+            .execute_tile_action_for("knowledge.profile", &resume_action)
+            .expect("executing knowledge.resume tile action must succeed");
+        assert!(!runtime.is_learning_paused());
+
+        // Now learning is active again
+        runtime
+            .handle_console_input("My timezone is UTC-3.", &mut |_| {})
+            .unwrap();
+        assert!(runtime
+            .tool_registry
+            .vfs_read("/knowledge/profile.md")
+            .unwrap()
+            .contains("UTC-3"));
+
+        // 7. Forget entries via natural language and /knowledge forget
+        runtime
+            .handle_console_input("Please forget my timezone.", &mut |_| {})
+            .unwrap();
+        assert!(!runtime
+            .tool_registry
+            .vfs_read("/knowledge/profile.md")
+            .unwrap()
+            .contains("UTC-3"));
+
+        runtime
+            .handle_console_input("/knowledge forget boot screen", &mut |_| {})
+            .unwrap();
+        assert!(!runtime
+            .tool_registry
+            .vfs_read("/knowledge/preferences.md")
+            .unwrap()
+            .contains("alloyOS boot screen"));
+
+        // 8. Volatile RamFS backend explicitly reports non-persistent status
+        let volatile_vfs = crate::tools::SharedMapVfsBackend::shared_volatile();
+        let volatile_runtime = AgentRuntime::with_vfs_backend(volatile_vfs);
+        assert_eq!(
+            volatile_runtime.knowledge_storage_kind(),
+            KnowledgeStorageKind::VolatileRamFs
+        );
     }
 }

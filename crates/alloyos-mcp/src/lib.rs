@@ -24,8 +24,8 @@ pub use protocol::{
 pub use packages::{PackageSnapshot, PackageService, PackageStatus, PackageDiagnostic, PackageChange, ValidatedPackageRevision};
 pub use registry::{McpApp, McpCaller, McpRegistry};
 pub use sandbox::{
-    validate_app_manifest, AppCapability, AppManifest, McpSandboxError, RuntimeCapabilityGuard,
-    TASKS_APP_ID,
+    app_allowed_write_root, is_within_app_write_allowlist, validate_app_manifest, AppCapability,
+    AppManifest, McpSandboxError, RuntimeCapabilityGuard, TASKS_APP_ID,
 };
 
 #[cfg(test)]
@@ -238,6 +238,70 @@ mod tests {
                 target_app_id: "other_app".to_string(),
             })
         );
+    }
+
+    #[test]
+    fn mcp_app_write_permissions_are_allow_list_based_under_var_app_name() {
+        assert_eq!(app_allowed_write_root("notes"), "/var/notes");
+        assert!(is_within_app_write_allowlist("notes", "/var/notes"));
+        assert!(is_within_app_write_allowlist("notes", "/var/notes/state.json"));
+        assert!(is_within_app_write_allowlist("notes", "/var/notes/sub/item.md"));
+        assert!(!is_within_app_write_allowlist("notes", "/var/notes_other/state.json"));
+        assert!(!is_within_app_write_allowlist("notes", "/var/clock/state.json"));
+        assert!(!is_within_app_write_allowlist("notes", "/knowledge/profile.md"));
+        assert!(!is_within_app_write_allowlist("notes", "/apps/notes/main.js"));
+        assert!(!is_within_app_write_allowlist("notes", "/etc/ai.conf"));
+        assert!(!is_within_app_write_allowlist("notes", "/tmp/scratch.txt"));
+
+        // Manifest declaring ScopedStorage outside /var/<app_id>/ is rejected
+        for forbidden_scope in [
+            "/var/other_app",
+            "/knowledge",
+            "/knowledge/profile.md",
+            "/etc",
+            "/tmp",
+            "/apps/notes",
+        ] {
+            let bad_manifest = AppManifest::new(
+                "notes",
+                "Notes",
+                "0.1.0",
+                vec![
+                    AppCapability::ExposeMcpTools,
+                    AppCapability::ScopedStorage(forbidden_scope.to_string()),
+                ],
+            );
+            assert!(
+                matches!(
+                    validate_app_manifest(&bad_manifest),
+                    Err(McpSandboxError::InvalidManifest { .. })
+                ),
+                "expected ScopedStorage({}) to be rejected by allow-list",
+                forbidden_scope
+            );
+        }
+
+        // RuntimeCapabilityGuard allows writes to /var/<app_id>/ by default and denies everything else
+        let notes_manifest = AppManifest::new(
+            "notes",
+            "Notes",
+            "0.1.0",
+            vec![AppCapability::ExposeMcpTools],
+        );
+        let notes_guard = RuntimeCapabilityGuard::new(notes_manifest).expect("valid notes guard");
+        assert!(notes_guard.enforce_write_path("/var/notes").is_ok());
+        assert!(notes_guard
+            .enforce_write_path("/var/notes/index.json")
+            .is_ok());
+        assert!(notes_guard
+            .enforce_write_path("/var/other_app/index.json")
+            .is_err());
+        assert!(notes_guard
+            .enforce_write_path("/knowledge/profile.md")
+            .is_err());
+        assert!(notes_guard
+            .enforce_write_path("/var/notes/../other_app/file.txt")
+            .is_err());
     }
 
     #[test]

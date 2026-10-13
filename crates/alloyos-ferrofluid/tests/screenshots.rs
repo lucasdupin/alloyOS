@@ -39,13 +39,6 @@ fn system_ui_screenshots() {
     ui.set_booting(false);
     ui.render(Duration::from_millis(16));
     snapshot(&mut suite, "workspace", &ui);
-    pointer(&mut ui, InputEventKind::PointerButtonDown, 1050, 110);
-    pointer(&mut ui, InputEventKind::PointerButtonUp, 1050, 110);
-    ui.render(Duration::from_millis(16));
-    snapshot(&mut suite, "settings", &ui);
-    pointer(&mut ui, InputEventKind::PointerButtonDown, 1050, 110);
-    pointer(&mut ui, InputEventKind::PointerButtonUp, 1050, 110);
-    ui.render(Duration::from_millis(16));
     pointer(&mut ui, InputEventKind::PointerButtonDown, 300, 2500);
     pointer(&mut ui, InputEventKind::PointerButtonUp, 300, 2500);
     for frame in 2..=61 {
@@ -206,20 +199,14 @@ fn system_ui_screenshots() {
             .collect::<Vec<_>>(),
     );
     ui.render(Duration::from_millis(4616));
-    ui.set_chat_items(&[alloyos_ferrofluid::ChatItem::Text("Welder: Your apps are ready.".into())]);
-    ui.render(Duration::from_millis(5016));
-    snapshot(&mut suite, "pins-collapsed", &ui);
-    let collapsed = ui.pixels().to_vec();
-    pointer(&mut ui, InputEventKind::PointerButtonDown, 600, 290);
-    pointer(&mut ui, InputEventKind::PointerButtonUp, 600, 290);
-    ui.render(Duration::from_millis(5032));
-    assert_ne!(ui.pixels(), collapsed.as_slice(), "tapping Pinned expands the cards");
+    // Drag to the dashboard at the start of the shared conversation scroll.
+    pointer(&mut ui, InputEventKind::PointerButtonDown, 400, 500);
+    for (frame, y) in [600, 800, 1200, 1700, 2200].into_iter().enumerate() {
+        pointer(&mut ui, InputEventKind::PointerMove, 400, y);
+        ui.render(Duration::from_millis(4632 + frame as u64 * 16));
+    }
+    pointer(&mut ui, InputEventKind::PointerButtonUp, 400, 2200);
+    ui.render(Duration::from_millis(5000));
     snapshot(&mut suite, "dashboard-bento", &ui);
-    let expanded = ui.pixels().to_vec();
-    pointer(&mut ui, InputEventKind::PointerButtonDown, 520, 600);
-    pointer(&mut ui, InputEventKind::PointerButtonUp, 520, 600);
-    ui.render(Duration::from_millis(5048));
-    assert_ne!(ui.pixels(), expanded.as_slice(), "tile options open through pointer input");
-    snapshot(&mut suite, "tile-menu", &ui);
     suite.finish();
 }

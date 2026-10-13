@@ -1,0 +1,4 @@
+# metalOS Headless MCP App Manifest (/apps/clock/clock.mcp)
+name = Clock
+version = 1.0.0
+capabilities = ExposeMcpTools, ExposeMcpResources, ExposeMcpPrompts, ExposeSkills, ExposeTiles, ScopedStorage(/var/clock)

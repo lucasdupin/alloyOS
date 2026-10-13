@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.svg" alt="alloyOS Logo" width="720" />
+  <img src="assets/boot-logo.svg" alt="alloyOS boot logo" width="720" />
 </p>
 
 # alloyOS

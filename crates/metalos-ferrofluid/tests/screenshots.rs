@@ -1,6 +1,7 @@
 #[path = "../../../tests/support/screenshots.rs"]
 mod golden;
 use metalos_ferrofluid::FerrofluidSystemUi;
+use metalos_mcp::{register_builtin_apps, McpRegistry};
 use metalos_proto::{
     display::{PHONE_HEIGHT, PHONE_SCALE, PHONE_WIDTH},
     InputEvent, InputEventKind,
@@ -70,5 +71,79 @@ fn system_ui_screenshots() {
         ui.render(Duration::from_millis(frame * 16));
     }
     snapshot(&mut suite, "keyboard-dismissed", &ui);
+
+    ui.set_transcript("You: What time is it?\n\nWelder: Here's your clock.");
+    let mut registry = McpRegistry::new();
+    register_builtin_apps(&mut registry).unwrap();
+    registry.update_uptime(45_296_000);
+    ui.set_tiles(&[registry.render_tile("clock.now").unwrap()]);
+    ui.render(Duration::from_millis(2600));
+    snapshot(&mut suite, "clock-tile", &ui);
+
+    ui.set_tiles(&[]);
+    ui.set_transcript("You: Help me plan the afternoon.");
+    ui.set_reply_pending(true);
+    ui.render(Duration::from_millis(2800));
+    let thinking = ui.pixels().to_vec();
+    ui.render(Duration::from_millis(2800));
+    assert!(
+        ui.pixels() == thinking.as_slice(),
+        "thinking indicator changed at fixed time"
+    );
+    snapshot(&mut suite, "thinking", &ui);
+    ui.render(Duration::from_millis(3200));
+    ui.render(Duration::from_millis(3400));
+    assert!(
+        ui.pixels() != thinking,
+        "thinking indicator must animate as time advances"
+    );
+
+    let base = "You: Write a detailed plan.";
+    let mut reply = String::new();
+    for chunk in 1..=36 {
+        if chunk > 1 {
+            reply.push('\n');
+        }
+        reply.push_str(&format!(
+            "Step {chunk:02}: Take a short walk, pause for a rest, and review the next task."
+        ));
+        ui.update_streaming_reply(base, &reply);
+        ui.render(Duration::from_millis(3400 + chunk * 16));
+        assert!(
+            (ui.chat_scroll_offset() - ui.chat_scroll_maximum()).abs() < 1.0,
+            "streamed chunk {chunk} did not reveal the latest content"
+        );
+    }
+    assert!(
+        ui.chat_scroll_maximum() > 0.0,
+        "stream fixture must overflow the viewport"
+    );
+    ui.set_reply_pending(false);
+    ui.render(Duration::from_millis(4000));
+    assert!((ui.chat_scroll_offset() - ui.chat_scroll_maximum()).abs() < 1.0);
+    snapshot(&mut suite, "streaming-bottom", &ui);
+    pointer(&mut ui, InputEventKind::PointerButtonDown, 400, 1000);
+    for (frame, y) in [1010, 1040, 1100, 1200, 1400, 1600].into_iter().enumerate() {
+        pointer(&mut ui, InputEventKind::PointerMove, 400, y);
+        ui.render(Duration::from_millis(4016 + frame as u64 * 16));
+    }
+    pointer(&mut ui, InputEventKind::PointerButtonUp, 400, 1600);
+    ui.render(Duration::from_millis(4500));
+    assert!(
+        ui.chat_scroll_offset() < ui.chat_scroll_maximum() - 1.0,
+        "manual drag must move away from the latest content"
+    );
+    let height_before = ui.chat_scroll_maximum();
+    reply.push('x');
+    ui.update_streaming_reply(base, &reply);
+    ui.render(Duration::from_millis(4516));
+    assert!(
+        (ui.chat_scroll_maximum() - height_before).abs() < 1.0,
+        "single-character append should preserve the content height"
+    );
+    assert!(
+        (ui.chat_scroll_offset() - ui.chat_scroll_maximum()).abs() < 1.0,
+        "same-height streamed update must return to the latest content"
+    );
     suite.finish();
 }

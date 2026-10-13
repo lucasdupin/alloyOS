@@ -4,6 +4,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use metalos_forge::provider::{extract_json_string_field, json_escape, AiError};
+use metalos_mcp::AppTile;
 use metalos_proto::DirtyRect;
 
 /// Exclusive view archetypes synthesized by the metalOS AI agent for Ferrofluid (`ferrofluidd`).
@@ -110,7 +111,8 @@ impl UiScheduleEntry {
 /// Agent-synthesized UI surface descriptor delivered to Ferrofluid (`ferrofluidd`).
 ///
 /// In metalOS, developer applications are headless MCP servers and never own windows or widgets;
-/// only the AI agent creates and updates `SynthesizedUiView` instances.
+/// only the AI agent creates and updates `SynthesizedUiView` instances (including declarative
+/// `AppTile` descriptors that can be embedded in the chat stream or pinned to the Dashboard).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SynthesizedUiView {
     pub view_id: u64,
@@ -121,6 +123,7 @@ pub struct SynthesizedUiView {
     pub metrics: Vec<UiMetric>,
     pub table: Option<UiTable>,
     pub schedules: Vec<UiScheduleEntry>,
+    pub tile: Option<AppTile>,
     pub damage_rect: DirtyRect,
     pub raw_payload_json: String,
 }
@@ -129,7 +132,7 @@ impl SynthesizedUiView {
     /// Serializes this agent-synthesized view into a Ferrofluid IPC frame description.
     pub fn to_ferrofluid_descriptor(&self) -> String {
         format!(
-            "{{\"view_id\":{},\"kind\":\"{}\",\"title\":\"{}\",\"source_app\":{},\"summary\":\"{}\",\"metrics_count\":{},\"has_table\":{},\"schedules_count\":{}}}",
+            "{{\"view_id\":{},\"kind\":\"{}\",\"title\":\"{}\",\"source_app\":{},\"summary\":\"{}\",\"metrics_count\":{},\"has_table\":{},\"schedules_count\":{},\"has_tile\":{}}}",
             self.view_id,
             self.kind.as_str(),
             json_escape(&self.title),
@@ -140,7 +143,8 @@ impl SynthesizedUiView {
             json_escape(&self.summary),
             self.metrics.len(),
             self.table.is_some(),
-            self.schedules.len()
+            self.schedules.len(),
+            self.tile.is_some()
         )
     }
 }
@@ -173,6 +177,7 @@ impl AgentUiSynthesizer {
             metrics: Vec::new(),
             table: None,
             schedules: Vec::new(),
+            tile: None,
             damage_rect: DirtyRect::new(0, 0, 1280, 800),
             raw_payload_json: "{\"mode\":\"single_window_console\"}".to_string(),
         };
@@ -218,6 +223,7 @@ impl AgentUiSynthesizer {
             metrics,
             table: None,
             schedules: Vec::new(),
+            tile: None,
             damage_rect: DirtyRect::new(40, 40, 1200, 320),
             raw_payload_json: "{}".to_string(),
         };
@@ -242,6 +248,7 @@ impl AgentUiSynthesizer {
             metrics: Vec::new(),
             table: Some(UiTable::new(columns, rows)),
             schedules: Vec::new(),
+            tile: None,
             damage_rect: DirtyRect::new(40, 80, 1200, 600),
             raw_payload_json: "{}".to_string(),
         };
@@ -255,25 +262,43 @@ impl AgentUiSynthesizer {
         title: impl Into<String>,
         schedules: Vec<UiScheduleEntry>,
     ) -> SynthesizedUiView {
+        self.synthesize_schedule_list_with_tile(title, schedules, None)
+    }
+
+    /// Synthesizes a `ScriptScheduleList` view along with an optional declarative `AppTile`
+    /// (such as the `tasks.board` tile from the `Tasks` app).
+    pub fn synthesize_schedule_list_with_tile(
+        &mut self,
+        title: impl Into<String>,
+        schedules: Vec<UiScheduleEntry>,
+        tile: Option<AppTile>,
+    ) -> SynthesizedUiView {
         let count = schedules.len();
+        let source_app = tile.as_ref().and_then(|t| t.folder().map(String::from));
+        let raw_payload_json = tile
+            .as_ref()
+            .map(|t| t.to_mcp_value().to_json())
+            .unwrap_or_else(|| "{}".to_string());
         let view = SynthesizedUiView {
             view_id: self.alloc_id(),
             kind: ViewKind::ScriptScheduleList,
             title: title.into(),
-            source_app: None,
+            source_app,
             summary: format!("{} scheduled local JavaScript automation(s)", count),
             metrics: Vec::new(),
             table: None,
             schedules,
+            tile,
             damage_rect: DirtyRect::new(40, 120, 1200, 480),
-            raw_payload_json: "{}".to_string(),
+            raw_payload_json,
         };
         self.active_views.push(view.clone());
         view
     }
 
     /// Synthesizes an `McpAppView` (or specialized dashboard/table) exclusively by the AI agent
-    /// from the headless JSON output of a third-party MCP application tool or resource.
+    /// from the headless JSON output of an MCP application tool or resource, attaching an optional
+    /// declarative `AppTile`.
     pub fn synthesize_from_mcp_output(
         &mut self,
         origin: &UiCallerOrigin,
@@ -281,12 +306,35 @@ impl AgentUiSynthesizer {
         tool_or_resource_name: &str,
         mcp_output_json: &str,
     ) -> Result<SynthesizedUiView, AiError> {
+        self.synthesize_from_mcp_output_with_tile(
+            origin,
+            app_id,
+            tool_or_resource_name,
+            mcp_output_json,
+            None,
+        )
+    }
+
+    /// Synthesizes an `McpAppView` with an attached declarative `AppTile`.
+    pub fn synthesize_from_mcp_output_with_tile(
+        &mut self,
+        origin: &UiCallerOrigin,
+        app_id: &str,
+        tool_or_resource_name: &str,
+        mcp_output_json: &str,
+        tile: Option<AppTile>,
+    ) -> Result<SynthesizedUiView, AiError> {
         Self::verify_caller_origin(origin)?;
 
-        let title = extract_json_string_field(mcp_output_json, "title")
+        let title = tile
+            .as_ref()
+            .map(|t| t.title.clone())
+            .or_else(|| extract_json_string_field(mcp_output_json, "title"))
             .unwrap_or_else(|| format!("{} :: {}", app_id, tool_or_resource_name));
+
         let summary = extract_json_string_field(mcp_output_json, "summary")
             .or_else(|| extract_json_string_field(mcp_output_json, "status"))
+            .or_else(|| tile.as_ref().map(|t| t.subtitle.clone()))
             .unwrap_or_else(|| format!("Agent-synthesized view for headless MCP app '{}'", app_id));
 
         let mut metrics = Vec::new();
@@ -302,12 +350,26 @@ impl AgentUiSynthesizer {
             let unit = extract_json_string_field(mcp_output_json, "unit").unwrap_or_default();
             metrics.push(UiMetric::new(label, metric_val, unit));
         }
+        if let Some(t) = &tile {
+            metrics.push(UiMetric::new(
+                "Tile",
+                &t.tile_id,
+                t.folder().unwrap_or(app_id),
+            ));
+            metrics.push(UiMetric::new(
+                "Items",
+                format!("{}", t.items.len()),
+                "entries",
+            ));
+        }
         if metrics.is_empty() {
             metrics.push(UiMetric::new("App Source", app_id, "MCP"));
             metrics.push(UiMetric::new("Capability", tool_or_resource_name, "tool"));
         }
 
-        let table = if mcp_output_json.contains("\"rows\"") || mcp_output_json.contains("\"items\"")
+        let table = if mcp_output_json.contains("\"rows\"")
+            || mcp_output_json.contains("\"items\"")
+            || mcp_output_json.contains("\"tasks\"")
         {
             Some(UiTable::new(
                 vec!["Key".to_string(), "Value".to_string()],
@@ -321,6 +383,23 @@ impl AgentUiSynthesizer {
             None
         };
 
+        let schedules = tile
+            .as_ref()
+            .map(|t| {
+                t.items
+                    .iter()
+                    .map(|item| {
+                        UiScheduleEntry::new(
+                            item.subtitle.clone(),
+                            item.badge.clone(),
+                            item.status.clone(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+
         let view = SynthesizedUiView {
             view_id: self.alloc_id(),
             kind: ViewKind::McpAppView,
@@ -329,7 +408,8 @@ impl AgentUiSynthesizer {
             summary,
             metrics,
             table,
-            schedules: Vec::new(),
+            schedules,
+            tile,
             damage_rect: DirtyRect::new(60, 60, 1160, 680),
             raw_payload_json: mcp_output_json.to_string(),
         };
@@ -355,6 +435,7 @@ impl AgentUiSynthesizer {
             metrics: Vec::new(),
             table: None,
             schedules: Vec::new(),
+            tile: None,
             damage_rect: DirtyRect::new(32, 32, 1216, 736),
             raw_payload_json: raw_payload_json.into(),
         };

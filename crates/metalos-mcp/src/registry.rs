@@ -6,23 +6,45 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::protocol::{
-    mcp_map, methods, McpError, McpPrompt, McpRequest, McpResource, McpResourceContent,
-    McpResponse, McpTool, McpValue,
+    mcp_map, methods, AppSkill, AppTile, McpError, McpPrompt, McpRequest, McpResource,
+    McpResourceContent, McpResponse, McpTool, McpValue,
 };
 use crate::sandbox::{
     validate_app_manifest, AppCapability, AppManifest, McpSandboxError, RuntimeCapabilityGuard,
 };
 
+/// Caller identity for MCP Registry operations.
+///
+/// In metalOS, **no app can access another app**; only `Welder` centralizes app access
+/// and cross-app orchestration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpCaller {
+    /// The central Welder AI agent orchestrator (authorized to access all registered apps).
+    Welder,
+    /// An individual MCP application (strictly forbidden from accessing any other app).
+    App(String),
+}
+
 /// Developer application trait for metalOS.
 ///
-/// In metalOS, developer applications have **zero UI surface** of their own;
-/// they are strictly headless Model Context Protocol (MCP) providers whose tools,
-/// resources, and prompts are orchestrated and rendered exclusively by the AI agent.
-pub trait McpApp: Send + Sync {
+/// Each app in metalOS can expose:
+/// - **MCP entry points**: Tools, resources, and prompts
+/// - **SKILLs**: Text files (`/apps/<app_id>/SKILL.md`) teaching Welder how to orchestrate the app
+/// - **Tiles**: Declarative, renderer-agnostic `AppTile` descriptors that Ferrofluid embeds in the
+///   chat stream or pins to the Dashboard.
+pub trait McpApp {
+    /// Host-provided monotonic time; apps never fabricate a wall clock.
+    fn update_uptime(&mut self, _uptime_ms: u64) {}
     fn manifest(&self) -> &AppManifest;
     fn tools(&self) -> Vec<McpTool>;
     fn resources(&self) -> Vec<McpResource>;
     fn prompts(&self) -> Vec<McpPrompt>;
+    fn skills(&self) -> Vec<AppSkill> {
+        Vec::new()
+    }
+    fn tiles(&self) -> Vec<AppTile> {
+        Vec::new()
+    }
     fn call_tool(
         &mut self,
         tool_name: &str,
@@ -34,6 +56,18 @@ pub trait McpApp: Send + Sync {
         name: &str,
         args: &BTreeMap<String, String>,
     ) -> Result<String, McpError>;
+    fn render_tile(&self, tile_id: &str) -> Result<AppTile, McpError> {
+        self.tiles()
+            .into_iter()
+            .find(|t| t.tile_id == tile_id)
+            .ok_or_else(|| {
+                McpError::resource_not_found(format!(
+                    "tile '{}' not found in app '{}'",
+                    tile_id,
+                    self.manifest().app_id
+                ))
+            })
+    }
 }
 
 struct RegisteredApp {
@@ -42,7 +76,8 @@ struct RegisteredApp {
 }
 
 /// Central MCP Registry that validates app manifests, enforces the Zero App-Owned UI
-/// sandbox, and routes namespaced MCP tools, resources, and prompts over JSON-RPC 2.0.
+/// and No Cross-App Access sandbox rules, and routes namespaced MCP tools, resources,
+/// prompts, skills, and declarative tiles over JSON-RPC 2.0.
 pub struct McpRegistry {
     apps: BTreeMap<String, RegisteredApp>,
 }
@@ -54,6 +89,12 @@ impl Default for McpRegistry {
 }
 
 impl McpRegistry {
+    pub fn update_uptime(&mut self, uptime_ms: u64) {
+        for entry in self.apps.values_mut() {
+            entry.app.update_uptime(uptime_ms);
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             apps: BTreeMap::new(),
@@ -61,7 +102,7 @@ impl McpRegistry {
     }
 
     /// Register a developer MCP app after validating its manifest against the
-    /// Zero App-Owned UI and sandbox rules.
+    /// Zero App-Owned UI, exclusive `Tasks` scheduler access, and sandbox rules.
     pub fn register_app(&mut self, app: Box<dyn McpApp>) -> Result<(), McpSandboxError> {
         let manifest = app.manifest().clone();
         validate_app_manifest(&manifest)?;
@@ -92,6 +133,21 @@ impl McpRegistry {
     /// Retrieve the runtime capability guard for a registered app.
     pub fn guard_for(&self, app_id: &str) -> Option<&RuntimeCapabilityGuard> {
         self.apps.get(app_id).map(|entry| &entry.guard)
+    }
+
+    fn verify_caller_access(
+        &self,
+        caller: &McpCaller,
+        target_app_id: &str,
+    ) -> Result<(), McpError> {
+        match caller {
+            McpCaller::Welder => Ok(()),
+            McpCaller::App(caller_app_id) => Err(McpSandboxError::CrossAppAccessForbidden {
+                caller_app_id: caller_app_id.clone(),
+                target_app_id: target_app_id.to_string(),
+            }
+            .to_mcp_error()),
+        }
     }
 
     /// Aggregate all MCP tools across registered apps that declare `ExposeMcpTools`.
@@ -153,9 +209,87 @@ impl McpRegistry {
         all_prompts
     }
 
-    /// Invoke a namespaced MCP tool (`<app_id>.<tool_name>`).
-    pub fn call_tool(
+    /// Aggregate all SKILL text files across registered apps that declare `ExposeSkills`.
+    pub fn list_skills(&self) -> Vec<AppSkill> {
+        let mut all_skills = Vec::new();
+        for entry in self.apps.values() {
+            if entry
+                .guard
+                .enforce_capability(&AppCapability::ExposeSkills)
+                .is_ok()
+            {
+                all_skills.extend(entry.app.skills());
+            }
+        }
+        all_skills
+    }
+
+    /// Read an `AppSkill` by `app_id`, skill `name`, or VFS `path` (`/apps/<app_id>/SKILL.md`).
+    pub fn read_skill(&self, query: &str) -> Result<AppSkill, McpError> {
+        let trimmed = query.trim();
+        for (app_id, entry) in &self.apps {
+            if entry
+                .guard
+                .enforce_capability(&AppCapability::ExposeSkills)
+                .is_ok()
+            {
+                for skill in entry.app.skills() {
+                    if app_id == trimmed || skill.name == trimmed || skill.path == trimmed {
+                        return Ok(skill);
+                    }
+                }
+            }
+        }
+        Err(McpError::resource_not_found(format!(
+            "skill '{}' not found in any registered MCP app",
+            trimmed
+        )))
+    }
+
+    /// Aggregate all declarative `AppTile`s across registered apps that declare `ExposeTiles`.
+    pub fn list_tiles(&self) -> Vec<AppTile> {
+        let mut all_tiles = Vec::new();
+        for entry in self.apps.values() {
+            if entry
+                .guard
+                .enforce_capability(&AppCapability::ExposeTiles)
+                .is_ok()
+            {
+                all_tiles.extend(entry.app.tiles());
+            }
+        }
+        all_tiles
+    }
+
+    /// Render a live declarative `AppTile` by `tile_id` (`<app_id>.<tile_name>`).
+    pub fn render_tile(&self, tile_id: &str) -> Result<AppTile, McpError> {
+        let (app_id, _) = tile_id.split_once('.').ok_or_else(|| {
+            McpError::invalid_params(format!(
+                "tile_id '{}' must be namespaced as '<app_id>.<tile_name>'",
+                tile_id
+            ))
+        })?;
+        let entry = self.apps.get(app_id).ok_or_else(|| {
+            McpError::resource_not_found(format!(
+                "no registered MCP app '{}' for tile '{}'",
+                app_id, tile_id
+            ))
+        })?;
+        entry
+            .guard
+            .enforce_capability(&AppCapability::ExposeTiles)
+            .map_err(|e| e.to_mcp_error())?;
+        entry.app.render_tile(tile_id)
+    }
+
+    /// Invoke a namespaced MCP tool (`<app_id>.<tool_name>`) with explicit caller verification.
+    ///
+    /// Enforces that **only `McpCaller::Welder`** may invoke app tools; any `McpCaller::App`
+    /// attempting to invoke another app (or orchestrate across apps) is rejected with
+    /// `CrossAppAccessForbidden`.
+    pub fn call_tool_as(
         &mut self,
+        caller: &McpCaller,
         namespaced_tool: &str,
         args: &BTreeMap<String, McpValue>,
     ) -> Result<McpValue, McpError> {
@@ -165,6 +299,8 @@ impl McpRegistry {
                 namespaced_tool
             ))
         })?;
+
+        self.verify_caller_access(caller, app_id)?;
 
         let entry = self.apps.get_mut(app_id).ok_or_else(|| {
             McpError::method_not_found(format!("unknown MCP app '{}'", app_id))
@@ -178,8 +314,21 @@ impl McpRegistry {
         entry.app.call_tool(namespaced_tool, args)
     }
 
-    /// Read an MCP resource by URI (`mcp://<app_id>/<path>`).
-    pub fn read_resource(&self, uri: &str) -> Result<McpResourceContent, McpError> {
+    /// Invoke a namespaced MCP tool (`<app_id>.<tool_name>`) as the central `Welder` orchestrator.
+    pub fn call_tool(
+        &mut self,
+        namespaced_tool: &str,
+        args: &BTreeMap<String, McpValue>,
+    ) -> Result<McpValue, McpError> {
+        self.call_tool_as(&McpCaller::Welder, namespaced_tool, args)
+    }
+
+    /// Read an MCP resource by URI (`mcp://<app_id>/<path>`) with explicit caller verification.
+    pub fn read_resource_as(
+        &self,
+        caller: &McpCaller,
+        uri: &str,
+    ) -> Result<McpResourceContent, McpError> {
         let without_scheme = uri.strip_prefix("mcp://").ok_or_else(|| {
             McpError::invalid_params(format!(
                 "resource URI '{}' must start with 'mcp://'",
@@ -195,6 +344,8 @@ impl McpRegistry {
             return Err(McpError::invalid_params("resource URI missing app_id host"));
         }
 
+        self.verify_caller_access(caller, app_id)?;
+
         let entry = self.apps.get(app_id).ok_or_else(|| {
             McpError::resource_not_found(format!(
                 "no registered MCP app '{}' for URI '{}'",
@@ -208,6 +359,11 @@ impl McpRegistry {
             .map_err(|e| e.to_mcp_error())?;
 
         entry.app.read_resource(uri)
+    }
+
+    /// Read an MCP resource by URI (`mcp://<app_id>/<path>`) as the central `Welder` orchestrator.
+    pub fn read_resource(&self, uri: &str) -> Result<McpResourceContent, McpError> {
+        self.read_resource_as(&McpCaller::Welder, uri)
     }
 
     /// Render an MCP prompt by namespaced name (`<app_id>.<prompt_name>`) or unambiguous short name.
@@ -262,6 +418,10 @@ impl McpRegistry {
             methods::RESOURCES_READ => self.handle_resources_read(&request.params),
             methods::PROMPTS_LIST => self.handle_prompts_list(),
             methods::PROMPTS_GET => self.handle_prompts_get(&request.params),
+            methods::SKILLS_LIST => self.handle_skills_list(),
+            methods::SKILLS_READ => self.handle_skills_read(&request.params),
+            methods::TILES_LIST => self.handle_tiles_list(),
+            methods::TILES_RENDER => self.handle_tiles_render(&request.params),
             other => Err(McpError::method_not_found(format!(
                 "unsupported MCP method '{}'",
                 other
@@ -282,6 +442,14 @@ impl McpRegistry {
         }
     }
 
+    fn extract_caller(params: &BTreeMap<String, McpValue>) -> McpCaller {
+        if let Some(caller_app) = params.get("caller_app").and_then(|v| v.as_str()) {
+            McpCaller::App(caller_app.to_string())
+        } else {
+            McpCaller::Welder
+        }
+    }
+
     fn handle_initialize(&self) -> Result<McpValue, McpError> {
         let app_ids: Vec<McpValue> = self
             .apps
@@ -293,7 +461,10 @@ impl McpRegistry {
             ("tools", McpValue::Map(BTreeMap::new())),
             ("resources", McpValue::Map(BTreeMap::new())),
             ("prompts", McpValue::Map(BTreeMap::new())),
+            ("skills", McpValue::Map(BTreeMap::new())),
+            ("tiles", McpValue::Map(BTreeMap::new())),
             ("zeroAppOwnedUi", McpValue::Bool(true)),
+            ("welderCentralizedOrchestration", McpValue::Bool(true)),
         ]));
 
         let server_info = McpValue::Map(mcp_map(&[
@@ -322,6 +493,7 @@ impl McpRegistry {
         &mut self,
         params: &BTreeMap<String, McpValue>,
     ) -> Result<McpValue, McpError> {
+        let caller = Self::extract_caller(params);
         let name = params
             .get("name")
             .and_then(|v| v.as_str())
@@ -338,7 +510,7 @@ impl McpRegistry {
             }
         };
 
-        self.call_tool(name, args)
+        self.call_tool_as(&caller, name, args)
     }
 
     fn handle_resources_list(&self) -> Result<McpValue, McpError> {
@@ -357,10 +529,11 @@ impl McpRegistry {
         &self,
         params: &BTreeMap<String, McpValue>,
     ) -> Result<McpValue, McpError> {
+        let caller = Self::extract_caller(params);
         let uri = params.get("uri").and_then(|v| v.as_str()).ok_or_else(|| {
             McpError::invalid_params("resources/read requires string 'uri' param")
         })?;
-        let content = self.read_resource(uri)?;
+        let content = self.read_resource_as(&caller, uri)?;
         Ok(McpValue::Map(mcp_map(&[(
             "contents",
             McpValue::Array(vec![content.to_mcp_value()]),
@@ -418,5 +591,57 @@ impl McpRegistry {
             ("prompt", McpValue::Text(rendered)),
             ("messages", McpValue::Array(vec![message])),
         ])))
+    }
+
+    fn handle_skills_list(&self) -> Result<McpValue, McpError> {
+        let skills: Vec<McpValue> = self
+            .list_skills()
+            .into_iter()
+            .map(|s| s.to_mcp_value())
+            .collect();
+        Ok(McpValue::Map(mcp_map(&[(
+            "skills",
+            McpValue::Array(skills),
+        )])))
+    }
+
+    fn handle_skills_read(
+        &self,
+        params: &BTreeMap<String, McpValue>,
+    ) -> Result<McpValue, McpError> {
+        let query = params
+            .get("app_id")
+            .or_else(|| params.get("path"))
+            .or_else(|| params.get("name"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                McpError::invalid_params("skills/read requires string 'app_id' or 'path' param")
+            })?;
+        let skill = self.read_skill(query)?;
+        Ok(McpValue::Map(mcp_map(&[("skill", skill.to_mcp_value())])))
+    }
+
+    fn handle_tiles_list(&self) -> Result<McpValue, McpError> {
+        let tiles: Vec<McpValue> = self
+            .list_tiles()
+            .into_iter()
+            .map(|t| t.to_mcp_value())
+            .collect();
+        Ok(McpValue::Map(mcp_map(&[(
+            "tiles",
+            McpValue::Array(tiles),
+        )])))
+    }
+
+    fn handle_tiles_render(
+        &self,
+        params: &BTreeMap<String, McpValue>,
+    ) -> Result<McpValue, McpError> {
+        let tile_id = params
+            .get("tile_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| McpError::invalid_params("tiles/render requires string 'tile_id'"))?;
+        let tile = self.render_tile(tile_id)?;
+        Ok(McpValue::Map(mcp_map(&[("tile", tile.to_mcp_value())])))
     }
 }

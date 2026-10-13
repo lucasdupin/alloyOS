@@ -1,34 +1,20 @@
 ---
 name: clock
-description: Tell the current system time, monotonic uptime, and formatted timezone offsets, and present a glanceable Clock Tile.
+description: Show host-provided monotonic system uptime in a Clock Tile.
 ---
 
 # Clock App Skill (`/apps/clock/SKILL.md`)
 
-**Clock** (`/apps/clock/`) is a headless MCP application that reports the current time, UTC/timezone-adjusted wall clock, and system monotonic uptime, and exposes a declarative `clock.now` Tile.
+Clock is a headless MCP application exposing system uptime and the declarative `clock.now` Tile. A wall-clock source is currently unavailable. Do not describe uptime as local time, UTC, or the current time of day. Timezones and 12h/24h wall-clock formatting are unsupported until a real wall-clock source is connected.
 
-## Architectural Rules
-1. **Zero App-Owned UI**: `clock` never renders pixels or opens windows. It returns structured MCP values and declarative `AppTile` descriptors (`clock.now`) that Welder routes to Ferrofluid.
-2. **Centralized Orchestration**: Only Welder invokes `clock.*` tools and resources.
-3. **Scoped Storage**: `clock` stores user-selected display preferences (such as 12h/24h format or favorite UTC offsets) exclusively under `/var/clock`.
+Only Welder invokes Clock tools and resources. Clock returns semantic descriptors; Ferrofluid renders them. Any future stored preferences must remain under `/var/clock`.
 
-## MCP Entry Points
+## MCP entry points
 
-### Tools
-- `clock.now`
-  - **Description**: Return the current UTC time, optional UTC offset time, and monotonic system uptime.
-  - **Parameters**:
-    - `utc_offset_hours` (`integer`, optional, default `0`): Signed hour offset from UTC (e.g. `-7` for PDT, `9` for JST).
-    - `format_24h` (`boolean`, optional, default `true`): Format the human-readable clock string in 24-hour (`17:06:45`) or 12-hour (`5:06:45 PM`) notation.
+- `clock.now`: No parameters. Returns `uptime_ms` and `wall_clock_available: false`.
+- `mcp://clock/now`: The same live JSON snapshot.
+- `/apps/clock/SKILL.md`: Guidance exposed through the app skill registry.
 
-### Resources
-- `mcp://clock/now`: Live JSON snapshot of the current time and monotonic uptime.
-- `mcp://clock/tiles`: Declarative `clock.now` Tile descriptor.
-- `mcp://clock/skill`: This `SKILL.md` instruction document.
+## Tile
 
-### Prompts
-- `clock.tell_time`: Prompt template for answering natural-language time and timezone queries concisely.
-
-## Tiles
-- `clock.now`:
-  - Displays the current formatted time, active UTC offset badge, and system uptime row, with a quick `Refresh` action mapped to `clock.now`.
+`clock.now` shows elapsed hours, minutes, and seconds since boot, labeled Uptime and Since boot. Refresh Clock invokes `clock.now` through Welder and updates the rendered tile with the latest host uptime. It has no wall-clock or timezone controls.

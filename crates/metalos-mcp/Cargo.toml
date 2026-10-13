@@ -8,4 +8,5 @@ name = "metalos_mcp"
 path = "src/lib.rs"
 
 [dependencies]
+metalos-js = { path = "../metalos-js" }
 metalos-proto = { path = "../metalos-proto" }

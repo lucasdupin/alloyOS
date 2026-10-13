@@ -678,7 +678,8 @@ fn run_ci() -> Result<()> {
     println!("[xtask] Checking model asset tooling (offline)...");
     let assets = Command::new("python3").current_dir(&workspace_root).args(["-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py"]).status().context("Failed to run model asset and launcher tests")?;
     if !assets.success() { return Err(anyhow!("model asset tests failed")); }
-    let model_kernel = build_crates_mode(false, false, true)?;
+    // Exercise inference with the optimized kernel used for real model workloads.
+    let model_kernel = build_crates_mode(true, false, true)?;
     println!("[xtask] Checking large-file model loading in QEMU (synthetic fixture)...");
     let loader_test = Command::new("cargo").current_dir(&workspace_root)
         .args(["test", "-p", "metalos-dev-harness", "--test", "qemu_model_loader", "--",

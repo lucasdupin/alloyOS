@@ -12,7 +12,7 @@ pub fn init() {}
 unsafe fn rearm() {
     let frequency: u64;
     core::arch::asm!("mrs {}, cntfrq_el0", out(reg) frequency);
-    core::arch::asm!("msr cntv_tval_el0, {}", in(reg) frequency / 200);
+    core::arch::asm!("msr cntv_tval_el0, {}", in(reg) frequency / 1000);
     core::arch::asm!("msr cntv_ctl_el0, {}", in(reg) 1u64);
 }
 pub fn start_timer() {

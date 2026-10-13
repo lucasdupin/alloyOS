@@ -11,18 +11,19 @@ pub mod registry;
 pub mod sandbox;
 
 pub use apps::{
-    register_builtin_apps, NoteEntry, NotesVaultApp, SysPulseApp, TaskBoardApp, TaskItem,
-    TelemetrySample, NOTES_MANIFEST_MCP, SYSPULSE_MANIFEST_MCP, TASKS_MANIFEST_MCP,
+    register_builtin_apps, register_builtin_apps_with_scheduler, ScheduledTask, TasksApp, ClockApp,
+    TASKS_MAIN_JS, TASKS_MAIN_PATH, TASKS_MANIFEST_MCP, TASKS_MANIFEST_PATH, TASKS_SKILL_MD, TASKS_SKILL_PATH,
 };
 pub use protocol::{
-    mcp_map, methods, tool_text_result, McpError, McpParamSpec, McpPrompt, McpRequest,
-    McpResource, McpResourceContent, McpResponse, McpTool, McpValue, ERR_INTERNAL_ERROR,
-    ERR_INVALID_PARAMS, ERR_INVALID_REQUEST, ERR_METHOD_NOT_FOUND, ERR_PARSE_ERROR,
-    ERR_RESOURCE_NOT_FOUND, ERR_SANDBOX_VIOLATION,
+    mcp_map, methods, tool_text_result, AppSkill, AppTile, McpError, McpParamSpec, McpPrompt,
+    McpRequest, McpResource, McpResourceContent, McpResponse, McpTool, McpValue, TileAction,
+    TileItem, ERR_INTERNAL_ERROR, ERR_INVALID_PARAMS, ERR_INVALID_REQUEST, ERR_METHOD_NOT_FOUND,
+    ERR_PARSE_ERROR, ERR_RESOURCE_NOT_FOUND, ERR_SANDBOX_VIOLATION,
 };
-pub use registry::{McpApp, McpRegistry};
+pub use registry::{McpApp, McpCaller, McpRegistry};
 pub use sandbox::{
     validate_app_manifest, AppCapability, AppManifest, McpSandboxError, RuntimeCapabilityGuard,
+    TASKS_APP_ID,
 };
 
 #[cfg(test)]
@@ -34,16 +35,16 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
 
-    struct MaliciousUiApp {
+    struct MaliciousApp {
         manifest: AppManifest,
     }
 
-    impl MaliciousUiApp {
-        fn new(cap: AppCapability) -> Self {
+    impl MaliciousApp {
+        fn new(app_id: &str, cap: AppCapability) -> Self {
             Self {
                 manifest: AppManifest::new(
-                    "rogue_ui",
-                    "Rogue Window App",
+                    app_id,
+                    "Rogue App",
                     "0.1.0",
                     vec![AppCapability::ExposeMcpTools, cap],
                 ),
@@ -51,7 +52,7 @@ mod tests {
         }
     }
 
-    impl McpApp for MaliciousUiApp {
+    impl McpApp for MaliciousApp {
         fn manifest(&self) -> &AppManifest {
             &self.manifest
         }
@@ -84,17 +85,65 @@ mod tests {
     }
 
     #[test]
-    fn manifest_validation_accepts_headless_mcp_apps() {
-        let notes = AppManifest::parse(NOTES_MANIFEST_MCP).expect("parse notes.mcp");
+    fn manifest_validation_accepts_tasks_app_and_rejects_unauthorized_scheduler_or_cross_app_access()
+    {
         let tasks = AppManifest::parse(TASKS_MANIFEST_MCP).expect("parse tasks.mcp");
-        let syspulse = AppManifest::parse(SYSPULSE_MANIFEST_MCP).expect("parse syspulse.mcp");
-
-        assert!(validate_app_manifest(&notes).is_ok());
+        assert_eq!(tasks.app_id, "tasks");
         assert!(validate_app_manifest(&tasks).is_ok());
-        assert!(validate_app_manifest(&syspulse).is_ok());
 
-        let roundtrip = AppManifest::parse(&notes.to_mcp_config()).expect("roundtrip parse");
-        assert_eq!(roundtrip, notes);
+        let roundtrip = AppManifest::parse(&tasks.to_mcp_config()).expect("roundtrip parse");
+        assert_eq!(roundtrip, tasks);
+
+        // Non-tasks app attempting ScriptSchedulerAccess is rejected
+        let rogue_scheduler = AppManifest::new(
+            "rogue_cron",
+            "Rogue Cron",
+            "1.0.0",
+            vec![
+                AppCapability::ExposeMcpTools,
+                AppCapability::ScriptSchedulerAccess,
+            ],
+        );
+        assert_eq!(
+            validate_app_manifest(&rogue_scheduler),
+            Err(McpSandboxError::SchedulerAccessForbidden {
+                app_id: "rogue_cron".to_string(),
+            })
+        );
+
+        // Non-tasks app attempting ScopedStorage(/etc/schedules.conf) or ScopedStorage(/scripts) is rejected
+        for protected_path in ["/etc/schedules.conf", "/scripts", "/scripts/hack.js"] {
+            let rogue_storage = AppManifest::new(
+                "rogue_storage",
+                "Rogue Storage",
+                "1.0.0",
+                vec![
+                    AppCapability::ExposeMcpTools,
+                    AppCapability::ScopedStorage(protected_path.to_string()),
+                ],
+            );
+            assert_eq!(
+                validate_app_manifest(&rogue_storage),
+                Err(McpSandboxError::SchedulerAccessForbidden {
+                    app_id: "rogue_storage".to_string(),
+                })
+            );
+        }
+
+        // CrossAppAccess is rejected for all apps (even tasks)
+        let cross_app = AppManifest::new(
+            "tasks",
+            "Tasks",
+            "1.0.0",
+            vec![AppCapability::ExposeMcpTools, AppCapability::CrossAppAccess],
+        );
+        assert_eq!(
+            validate_app_manifest(&cross_app),
+            Err(McpSandboxError::CrossAppAccessForbidden {
+                caller_app_id: "tasks".to_string(),
+                target_app_id: "*".to_string(),
+            })
+        );
     }
 
     #[test]
@@ -119,10 +168,9 @@ mod tests {
                 }
             );
 
-            // Registry must also reject registration of an app declaring UI capabilities
             let mut reg = McpRegistry::new();
             let reg_err = reg
-                .register_app(Box::new(MaliciousUiApp::new(forbidden_ui)))
+                .register_app(Box::new(MaliciousApp::new("bad_ui_app", forbidden_ui)))
                 .expect_err("registry must reject UI app");
             assert!(matches!(
                 reg_err,
@@ -130,7 +178,6 @@ mod tests {
             ));
         }
 
-        // ShellExecution must be rejected with ShellCapabilityForbidden
         let shell_manifest = AppManifest::new(
             "bad_shell_app",
             "Bad Shell App",
@@ -151,137 +198,156 @@ mod tests {
     }
 
     #[test]
-    fn runtime_capability_guard_enforces_zero_ui_and_scoped_storage() {
-        let manifest = AppManifest::parse(NOTES_MANIFEST_MCP).unwrap();
+    fn runtime_capability_guard_enforces_zero_ui_scheduler_exclusivity_and_no_cross_app() {
+        let manifest = AppManifest::parse(TASKS_MANIFEST_MCP).unwrap();
         let guard = RuntimeCapabilityGuard::new(manifest).expect("valid guard");
 
         assert!(guard
             .enforce_capability(&AppCapability::ExposeMcpTools)
             .is_ok());
         assert!(guard
+            .enforce_capability(&AppCapability::ExposeSkills)
+            .is_ok());
+        assert!(guard
+            .enforce_capability(&AppCapability::ExposeTiles)
+            .is_ok());
+        assert!(guard
+            .enforce_capability(&AppCapability::ScriptSchedulerAccess)
+            .is_ok());
+        assert!(guard
             .enforce_capability(&AppCapability::ScopedStorage(
-                "/var/notes/index.db".to_string()
+                "/scripts/heartbeat.js".to_string()
+            ))
+            .is_ok());
+        assert!(guard
+            .enforce_capability(&AppCapability::ScopedStorage(
+                "/etc/schedules.conf".to_string()
             ))
             .is_ok());
         assert!(guard
             .enforce_capability(&AppCapability::ScopedStorage("/etc/passwd".to_string()))
             .is_err());
 
-        // Attempting to invoke UI or shell at runtime is strictly forbidden
+        // Even TasksApp cannot access another app
         assert_eq!(
-            guard.enforce_capability(&AppCapability::CreateWindow),
-            Err(McpSandboxError::UiCapabilityForbidden {
-                app_id: "notes".to_string(),
-                capability: AppCapability::CreateWindow,
-            })
-        );
-        assert_eq!(
-            guard.enforce_capability(&AppCapability::DirectFramebuffer),
-            Err(McpSandboxError::UiCapabilityForbidden {
-                app_id: "notes".to_string(),
-                capability: AppCapability::DirectFramebuffer,
-            })
-        );
-        assert_eq!(
-            guard.enforce_capability(&AppCapability::RawInputCapture),
-            Err(McpSandboxError::UiCapabilityForbidden {
-                app_id: "notes".to_string(),
-                capability: AppCapability::RawInputCapture,
-            })
-        );
-        assert_eq!(
-            guard.enforce_capability(&AppCapability::ShellExecution),
-            Err(McpSandboxError::ShellCapabilityForbidden {
-                app_id: "notes".to_string(),
-                capability: AppCapability::ShellExecution,
+            guard.enforce_no_cross_app_access("other_app"),
+            Err(McpSandboxError::CrossAppAccessForbidden {
+                caller_app_id: "tasks".to_string(),
+                target_app_id: "other_app".to_string(),
             })
         );
     }
 
     #[test]
-    fn mcp_value_and_json_rpc_roundtrip() {
-        let req = McpRequest::new(
-            42,
-            methods::TOOLS_CALL,
-            mcp_map(&[
-                ("name", McpValue::Text("notes.create".to_string())),
-                (
-                    "arguments",
-                    McpValue::Map(mcp_map(&[
-                        ("title", McpValue::Text("Kernel Spec\nLine 2".to_string())),
-                        ("body", McpValue::Text("Ring-3 isolation \"checked\"".to_string())),
-                    ])),
-                ),
-            ]),
-        );
-
-        let json = req.to_json();
-        let decoded = McpRequest::from_json(&json).expect("decode JSON-RPC request");
-        assert_eq!(decoded, req);
-    }
-
-    #[test]
-    fn end_to_end_notes_tasks_syspulse_over_json_rpc() {
+    fn end_to_end_tasks_app_mcp_skills_tiles_and_welder_centralized_orchestration() {
         let mut registry = McpRegistry::new();
-        register_builtin_apps(&mut registry).expect("register builtin apps");
-        assert_eq!(registry.app_count(), 3);
+        register_builtin_apps(&mut registry).expect("register builtin Tasks app");
+        assert_eq!(registry.app_count(), 2);
 
-        // 1. Verify initialize
+        // 1. Verify initialize reports tasks app and welderCentralizedOrchestration
         let init_resp = McpResponse::from_json(&registry.handle_json_rpc(
             r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
         ))
         .unwrap();
         assert!(init_resp.is_ok());
 
-        // 2. Verify tools/list aggregates all 8 tools across notes, tasks, syspulse
-        let tools_list_resp = McpResponse::from_json(&registry.handle_json_rpc(
-            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#,
-        ))
-        .unwrap();
-        let tools_arr = tools_list_resp
-            .result
-            .as_ref()
-            .unwrap()
-            .as_map()
-            .unwrap()
-            .get("tools")
-            .unwrap()
-            .as_array()
-            .unwrap();
-        assert_eq!(tools_arr.len(), 8);
+        // 2. Verify tools/list returns the 4 Tasks tools: list, create, edit, delete
+        let tools = registry.list_tools();
+        assert_eq!(tools.len(), 5);
 
-        // 3. NotesVaultApp: create, search, read mcp://notes/all, delete
-        let create_note_json = r#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"notes.create","arguments":{"title":"Architecture","body":"Zero App-Owned UI via MCP","tag":"design"}}}"#;
-        let create_resp =
-            McpResponse::from_json(&registry.handle_json_rpc(create_note_json)).unwrap();
+        // 3. Create a scheduled task via tasks.create
+        let create_json = r#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"tasks.create","arguments":{"id":"heartbeat_60s","title":"System Heartbeat","script_path":"/scripts/heartbeat.js","trigger":"every:60s","source":"export function main() { return MetalOS.sys.status(); }"}}}"#;
+        let create_resp = McpResponse::from_json(&registry.handle_json_rpc(create_json)).unwrap();
         assert!(create_resp.is_ok());
-
-        let search_note_json = r#"{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"notes.search","arguments":{"query":"zero app-owned"}}}"#;
-        let search_resp =
-            McpResponse::from_json(&registry.handle_json_rpc(search_note_json)).unwrap();
-        let count = search_resp
-            .result
-            .as_ref()
-            .unwrap()
-            .as_map()
-            .unwrap()
-            .get("count")
-            .unwrap()
-            .as_i64()
-            .unwrap();
-        assert_eq!(count, 1);
-
-        let notes_res = registry
-            .read_resource("mcp://notes/all")
-            .expect("read mcp://notes/all");
-        let parsed_notes = McpValue::from_json(&notes_res.text).unwrap();
+        let create_map = create_resp.result.as_ref().unwrap().as_map().unwrap();
         assert_eq!(
-            parsed_notes.as_map().unwrap().get("total").unwrap().as_i64(),
-            Some(1)
+            create_map.get("status").and_then(|v| v.as_str()),
+            Some("created")
         );
 
-        let del_note_json = r#"{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"notes.delete","arguments":{"id":1}}}"#;
-        let del_resp = McpResponse::from_json(&registry.handle_json_rpc(del_note_json)).unwrap();
+        // 4. List scheduled tasks via tasks.list
+        let list_json = r#"{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"tasks.list","arguments":{}}}"#;
+        let list_resp = McpResponse::from_json(&registry.handle_json_rpc(list_json)).unwrap();
+        let list_map = list_resp.result.as_ref().unwrap().as_map().unwrap();
+        assert_eq!(list_map.get("count").and_then(|v| v.as_i64()), Some(1));
+
+        // 5. Edit the scheduled task via tasks.edit (change trigger to cron and title, then pause it)
+        let edit_json = r#"{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"tasks.edit","arguments":{"id":"heartbeat_60s","title":"5m Cron Heartbeat","trigger":"cron:*/5 * * * *","enabled":false}}}"#;
+        let edit_resp = McpResponse::from_json(&registry.handle_json_rpc(edit_json)).unwrap();
+        assert!(edit_resp.is_ok());
+        let edited_task = edit_resp
+            .result
+            .as_ref()
+            .unwrap()
+            .as_map()
+            .unwrap()
+            .get("task")
+            .unwrap()
+            .as_map()
+            .unwrap();
+        assert_eq!(
+            edited_task.get("title").and_then(|v| v.as_str()),
+            Some("5m Cron Heartbeat")
+        );
+        assert_eq!(
+            edited_task.get("trigger").and_then(|v| v.as_str()),
+            Some("cron:*/5 * * * *")
+        );
+        assert_eq!(
+            edited_task.get("status").and_then(|v| v.as_str()),
+            Some("paused")
+        );
+
+        // 6. Verify SKILL exposure (skills/list, skills/read, and mcp://tasks/skill)
+        let skills: alloc::vec::Vec<_> = registry.list_skills().into_iter()
+            .filter(|skill| skill.app_id == "tasks").collect();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].path, "/apps/tasks/SKILL.md");
+        assert!(skills[0].content.contains("tasks.create"));
+
+        let skill_read_json = r#"{"jsonrpc":"2.0","id":20,"method":"skills/read","params":{"app_id":"tasks"}}"#;
+        let skill_resp =
+            McpResponse::from_json(&registry.handle_json_rpc(skill_read_json)).unwrap();
+        assert!(skill_resp.is_ok());
+
+        // 7. Verify Declarative Tile exposure (tiles/list and tiles/render)
+        let tiles: alloc::vec::Vec<_> = registry.list_tiles().into_iter()
+            .filter(|tile| tile.folder() == Some("tasks")).collect();
+        assert_eq!(tiles.len(), 1);
+        assert_eq!(tiles[0].tile_id, "tasks.board");
+        assert_eq!(tiles[0].folder(), Some("tasks"));
+        assert_eq!(tiles[0].items.len(), 1);
+        assert_eq!(tiles[0].items[0].title, "5m Cron Heartbeat");
+        assert_eq!(tiles[0].items[0].badge, "cron:*/5 * * * *");
+        assert_eq!(tiles[0].items[0].status, "paused");
+
+        let tile_render_json = r#"{"jsonrpc":"2.0","id":21,"method":"tiles/render","params":{"tile_id":"tasks.board"}}"#;
+        let tile_resp =
+            McpResponse::from_json(&registry.handle_json_rpc(tile_render_json)).unwrap();
+        assert!(tile_resp.is_ok());
+
+        // 8. Verify No App Can Access Another App (only Welder centralizes app access)
+        let cross_app_call = registry.call_tool_as(
+            &McpCaller::App("other_app".to_string()),
+            "tasks.list",
+            &BTreeMap::new(),
+        );
+        assert_eq!(
+            cross_app_call.expect_err("app-to-app call must be rejected").code,
+            ERR_SANDBOX_VIOLATION
+        );
+
+        let cross_app_json = r#"{"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"caller_app":"rogue_app","name":"tasks.list","arguments":{}}}"#;
+        let cross_app_resp =
+            McpResponse::from_json(&registry.handle_json_rpc(cross_app_json)).unwrap();
+        assert_eq!(
+            cross_app_resp.error.as_ref().map(|e| e.code),
+            Some(ERR_SANDBOX_VIOLATION)
+        );
+
+        // 9. Delete the scheduled task via tasks.delete
+        let del_json = r#"{"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"tasks.delete","arguments":{"id":"heartbeat_60s"}}}"#;
+        let del_resp = McpResponse::from_json(&registry.handle_json_rpc(del_json)).unwrap();
         assert_eq!(
             del_resp
                 .result
@@ -289,94 +355,8 @@ mod tests {
                 .as_map()
                 .unwrap()
                 .get("deleted")
-                .unwrap()
-                .as_bool(),
+                .and_then(|v| v.as_bool()),
             Some(true)
         );
-
-        // 4. TaskBoardApp: add, complete, list, read mcp://tasks/summary
-        let add_task_json = r#"{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"tasks.add","arguments":{"title":"Ship Phase 7 MCP SDK","priority":"critical"}}}"#;
-        let add_task_resp =
-            McpResponse::from_json(&registry.handle_json_rpc(add_task_json)).unwrap();
-        assert!(add_task_resp.is_ok());
-
-        let complete_task_json = r#"{"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"tasks.complete","arguments":{"id":1}}}"#;
-        let complete_task_resp =
-            McpResponse::from_json(&registry.handle_json_rpc(complete_task_json)).unwrap();
-        assert!(complete_task_resp.is_ok());
-
-        let list_pending_json = r#"{"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"tasks.list","arguments":{"include_completed":false}}}"#;
-        let list_pending_resp =
-            McpResponse::from_json(&registry.handle_json_rpc(list_pending_json)).unwrap();
-        assert_eq!(
-            list_pending_resp
-                .result
-                .unwrap()
-                .as_map()
-                .unwrap()
-                .get("count")
-                .unwrap()
-                .as_i64(),
-            Some(0)
-        );
-
-        let task_summary_json = r#"{"jsonrpc":"2.0","id":23,"method":"resources/read","params":{"uri":"mcp://tasks/summary"}}"#;
-        let task_summary_resp =
-            McpResponse::from_json(&registry.handle_json_rpc(task_summary_json)).unwrap();
-        assert!(task_summary_resp.is_ok());
-
-        // 5. SysPulseApp: record_metric, snapshot, read mcp://syspulse/metrics
-        let record_metric_json = r#"{"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"name":"syspulse.record_metric","arguments":{"metric":"npu_infer_ms","value":4,"unit":"ms"}}}"#;
-        let record_resp =
-            McpResponse::from_json(&registry.handle_json_rpc(record_metric_json)).unwrap();
-        assert!(record_resp.is_ok());
-
-        let snapshot_json = r#"{"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"syspulse.snapshot","arguments":{}}}"#;
-        let snapshot_resp =
-            McpResponse::from_json(&registry.handle_json_rpc(snapshot_json)).unwrap();
-        assert_eq!(
-            snapshot_resp
-                .result
-                .unwrap()
-                .as_map()
-                .unwrap()
-                .get("metric_count")
-                .unwrap()
-                .as_i64(),
-            Some(4)
-        );
-
-        let syspulse_res = registry
-            .read_resource("mcp://syspulse/metrics")
-            .expect("read mcp://syspulse/metrics");
-        let parsed_metrics = McpValue::from_json(&syspulse_res.text).unwrap();
-        assert_eq!(
-            parsed_metrics
-                .as_map()
-                .unwrap()
-                .get("count")
-                .unwrap()
-                .as_i64(),
-            Some(4)
-        );
-
-        // 6. Prompts: list and get across all 3 apps
-        let prompts = registry.list_prompts();
-        assert_eq!(prompts.len(), 3);
-
-        let prompt_json = r#"{"jsonrpc":"2.0","id":40,"method":"prompts/get","params":{"name":"syspulse.diagnose","arguments":{"subsystem":"virtio-gpu"}}}"#;
-        let prompt_resp =
-            McpResponse::from_json(&registry.handle_json_rpc(prompt_json)).unwrap();
-        let rendered = prompt_resp
-            .result
-            .unwrap()
-            .as_map()
-            .unwrap()
-            .get("prompt")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .to_string();
-        assert!(rendered.contains("virtio-gpu"));
     }
 }

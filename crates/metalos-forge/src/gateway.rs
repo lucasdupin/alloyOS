@@ -204,7 +204,10 @@ impl ModelGateway {
             .filter(|model| model.state == "ready")
             .collect();
         if models.is_empty() {
-            return Ok(());
+            return Err(AiError::PolicyViolation("No models are ready. Load a local model or connect a cloud provider.".into()));
+        }
+        if models.len() == 1 && models[0].id == self.active_model_id() {
+            return Err(AiError::PolicyViolation("No other model is ready. Load another model or connect a cloud provider.".into()));
         }
         let next = models.iter().position(|model| model.id == self.active_model_id())
             .map_or(0, |index| (index + 1) % models.len());
@@ -348,6 +351,23 @@ mod tests {
     use super::*;
     use crate::{CloudModel, CloudTransport, ForgeError, Generation};
     use alloc::boxed::Box;
+
+    #[test]
+    fn model_cycle_reports_when_no_alternative_is_ready() {
+        let mut gateway = ModelGateway::new();
+        let initial = gateway.active_model_id().to_string();
+        assert!(gateway.cycle_model().is_err());
+        assert_eq!(gateway.active_model_id(), initial);
+        let mut forge = Forge::new(0);
+        let model = CloudModel::new("only", "claude", "only", "test-credential").unwrap();
+        forge.register_cloud(&model).unwrap();
+        forge.attach_cloud(model, Box::new(CheckingTransport)).unwrap();
+        gateway.set_forge(Rc::new(RefCell::new(forge)));
+        gateway.cycle_model().unwrap();
+        assert_eq!(gateway.active_model_id(), "only");
+        assert!(gateway.cycle_model().is_err());
+        assert_eq!(gateway.active_model_id(), "only");
+    }
 
     #[test]
     fn model_cycle_skips_unavailable_and_wraps() {

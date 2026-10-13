@@ -51,6 +51,8 @@ pub struct FerrofluidSystemUi {
     tile_actions: Rc<RefCell<VecDeque<TileAction>>>,
     rgb: Vec<slint::Rgb8Pixel>,
     argb: Vec<u32>,
+    top_blur: Vec<slint::Rgb8Pixel>,
+    previous_blur_top: Option<u32>,
     size: PhysicalSize,
     scale: f32,
     keys: EvdevKeyboard,
@@ -146,6 +148,8 @@ impl FerrofluidSystemUi {
             tiles,
             tile_actions,
             rgb: vec![slint::Rgb8Pixel::default(); width as usize * height as usize],
+            previous_blur_top: None,
+            top_blur: vec![slint::Rgb8Pixel::default(); width as usize * (40.0 * scale) as usize],
             argb: vec![0xff000000; width as usize * height as usize],
             size,
             scale,
@@ -223,6 +227,9 @@ impl FerrofluidSystemUi {
     }
     pub fn set_active_model(&self, text: &str) {
         self.ui.set_active_model(text.into());
+    }
+    pub fn set_model_selection_status(&self, text: &str) {
+        self.ui.set_model_selection_status(text.into());
     }
     pub fn take_model_cycle(&self) -> bool {
         let count = self.model_cycles.get();
@@ -330,6 +337,35 @@ impl FerrofluidSystemUi {
                 rect.x = 0;
                 rect.width = self.size.width;
             }
+            let chat_top = (self.ui.get_chat_top() * self.scale) as u32;
+            let blur_height = (40.0 * self.scale) as u32;
+            let blur_bottom = (chat_top + blur_height).min(self.size.height);
+            if !booting {
+                if let Some(previous) = self.previous_blur_top {
+                    if previous != chat_top {
+                        let bottom = (rect.y + rect.height)
+                            .max((previous + blur_height).min(self.size.height))
+                            .max(blur_bottom);
+                        rect.y = rect.y.min(previous).min(chat_top);
+                        rect.height = bottom - rect.y;
+                        rect.x = 0;
+                        rect.width = self.size.width;
+                    }
+                }
+                self.previous_blur_top = Some(chat_top);
+            } else {
+                self.previous_blur_top = None;
+            }
+            let blur_dirty = !booting && rect.y < blur_bottom && rect.y + rect.height > chat_top;
+            if blur_dirty {
+                // The blur samples neighboring pixels, so damage anywhere in
+                // its band invalidates the entire band, including its fringe.
+                let bottom = (rect.y + rect.height).max(blur_bottom);
+                rect.y = rect.y.min(chat_top);
+                rect.height = bottom - rect.y;
+                rect.x = 0;
+                rect.width = self.size.width;
+            }
             for y in rect.y..rect.y + rect.height {
                 for x in rect.x..rect.x + rect.width {
                     let i = y as usize * self.size.width as usize + x as usize;
@@ -341,9 +377,99 @@ impl FerrofluidSystemUi {
                     self.argb[i] = 0xff000000 | (p.r as u32) << 16 | (p.g as u32) << 8 | p.b as u32;
                 }
             }
+            if blur_dirty {
+                blur_chat_top(
+                    &self.rgb,
+                    &mut self.top_blur,
+                    &mut self.argb,
+                    self.size.width as usize,
+                    chat_top as usize,
+                    (blur_bottom - chat_top) as usize,
+                    (6.0 * self.scale) as usize,
+                );
+            }
             damage = Some(rect);
         });
         damage
+    }
+}
+
+/// Two sliding box passes keep the scroll-edge blur linear in band size.
+/// Always sample pristine Slint pixels so repeated frames cannot accumulate blur.
+fn blur_chat_top(
+    rgb: &[slint::Rgb8Pixel],
+    scratch: &mut [slint::Rgb8Pixel],
+    argb: &mut [u32],
+    width: usize,
+    top: usize,
+    height: usize,
+    radius: usize,
+) {
+    if height == 0 {
+        return;
+    }
+    for y in 0..height {
+        let row = &rgb[(top + y) * width..(top + y + 1) * width];
+        let mut sum = [0u32; 3];
+        let mut left = 0;
+        let mut right = 0;
+        for x in 0..width {
+            let end = (x + radius + 1).min(width);
+            while right < end {
+                let p = row[right];
+                sum[0] += p.r as u32;
+                sum[1] += p.g as u32;
+                sum[2] += p.b as u32;
+                right += 1;
+            }
+            while left < x.saturating_sub(radius) {
+                let p = row[left];
+                sum[0] -= p.r as u32;
+                sum[1] -= p.g as u32;
+                sum[2] -= p.b as u32;
+                left += 1;
+            }
+            let n = (right - left) as u32;
+            scratch[y * width + x] = slint::Rgb8Pixel {
+                r: (sum[0] / n) as u8,
+                g: (sum[1] / n) as u8,
+                b: (sum[2] / n) as u8,
+            };
+        }
+    }
+    for x in 0..width {
+        let mut sum = [0u32; 3];
+        let mut start = 0;
+        let mut end = 0;
+        for y in 0..height {
+            while end < (y + radius + 1).min(height) {
+                let p = scratch[end * width + x];
+                sum[0] += p.r as u32;
+                sum[1] += p.g as u32;
+                sum[2] += p.b as u32;
+                end += 1;
+            }
+            while start < y.saturating_sub(radius) {
+                let p = scratch[start * width + x];
+                sum[0] -= p.r as u32;
+                sum[1] -= p.g as u32;
+                sum[2] -= p.b as u32;
+                start += 1;
+            }
+            let i = (top + y) * width + x;
+            let p = rgb[i];
+            let strength = ((height - 1 - y) * 256 / height) as u32;
+            let n = (end - start) as u32;
+            let channel = |original: u8, total: u32, background: u32| {
+                let blurred = (original as u32 * (256 - strength) + total / n * strength) / 256;
+                // Fade into the window background at the very top.
+                (blurred * (256 - strength) + background * strength) / 256
+            };
+            argb[i] = 0xff000000
+                | channel(p.r, sum[0], 10) << 16
+                | channel(p.g, sum[1], 10) << 8
+                | channel(p.b, sum[2], 12);
+        }
     }
 }
 
@@ -568,6 +694,15 @@ mod tests {
         }
         assert!(ui.take_model_cycle());
         assert!(!ui.take_model_cycle());
+        for model in ["gemma-2-2b-it", "claude-sonnet-4-6", "gemini-3.8-flash", "gpt-4.1"] {
+            ui.set_active_model(model);
+            ui.render(Duration::from_millis(16));
+            for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
+                ui.handle_input(InputEvent { kind, code: 0x110, x: 1050, y: 110 });
+            }
+            assert!(ui.take_model_cycle(), "tap must reach model selector for {model}");
+        }
+        ui.set_active_model("Gemini");
         ui.set_reply_pending(true);
         ui.ui.invoke_cycle_model();
         assert!(

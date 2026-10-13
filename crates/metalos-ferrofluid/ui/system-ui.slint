@@ -51,6 +51,7 @@ export component SystemUi inherits Window {
     default-font-weight: 500;
     default-font-size: 16px;
     in property <string> active-model: "Gemini";
+    in property <string> model-selection-status;
     in property <string> transcript: "Welcome to metalOS.\n\nYour workspace takes shape around what you need.";
     in-out property <string> draft;
     in property <bool> reply-pending: false;
@@ -61,6 +62,7 @@ export component SystemUi inherits Window {
     callback submit(string);
     callback cycle-model();
     callback soft-key(string);
+    out property <length> chat-top: body.y + chat.y;
     out property <length> scroll-offset: -scroll.content-y;
     out property <length> scroll-maximum: max(0px, scroll.content-height - scroll.visible-height);
     out property <bool> keyboard-visible: keyboard.shown;
@@ -77,29 +79,42 @@ export component SystemUi inherits Window {
             y: 0px;
             width: parent.width;
             height: parent.height - root.keyboard-reveal;
-            padding: 24px;
-            spacing: 20px;
+            padding: 0px;
+            spacing: 0px;
             HorizontalBox {
+                padding: 20px;
                 Logotype { }
                 Rectangle {
-                    min-width: model-label.preferred-width;
-                    min-height: model-label.preferred-height;
-                    model-label := Text { text: root.active-model; color: #a0a0ae; horizontal-alignment: right; }
+                    min-width: 0px;
+                    min-height: 44px;
+                    horizontal-stretch: 1;
+                    model-label := Text {
+                        width: parent.width;
+                        height: parent.height;
+                        text: root.active-model;
+                        color: #a0a0ae;
+                        horizontal-alignment: right;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
                     TouchArea {
+                        width: parent.width;
+                        height: parent.height;
                         enabled: !root.reply-pending;
                         mouse-cursor: pointer;
                         clicked => { root.cycle-model(); }
                     }
                 }
             }
-            Rectangle {
-                background: #15151b;
-                border-radius: 16px;
-                border-width: 1px;
-                border-color: #30303c;
+            if root.model-selection-status != "": Text {
+                text: root.model-selection-status;
+                color: #a0a0ae;
+                wrap: word-wrap;
+            }
+            chat := Rectangle {
+                vertical-stretch: 1;
                 VerticalBox {
-                    padding: 20px;
-                    Text { text: "Your workspace"; color: #f0f0f4; font-size: 20px; font-weight: 700; }
+                    padding: 0px;
                     Rectangle {
                         clip: true;
                         min-height: 50px;
@@ -129,7 +144,10 @@ export component SystemUi inherits Window {
                                 y: 0px;
                                 width: scroll.visible-width;
                                 height: self.preferred-height;
-                                padding: 0px;
+                                padding-left: 20px;
+                                padding-right: 20px;
+                                padding-top: 44px;
+                                padding-bottom: 20px;
                                 spacing: 16px;
                                 transcript-text := Text {
                                     text: root.transcript;
@@ -177,17 +195,12 @@ export component SystemUi inherits Window {
                 }
             }
             HorizontalBox {
-                spacing: 8px;
+                padding: 20px;
                 input := LineEdit {
                     placeholder-text: "What would you like to do?";
                     text <=> root.draft;
                     edited => { keyboard.reopen(); }
                     accepted => { if (root.draft != "" && !root.reply-pending) { root.submit(root.draft); } }
-                }
-                Button {
-                    text: "Send";
-                    enabled: root.draft != "" && !root.reply-pending;
-                    clicked => { root.submit(root.draft); }
                 }
             }
         }

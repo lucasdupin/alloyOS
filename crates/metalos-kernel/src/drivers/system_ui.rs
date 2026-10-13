@@ -65,9 +65,13 @@ pub fn run(
         while ui.take_model_cycle() {
             if !pending {
                 match agent.cycle_model() {
-                    Ok(()) => ui.set_active_model(agent.active_model_id()),
+                    Ok(()) => {
+                        ui.set_active_model(agent.active_model_id());
+                        ui.set_model_selection_status("");
+                    }
                     Err(error) => {
                         crate::serial_println!("[systemui] Model selection failed: {}", error);
+                        ui.set_model_selection_status(&alloc::format!("{}", error));
                     }
                 }
             }

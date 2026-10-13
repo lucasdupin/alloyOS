@@ -83,12 +83,8 @@ pub fn init() {
         // - SH0 = 0b11 (bits[13:12]): Inner Shareable
         // - TG0 = 0b00 (bits[15:14]): 4 KiB granule
         // - IPS = 0b010 (bits[34:32]): 40-bit PA space (1 TiB)
-        let tcr_val: u64 = 25
-            | (0b01 << 8)
-            | (0b01 << 10)
-            | (0b11 << 12)
-            | (0b00 << 14)
-            | (0b010u64 << 32);
+        let tcr_val: u64 =
+            25 | (0b01 << 8) | (0b01 << 10) | (0b11 << 12) | (0b00 << 14) | (0b010u64 << 32);
 
         core::arch::asm!(
             "msr mair_el1, {mair}",
@@ -113,4 +109,23 @@ pub fn init() {
             options(nostack)
         );
     }
+}
+
+/// Switch the identity-compatible address space before restoring its exception
+/// frame. Full TLB invalidation is required until ASID allocation is implemented.
+pub fn switch_address_space(root: u64) {
+    #[cfg(all(target_arch = "aarch64", target_os = "none"))]
+    unsafe {
+        core::arch::asm!(
+            "dsb ish", "msr ttbr0_el1, {root}", "isb",
+            "tlbi vmalle1", "dsb ish", "isb",
+            root = in(reg) root, options(nostack)
+        );
+    }
+    #[cfg(not(all(target_arch = "aarch64", target_os = "none")))]
+    let _ = root;
+}
+
+pub fn kernel_root_address() -> u64 {
+    &raw const IDENTITY_L1_TABLE as u64
 }

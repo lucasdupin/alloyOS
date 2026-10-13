@@ -8,6 +8,7 @@ pub struct Scheduler {
     current: Option<Arc<Task>>,
     blocked_queue: VecDeque<Arc<Task>>,
     idle: Option<Arc<Task>>,
+    retired_contexts: VecDeque<Arc<Task>>,
 }
 
 impl Scheduler {
@@ -17,6 +18,7 @@ impl Scheduler {
             current: None,
             blocked_queue: VecDeque::new(),
             idle: None,
+            retired_contexts: VecDeque::new(),
         }
     }
 
@@ -127,14 +129,43 @@ pub fn spawn_kernel(pid: u64, entry: extern "C" fn() -> !) {
 
 pub fn preempt(frame: *mut crate::arch::idt::TrapFrame) -> *mut crate::arch::idt::TrapFrame {
     let mut scheduler = SCHEDULER.lock();
+    // We have entered on the next context's exception stack. Previously retired
+    // stacks are now safe to reap; never drop the stack this handler runs on.
+    scheduler.retired_contexts.clear();
     let Some(current) = scheduler.current.as_ref() else {
         return frame;
+    };
+    let previous_root = current
+        .address_space
+        .lock()
+        .as_ref()
+        .map(|space| space.root_physical_address())
+        .unwrap_or_else(crate::arch::mmu::kernel_root_address);
+    let retired = if current.state() == TaskState::Zombie {
+        Some(current.clone())
+    } else {
+        None
     };
     *current.stack_pointer.lock() = frame as u64;
     scheduler.wake_due(crate::drivers::rng::monotonic_time_ns());
     let Some(next) = scheduler.next_task() else {
         return frame;
     };
+    let root = next
+        .address_space
+        .lock()
+        .as_ref()
+        .map(|space| space.root_physical_address())
+        .unwrap_or_else(crate::arch::mmu::kernel_root_address);
+    if root != previous_root {
+        crate::arch::mmu::switch_address_space(root);
+    }
+    if let Some(retired) = retired {
+        // TTBR0 no longer references these tables. Keep the current exception
+        // stack alive until another context has entered an exception.
+        retired.address_space.lock().take();
+        scheduler.retired_contexts.push_back(retired);
+    }
     let address = *next.stack_pointer.lock();
     if address == 0 {
         frame
@@ -190,6 +221,42 @@ pub fn wake(pid: u64) {
 #[cfg(test)]
 mod preemption_tests {
     use super::*;
+    #[test]
+    fn retired_exception_stack_survives_until_next_context_entry() {
+        let mut scheduler = Scheduler::new();
+        let retired = Arc::new(Task::new(711, None));
+        let weak = Arc::downgrade(&retired);
+        scheduler.retired_contexts.push_back(retired);
+        assert!(weak.upgrade().is_some());
+        scheduler.retired_contexts.clear();
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn private_faulted_task_is_skipped_and_peer_survives() {
+        let mut scheduler = Scheduler::new();
+        let user = Arc::new(Task::new(701, None));
+        let peer = Arc::new(Task::new(702, None));
+        *user.address_space.lock() =
+            Some(super::super::app_process::AddressSpace::prepare(&[1], 1, 2).unwrap());
+        scheduler.add_task(user.clone());
+        scheduler.add_task(peer.clone());
+        assert_eq!(scheduler.next_task().unwrap().pid, 701);
+        assert!(user.contain_user_fault());
+        assert_eq!(user.exit_code(), Some(-11));
+        assert_eq!(scheduler.next_task().unwrap().pid, 702);
+        assert!(!peer.contain_user_fault());
+        assert_eq!(peer.state(), TaskState::Running);
+    }
+
+    #[test]
+    fn user_stack_slot_matches_exception_assembly() {
+        use crate::arch::idt::TrapFrame;
+        assert_eq!(core::mem::offset_of!(TrapFrame, user_sp), 280);
+        assert_eq!(core::mem::size_of::<TrapFrame>(), 288);
+        assert_eq!(crate::arch::idt::IRQ_FRAME_SIZE, 816);
+    }
+
     #[test]
     fn blocked_context_is_retained_for_wakeup() {
         let mut scheduler = Scheduler::new();
@@ -260,4 +327,14 @@ mod preemption_tests {
             "initial context must allow timer IRQs"
         );
     }
+}
+
+/// Fault recovery is restricted to explicitly prepared user contexts. An EL1
+/// fault or an unidentified EL0 context remains a kernel error.
+pub fn contain_user_fault() -> bool {
+    let scheduler = SCHEDULER.lock();
+    if let Some(task) = scheduler.current.as_ref() {
+        return task.contain_user_fault();
+    }
+    false
 }

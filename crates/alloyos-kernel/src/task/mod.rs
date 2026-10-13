@@ -1,3 +1,4 @@
+pub mod app_process;
 pub mod pcb;
 pub mod scheduler;
 

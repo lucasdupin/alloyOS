@@ -21,6 +21,7 @@ pub struct TrapFrame {
     pub spsr: u64,       // SPSR_EL1
     pub esr: u64,        // ESR_EL1
     pub far: u64,        // FAR_EL1
+    pub user_sp: u64,    // SP_EL0 (also occupies IRQ frame padding at byte 280)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -95,7 +96,7 @@ pub static IDT: Lazy<InterruptDescriptorTable> = Lazy::new(create_idt);
 
 /// Rust handler invoked by the AArch64 synchronous exception vector (`el1_sync` / `el0_sync`).
 #[no_mangle]
-pub extern "C" fn rust_sync_exception_handler(tf: &mut TrapFrame) {
+pub extern "C" fn rust_sync_exception_handler(tf: &mut TrapFrame) -> *mut TrapFrame {
     let ec = (tf.esr >> 26) & 0x3F;
     if ec == ESR_EC_SVC64 {
         // AArch64 syscall ABI: x8 = syscall number, x0..x5 = args 1..6, return in x0
@@ -108,7 +109,12 @@ pub extern "C" fn rust_sync_exception_handler(tf: &mut TrapFrame) {
         let a6 = tf.regs[5];
         let ret = crate::syscall::dispatch::dispatch_syscall(num, a1, a2, a3, a4, a5, a6);
         tf.regs[0] = ret as u64;
-        return;
+        return tf;
+    }
+    if tf.spsr & 0xf == 0 {
+        if crate::task::scheduler::contain_user_fault() {
+            return crate::task::scheduler::preempt(tf);
+        }
     }
 
     panic!(
@@ -175,7 +181,7 @@ __exception_vectors:
     b __unhandled_exception_stub
 
 __sync_exception_stub:
-    sub sp, sp, #288
+    sub sp, sp, #816
     stp x0, x1, [sp, #0]
     stp x2, x3, [sp, #16]
     stp x4, x5, [sp, #32]
@@ -198,10 +204,55 @@ __sync_exception_stub:
     stp x1, x2, [sp, #256]
     mrs x3, far_el1
     str x3, [sp, #272]
+    mrs x4, sp_el0
+    str x4, [sp, #280]
 
+    stp q0, q1, [sp, #288]
+    stp q2, q3, [sp, #320]
+    stp q4, q5, [sp, #352]
+    stp q6, q7, [sp, #384]
+    stp q8, q9, [sp, #416]
+    stp q10, q11, [sp, #448]
+    stp q12, q13, [sp, #480]
+    stp q14, q15, [sp, #512]
+    stp q16, q17, [sp, #544]
+    stp q18, q19, [sp, #576]
+    stp q20, q21, [sp, #608]
+    stp q22, q23, [sp, #640]
+    stp q24, q25, [sp, #672]
+    stp q26, q27, [sp, #704]
+    stp q28, q29, [sp, #736]
+    stp q30, q31, [sp, #768]
+    mrs x0, fpcr
+    mrs x1, fpsr
+    str x0, [sp, #800]
+    str x1, [sp, #808]
     mov x0, sp
     bl rust_sync_exception_handler
+    mov sp, x0
+    ldr x0, [sp, #800]
+    ldr x1, [sp, #808]
+    msr fpcr, x0
+    msr fpsr, x1
+    ldp q0, q1, [sp, #288]
+    ldp q2, q3, [sp, #320]
+    ldp q4, q5, [sp, #352]
+    ldp q6, q7, [sp, #384]
+    ldp q8, q9, [sp, #416]
+    ldp q10, q11, [sp, #448]
+    ldp q12, q13, [sp, #480]
+    ldp q14, q15, [sp, #512]
+    ldp q16, q17, [sp, #544]
+    ldp q18, q19, [sp, #576]
+    ldp q20, q21, [sp, #608]
+    ldp q22, q23, [sp, #640]
+    ldp q24, q25, [sp, #672]
+    ldp q26, q27, [sp, #704]
+    ldp q28, q29, [sp, #736]
+    ldp q30, q31, [sp, #768]
 
+    ldr x3, [sp, #280]
+    msr sp_el0, x3
     ldp x1, x2, [sp, #256]
     msr spsr_el1, x1
     ldp x30, x0, [sp, #240]
@@ -221,7 +272,7 @@ __sync_exception_stub:
     ldp x4, x5, [sp, #32]
     ldp x2, x3, [sp, #16]
     ldp x0, x1, [sp, #0]
-    add sp, sp, #288
+    add sp, sp, #816
     eret
 
 __irq_exception_stub:
@@ -248,6 +299,8 @@ __irq_exception_stub:
     stp x1, x2, [sp, #256]
     mrs x3, far_el1
     str x3, [sp, #272]
+    mrs x4, sp_el0
+    str x4, [sp, #280]
 
     stp q0, q1, [sp, #288]
     stp q2, q3, [sp, #320]
@@ -293,6 +346,8 @@ __irq_exception_stub:
     ldp q28, q29, [sp, #736]
     ldp q30, q31, [sp, #768]
 
+    ldr x3, [sp, #280]
+    msr sp_el0, x3
     ldp x1, x2, [sp, #256]
     msr spsr_el1, x1
     ldp x30, x0, [sp, #240]

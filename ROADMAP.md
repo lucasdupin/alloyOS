@@ -283,6 +283,7 @@ Strict isolation and orchestration rules govern all apps:
   - Keep the watcher, validation records, and diagnostic service available even if the PackageManager app itself is invalid or unavailable
 - [ ] **One protected OS process per JavaScript app**
   - Current apps execute inside the MCP host; JavaScript isolates and shared-address-space kernel tasks do not satisfy this requirement
+  - Implemented foundation: private ARM64 page tables, bounded caller-bound IPC, EL0 context metadata and fault handling; app launch remains disabled pending syscall validation and resource ownership
   - Add user-mode app processes with per-process page tables, private heaps/stacks, and preemptive scheduling; prevent access to kernel and other app memory
   - Run `alloyos-js` inside each app process, loading `/apps/<app_id>/main.js` under its manifest-derived capability policy
   - Route MCP requests, results, and authorized OS operations over bounded IPC; derive caller identity from the process rather than trusting app-supplied IDs

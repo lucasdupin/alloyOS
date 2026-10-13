@@ -20,6 +20,8 @@ pub fn allocate_pid() -> u64 {
 pub struct Task {
     pub pid: u64,
     pub kernel_context: bool,
+    /// Prepared private tables; no EL0 launch path is enabled yet.
+    pub address_space: Mutex<Option<super::app_process::AddressSpace>>,
     pub parent_pid: Option<u64>,
     pub state: Mutex<TaskState>,
     pub wake_deadline: Mutex<Option<u64>>,
@@ -39,6 +41,7 @@ impl Task {
         Self {
             pid,
             kernel_context: false,
+            address_space: Mutex::new(None),
             parent_pid,
             state: Mutex::new(TaskState::Ready),
             wake_deadline: Mutex::new(None),
@@ -65,6 +68,16 @@ impl Task {
     }
     pub fn new_with_auto_pid(parent_pid: Option<u64>) -> Self {
         Self::new(allocate_pid(), parent_pid)
+    }
+
+    /// Mark an identified private user context dead; retain tables until the
+    /// scheduler has switched away so TTBR0 cannot reference freed memory.
+    pub fn contain_user_fault(&self) -> bool {
+        if self.address_space.lock().is_none() {
+            return false;
+        }
+        self.set_exit_code(-11);
+        true
     }
 
     pub fn state(&self) -> TaskState {

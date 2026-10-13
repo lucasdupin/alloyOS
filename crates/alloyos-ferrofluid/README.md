@@ -87,3 +87,12 @@ fallbacks when no ordered chat items exist.
 
 Tap the model name in the header to switch models. Model changes are disabled
 while a reply is pending.
+
+Chat text and streaming transcripts support a small Markdown subset on the
+`no_std` runtime: ATX headings (`#` through `######`), unordered lists, ordered
+lists (preserving their numbers), block quotes, fenced code blocks, and bold
+whole lines, list items, and inline spans (`**bold**` followed by normal text).
+Inline bold uses font measurements from Slint to wrap styled words. Code contents remain literal, including unfinished
+fences during streaming. Other inline formatting, links, images, and tables
+remain visible as source text. Slint's built-in Markdown parser requires `std`
+and is not used by the bare-metal UI.

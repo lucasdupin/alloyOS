@@ -115,6 +115,26 @@ impl FerrofluidSystemUi {
                 ui.set_draft(SharedString::default());
             }
         });
+        ui.global::<MarkdownLayout>().on_has_formatting(|text| {
+            crate::markdown::parse(text.as_str()).iter().zip(text.as_str().lines()).any(|(block, line)| {
+                block.heading > 0 || block.code || block.quote || block.strong || block.text != line || crate::markdown::inline(&block.text).iter().any(|(_, strong)| *strong)
+            })
+        });
+        ui.global::<MarkdownLayout>().on_layout_words(layout_words);
+        ui.global::<MarkdownLayout>().on_refresh_words(|source, previous, available| {
+            use slint::Model;
+            let words = source.iter().enumerate().map(|(index, mut word)| {
+                if let Some(old) = previous.row_data(index) {
+                    if old.text == word.text && old.strong == word.strong {
+                        word.width = old.width;
+                        word.height = old.height;
+                    }
+                }
+                word
+            }).collect::<Vec<_>>();
+            layout_words(ModelRc::new(VecModel::from(words)), -1, 0.0, 0.0, available)
+        });
+        ui.set_formatted_transcript(markdown_text(ui.get_transcript().as_str()));
         let model_cycles = Rc::new(Cell::new(0usize));
         let cycles = model_cycles.clone();
         let weak = ui.as_weak();
@@ -401,6 +421,7 @@ impl FerrofluidSystemUi {
     }
     pub fn set_transcript(&self, text: &str) {
         self.backdrop_dirty.set(true);
+        self.ui.set_formatted_transcript(markdown_text(text));
         self.ui.set_transcript(text.into());
     }
     pub fn transcript(&self) -> String {
@@ -418,7 +439,7 @@ impl FerrofluidSystemUi {
         combined.push_str(base_transcript);
         combined.push_str("\n\nWelder: ");
         combined.push_str(partial_reply);
-        self.ui.set_transcript(combined.into());
+        self.set_transcript(&combined);
     }
     pub fn set_active_model(&self, text: &str) {
         self.backdrop_dirty.set(true);
@@ -720,6 +741,37 @@ fn tile_views(tiles: &[AppTile]) -> ModelRc<TileView> {
     ))
 }
 
+fn layout_words(words: ModelRc<MarkdownWordView>, measured: i32, width: f32, height: f32, available: f32) -> ModelRc<MarkdownWordView> {
+    use slint::Model;
+    let mut words: Vec<_> = words.iter().collect();
+    if let Some(word) = usize::try_from(measured).ok().and_then(|i| words.get_mut(i)) {
+        word.width = width;
+        word.height = height;
+    }
+    let (mut x, mut y, mut line_height) = (0.0f32, 0.0f32, 0.0f32);
+    for word in &mut words {
+        if x > 0.0 && x + word.width > available {
+            x = 0.0;
+            y += line_height;
+            line_height = 0.0;
+        }
+        word.x = x;
+        word.y = y;
+        x += word.width;
+        line_height = line_height.max(word.height);
+    }
+    ModelRc::new(VecModel::from(words))
+}
+
+fn markdown_text(text: &str) -> ModelRc<MarkdownBlockView> {
+    ModelRc::new(VecModel::from(crate::markdown::parse(text).into_iter().map(|block| MarkdownBlockView {
+        text: block.text.as_str().into(), heading: block.heading as i32,
+        code: block.code, quote: block.quote, strong: block.strong,
+        inline_bold: !block.code && crate::markdown::inline(&block.text).iter().any(|(_, strong)| *strong),
+        words: ModelRc::new(VecModel::from(crate::markdown::inline(&block.text).into_iter().map(|(text, strong)| MarkdownWordView { text: text.into(), strong: strong || block.strong, ..Default::default() }).collect::<Vec<_>>())),
+    }).collect::<Vec<_>>()))
+}
+
 fn chat_item_views(items: &[ChatItem]) -> ModelRc<ChatItemView> {
     ModelRc::new(VecModel::from(
         items
@@ -728,11 +780,13 @@ fn chat_item_views(items: &[ChatItem]) -> ModelRc<ChatItemView> {
                 ChatItem::Text(text) => ChatItemView {
                     is_tile: false,
                     text: text.as_str().into(),
+                    blocks: markdown_text(text),
                     tile: TileView::default(),
                 },
                 ChatItem::Tile(tile) => ChatItemView {
                     is_tile: true,
                     text: "".into(),
+                    blocks: ModelRc::default(),
                     tile: tile_to_view(tile),
                 },
             })
@@ -1150,6 +1204,26 @@ mod tests {
         assert!(ui.pixels().iter().all(|pixel| pixel >> 24 == 255));
         assert!(ui.pixels().iter().any(|pixel| *pixel != ui.pixels()[0]));
         assert!(ui.previous_blur_top.is_none(), "chat starts without edge blur");
+        let original_transcript = ui.transcript();
+        let example = "**Explore my capabilities:** I can tell you about the system and help with your tasks.";
+        ui.set_transcript(example);
+        for frame in 0..4 { ui.render(Duration::from_millis(frame * 16)); }
+        let bold_pixels = ui.pixels().to_vec();
+        if let Ok(path) = std::env::var("ALLOYOS_MARKDOWN_SCREENSHOT") {
+            let file = std::fs::File::create(path).unwrap();
+            let mut encoder = png::Encoder::new(file, PHONE_WIDTH, PHONE_HEIGHT);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let bytes: Vec<u8> = bold_pixels.iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8, 255]).collect();
+            encoder.write_header().unwrap().write_image_data(&bytes).unwrap();
+        }
+        ui.set_transcript("Explore my capabilities: I can tell you about the system and help with your tasks.");
+        for frame in 0..4 { ui.render(Duration::from_millis(frame * 16)); }
+        assert_ne!(ui.pixels(), bold_pixels.as_slice(), "inline bold must affect rendered pixels");
+        ui.set_transcript(&example.repeat(30));
+        for frame in 0..4 { ui.render(Duration::from_millis(frame * 16)); }
+        assert!(ui.chat_scroll_maximum() > 0.0, "inline bold paragraphs must wrap and grow the transcript");
+        ui.set_transcript(&original_transcript);
         assert_long_composer_scrolling(&mut ui);
         // Tapping the model name directly requests a model change.
         for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {

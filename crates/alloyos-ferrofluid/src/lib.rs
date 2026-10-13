@@ -15,3 +15,5 @@ pub use system_ui::{ChatItem, FerrofluidSystemUi};
 mod boot_liquid;
 
 mod sidebar;
+
+mod markdown;

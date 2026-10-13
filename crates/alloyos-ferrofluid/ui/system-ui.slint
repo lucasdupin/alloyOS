@@ -104,10 +104,108 @@ export struct TileView {
     items: [TileItemView], actions: [TileActionView], refreshable: bool,
 }
 
+export struct MarkdownWordView { text: string, strong: bool, x: float, y: float, width: float, height: float }
+export global MarkdownLayout {
+    pure callback has-formatting(string) -> bool;
+    pure callback refresh-words([MarkdownWordView], [MarkdownWordView], float) -> [MarkdownWordView];
+    pure callback layout-words([MarkdownWordView], int, float, float, float) -> [MarkdownWordView];
+}
+
+export struct MarkdownBlockView {
+    text: string, heading: int, code: bool, quote: bool, strong: bool, inline-bold: bool, words: [MarkdownWordView],
+}
+
 export struct ChatItemView {
     is-tile: bool,
     text: string,
+    blocks: [MarkdownBlockView],
     tile: TileView,
+}
+
+component InlineMarkdown inherits Rectangle {
+    in property <[MarkdownWordView]> source;
+    in property <bool> strong;
+    in property <color> text-color;
+    in property <length> font-size;
+    property <[MarkdownWordView]> words: MarkdownLayout.layout-words(root.source, -1, 0, 0, root.width / 1px);
+    out property <length> content-height: words.length > 0 ? (words[words.length - 1].y + words[words.length - 1].height) * 1px : root.font-size;
+    height: root.content-height;
+    for word[index] in root.words: Text {
+        x: word.x * 1px; y: word.y * 1px;
+        text: word.text;
+        color: root.text-color;
+        font-size: root.font-size;
+        font-weight: root.strong || word.strong ? 700 : 500;
+        property <length> measured-width: measure.preferred-width - sentinel.preferred-width;
+        property <length> measured-height: self.preferred-height;
+        // A sentinel makes Slint include trailing spaces in the measured advance.
+        measure := Text {
+            visible: false;
+            text: word.text + "M";
+            font-size: root.font-size;
+            font-weight: root.strong || word.strong ? 700 : 500;
+        }
+        sentinel := Text {
+            visible: false;
+            text: "M";
+            font-size: root.font-size;
+            font-weight: root.strong || word.strong ? 700 : 500;
+        }
+        init => { root.words = MarkdownLayout.layout-words(root.words, index, self.measured-width / 1px, self.measured-height / 1px, root.width / 1px); }
+        changed measured-width => {
+            if word.width != self.measured-width / 1px || word.height != self.measured-height / 1px {
+                root.words = MarkdownLayout.layout-words(root.words, index, self.measured-width / 1px, self.measured-height / 1px, root.width / 1px);
+            }
+        }
+        changed measured-height => {
+            if word.height != self.measured-height / 1px {
+                root.words = MarkdownLayout.layout-words(root.words, index, self.measured-width / 1px, self.measured-height / 1px, root.width / 1px);
+            }
+        }
+    }
+    changed source => { root.words = MarkdownLayout.refresh-words(root.source, root.words, root.width / 1px); }
+    changed width => { root.words = MarkdownLayout.layout-words(root.words, -1, 0, 0, root.width / 1px); }
+}
+
+component MarkdownText inherits VerticalLayout {
+    in property <string> text;
+    in property <[MarkdownBlockView]> blocks;
+    property <bool> formatted: MarkdownLayout.has-formatting(root.text);
+    if !root.formatted: Text {
+        text: root.text;
+        color: AlloyPalette.body;
+        wrap: word-wrap;
+        horizontal-alignment: left;
+        vertical-alignment: top;
+    }
+    if root.formatted: VerticalLayout {
+    spacing: 4px;
+    for block in root.blocks: Rectangle {
+        min-height: block.inline-bold ? inline.content-height : label.preferred-height + (block.code ? 12px : 0px);
+        background: block.code ? AlloyPalette.charcoal : transparent;
+        border-radius: 4px;
+        label := Text {
+            visible: !block.inline-bold;
+            x: block.code || block.quote ? 8px : 0px;
+            y: block.code ? 6px : 0px;
+            width: parent.width - self.x * 2;
+            text: block.text;
+            color: block.quote ? AlloyPalette.muted : AlloyPalette.body;
+            font-size: block.heading == 1 ? 24px : block.heading == 2 ? 21px : block.heading > 0 ? 18px : 16px;
+            font-weight: block.heading > 0 || block.strong ? 700 : 500;
+            wrap: word-wrap;
+        }
+        inline := InlineMarkdown {
+            visible: block.inline-bold;
+            x: block.quote ? 8px : 0px;
+            width: parent.width - self.x * 2;
+            source: block.words;
+            strong: block.heading > 0;
+            text-color: block.quote ? AlloyPalette.muted : AlloyPalette.body;
+            font-size: block.heading == 1 ? 24px : block.heading == 2 ? 21px : block.heading > 0 ? 18px : 16px;
+        }
+    }
+}
 }
 
 component TileCard inherits Rectangle {
@@ -217,6 +315,7 @@ export component SystemUi inherits Window {
     out property <length> composer-scroll-offset: input.scroll-offset;
     in property <bool> reply-pending: false;
     in property <[TileView]> tiles;
+    in property <[MarkdownBlockView]> formatted-transcript;
     in property <[ChatItemView]> chat-items;
     in property <[TileView]> dashboard-tiles;
     callback pin-tile(string, bool);
@@ -326,12 +425,9 @@ export component SystemUi inherits Window {
                                 padding-top: 16px;
                                 padding-bottom: 20px;
                                 spacing: 16px;
-                                if root.chat-items.length == 0: transcript-text := Text {
+                                if root.chat-items.length == 0: MarkdownText {
                                     text: root.transcript;
-                                    color: AlloyPalette.body;
-                                    wrap: word-wrap;
-                                    horizontal-alignment: left;
-                                    vertical-alignment: top;
+                                    blocks: root.formatted-transcript;
                                 }
                                 if root.chat-items.length == 0: VerticalBox {
                                     padding: 0px;
@@ -344,13 +440,7 @@ export component SystemUi inherits Window {
                                     }
                                 }
                                 for item in root.chat-items: VerticalLayout {
-                                    if !item.is-tile: Text {
-                                        text: item.text;
-                                        color: AlloyPalette.body;
-                                        wrap: word-wrap;
-                                        horizontal-alignment: left;
-                                        vertical-alignment: top;
-                                    }
+                                    if !item.is-tile: MarkdownText { text: item.text; blocks: item.blocks; }
                                     if item.is-tile: TileCard {
                                         tile: item.tile; pending: root.reply-pending;
                                         action(id) => { root.tile-action(item.tile.tile-id, id); }

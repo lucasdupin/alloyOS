@@ -315,12 +315,8 @@ impl ApiTransport {
                         continue;
                     }
                     if let Ok(value) = serde_json::from_str::<Value>(data) {
-                        let _ = Self::append_event_delta(
-                            self.provider,
-                            &value,
-                            &mut acc,
-                            &mut tokens,
-                        );
+                        let _ =
+                            Self::append_event_delta(self.provider, &value, &mut acc, &mut tokens);
                     }
                 }
             }
@@ -338,6 +334,28 @@ impl ApiTransport {
     }
 
     fn parse(&self, model: &CloudModel, response: HttpResponse) -> Result<Generation, ForgeError> {
+        if !(200..=299).contains(&response.status) && response.body.len() <= HTTP_BODY_LIMIT {
+            // Expose only the API's structured message, never arbitrary response bodies.
+            if let Ok(value) = serde_json::from_str::<Value>(&response.body) {
+                if let Some(message) = value["error"]["message"]
+                    .as_str()
+                    .filter(|s| !s.trim().is_empty())
+                {
+                    let message: String = message
+                        .replace(&self.key, "[redacted]")
+                        .chars()
+                        .map(|c| if c.is_control() { ' ' } else { c })
+                        .take(2048)
+                        .collect();
+                    return Err(ForgeError::ApiError {
+                        status: response.status,
+                        provider: self.provider.name().into(),
+                        model: model.id.clone(),
+                        message,
+                    });
+                }
+            }
+        }
         match response.status {
             200..=299 => {}
             401 | 403 => return Err(ForgeError::AuthenticationFailed),

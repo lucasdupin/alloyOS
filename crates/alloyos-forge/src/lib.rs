@@ -25,6 +25,12 @@ pub enum ForgeError {
     AuthenticationFailed,
     RateLimited,
     HttpStatus(u16),
+    ApiError {
+        status: u16,
+        provider: String,
+        model: String,
+        message: String,
+    },
     TransportUnavailable,
     InvalidResponse,
     Busy,
@@ -41,6 +47,11 @@ impl ForgeError {
             Self::AuthenticationFailed => "authentication_failed",
             Self::RateLimited => "rate_limited",
             Self::HttpStatus(_) => "http_error",
+            Self::ApiError {
+                status: 401 | 403, ..
+            } => "authentication_failed",
+            Self::ApiError { status: 429, .. } => "rate_limited",
+            Self::ApiError { .. } => "http_error",
             Self::TransportUnavailable => "https_transport_unavailable",
             Self::InvalidResponse => "invalid_api_response",
             Self::Busy => "inference_busy",
@@ -49,7 +60,15 @@ impl ForgeError {
 }
 impl fmt::Display for ForgeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Self::HttpStatus(status) = self {
+        if let Self::ApiError {
+            status,
+            provider,
+            model,
+            message,
+        } = self
+        {
+            write!(f, "{provider} ({model}) HTTP {status}: {message}")
+        } else if let Self::HttpStatus(status) = self {
             write!(f, "http_error_{status}")
         } else {
             f.write_str(self.code())
@@ -345,9 +364,14 @@ impl Forge {
             .error = Some(error.code());
         Ok(())
     }
-    pub fn transform_backends(&mut self, mut wrap: impl FnMut(&str, Box<dyn InferenceBackend>) -> Box<dyn InferenceBackend>) {
+    pub fn transform_backends(
+        &mut self,
+        mut wrap: impl FnMut(&str, Box<dyn InferenceBackend>) -> Box<dyn InferenceBackend>,
+    ) {
         for (id, model) in &mut self.models {
-            if let Some(backend) = model.backend.take() { model.backend = Some(wrap(id, backend)); }
+            if let Some(backend) = model.backend.take() {
+                model.backend = Some(wrap(id, backend));
+            }
         }
     }
     pub fn partial_text(&self, id: u64) -> Option<&str> {

@@ -398,13 +398,53 @@ fn cloud_sse_streams_deliver_incremental_partial_text_and_gateway_deltas() {
             .unwrap();
         assert_eq!(
             deltas,
-            vec![
-                "Hello".to_string(),
-                " alloyOS".to_string(),
-                "!".to_string()
-            ]
+            vec!["Hello".to_string(), " alloyOS".to_string(), "!".to_string()]
         );
         assert_eq!(response.text, "Hello alloyOS!");
         assert_eq!(response.usage.completion_tokens, 3);
+    }
+}
+
+#[test]
+fn api_error_messages_reach_gateway_and_protocol_with_provider_context() {
+    for provider in [
+        ApiProvider::Gemini,
+        ApiProvider::OpenAi,
+        ApiProvider::Claude,
+    ] {
+        let forge = Rc::new(RefCell::new(Forge::new(0)));
+        forge.borrow_mut().connect_api(provider, provider.default_model(), "fixture-key", Box::new(FixtureHttp {
+            status: 429,
+            response: json!({"error": {"message": "Quota exhausted; retry in 30s. fixture-key", "code": "insufficient_quota"}}).to_string(),
+            requests: Arc::new(Mutex::new(Vec::new())),
+            provider,
+        })).unwrap();
+        let error = forge
+            .borrow_mut()
+            .generate(&GenerationRequest {
+                model: Some(provider.default_model().into()),
+                prompt: "hello".into(),
+                max_tokens: 128,
+            })
+            .unwrap_err();
+        assert_eq!(error.code(), "rate_limited");
+        let message = error.to_string();
+        assert!(message.contains(provider.name()));
+        assert!(message.contains(provider.default_model()));
+        assert!(message.contains("HTTP 429: Quota exhausted; retry in 30s."));
+        assert!(!message.contains("fixture-key"));
+        let wire = alloyos_forge::protocol::response(1, Err(error));
+        let payload = wire.trim_end().split('\t').nth(4).unwrap();
+        assert_eq!(
+            alloyos_forge::protocol::decode_hex(payload).unwrap(),
+            message
+        );
+        let mut gateway = ModelGateway::new();
+        gateway.set_forge(forge);
+        gateway.switch_provider(provider.name()).unwrap();
+        let error = gateway
+            .chat(&[Message::user("hello")], &[], &mut |_| {})
+            .unwrap_err();
+        assert!(format!("{error:?}").contains(&message));
     }
 }

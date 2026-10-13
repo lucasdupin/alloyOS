@@ -78,7 +78,7 @@ pub fn response(id: u64, result: Result<String, ForgeError>) -> String {
         Err(err) => format!(
             "FORGE1\t{id}\terror\t{}\t{}\n",
             err.code(),
-            encode_hex(err.code())
+            encode_hex(&err.to_string())
         ),
     }
 }

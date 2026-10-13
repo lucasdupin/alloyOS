@@ -467,6 +467,56 @@ mod tests {
     }
 
     #[test]
+    fn test_mcp_app_default_storage_and_network_capabilities() {
+        let caps = ScriptCapabilities::for_mcp_app("weather");
+        let mut host = VirtualHostEnv::with_capabilities(caps);
+        host.files.insert("/apps/weather/main.js".to_string(), "console.log('weather')".to_string());
+        host.register_http_response("https://weather.api/forecast", "sunny");
+
+        let mut rt = JsRuntime::new();
+
+        // 1. Allowed read inside /apps/weather/
+        assert_eq!(
+            rt.eval_with_host("AlloyOS.fs.read('/apps/weather/main.js');", &mut host),
+            Ok(JsValue::String("console.log('weather')".to_string()))
+        );
+
+        // 2. Denied write inside /apps/weather/ (/apps/ remains strictly read-only to apps)
+        assert!(matches!(
+            rt.eval_with_host("AlloyOS.fs.write('/apps/weather/hack.js', 'evil');", &mut host),
+            Err(JsError::ForbiddenCapability(_))
+        ));
+
+        // 3. Allowed write inside /var/weather/ by default without explicit manifest grant
+        assert_eq!(
+            rt.eval_with_host("AlloyOS.fs.write('/var/weather/cache.json', '{\"temp\": 22}');", &mut host),
+            Ok(JsValue::Bool(true))
+        );
+        assert_eq!(
+            rt.eval_with_host("AlloyOS.fs.read('/var/weather/cache.json');", &mut host),
+            Ok(JsValue::String("{\"temp\": 22}".to_string()))
+        );
+
+        // 4. Denied write to other apps' /var/ storage
+        assert!(matches!(
+            rt.eval_with_host("AlloyOS.fs.write('/var/notes/data.json', 'hack');", &mut host),
+            Err(JsError::ForbiddenCapability(_))
+        ));
+
+        // 5. Allowed outbound network access by default
+        assert_eq!(
+            rt.eval_with_host("AlloyOS.net.fetch('https://weather.api/forecast');", &mut host),
+            Ok(JsValue::String("sunny".to_string()))
+        );
+
+        // 6. Denied scheduler access (only Tasks app is allowed)
+        assert!(matches!(
+            rt.eval_with_host("AlloyOS.scheduler.list();", &mut host),
+            Err(JsError::ForbiddenCapability(_))
+        ));
+    }
+
+    #[test]
     fn test_shorthand_triggers_and_export_main_execution() {
         let mut host = VirtualHostEnv::new();
         let mut sched = ScriptScheduler::new();

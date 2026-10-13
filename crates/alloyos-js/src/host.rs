@@ -152,7 +152,7 @@ pub enum CapabilityRequest<'a> {
     SysStatus,
     UiNotify,
     ForgeGenerate,
-    /// Access to `AlloyOS.scheduler.*` (`ScriptScheduler`), restricted exclusively to the `Tasks` app.
+    /// Access to `AlloyOS.scheduler.*` (`ScriptScheduler`), granted through declared capabilities.
     SchedulerAccess,
 }
 
@@ -165,7 +165,7 @@ pub enum ScriptCapability {
     SysStatus,
     UiNotify,
     ForgeGenerate,
-    /// Exclusive capability allowing `/apps/tasks/main.js` to access `AlloyOS.scheduler.*`.
+    /// Capability allowing a manifest-authorized application to access `AlloyOS.scheduler.*`.
     SchedulerAccess,
 }
 
@@ -216,28 +216,22 @@ impl ScriptCapabilities {
 
     /// Allow-list capability policy for a headless MCP app (`app_id`).
     ///
-    /// Write access is strictly allow-listed to `/var/<app_id>` (plus `/scripts` and
-    /// `/etc/schedules.conf` exclusively for the `tasks` app). Read access is scoped to
+    /// Write access is strictly allow-listed to `/var/<app_id>` . Read access is scoped to
     /// `/var/<app_id>` and `/apps/<app_id>`.
     pub fn for_mcp_app(app_id: &str) -> Self {
         let clean = app_id.trim().trim_matches('/');
         let var_root = alloc::format!("/var/{}", clean);
         let app_root = alloc::format!("/apps/{}", clean);
-        let mut fs_read_prefixes = alloc::vec![var_root.clone(), app_root];
-        let mut fs_write_prefixes = alloc::vec![var_root];
-        let mut allow_scheduler = false;
-        if clean == "tasks" {
-            fs_read_prefixes.push("/scripts".to_string());
-            fs_read_prefixes.push("/etc/schedules.conf".to_string());
-            fs_write_prefixes.push("/scripts".to_string());
-            fs_write_prefixes.push("/etc/schedules.conf".to_string());
-            allow_scheduler = true;
-        }
+        let fs_read_prefixes = alloc::vec![var_root.clone(), app_root, "/proc/app-packages.json".to_string()];
+        let fs_write_prefixes = alloc::vec![var_root];
+        let allow_scheduler = false;
+        let allow_sys_status = true;
+
         Self {
             fs_read_prefixes,
             fs_write_prefixes,
-            net_domains: Vec::new(),
-            allow_sys_status: false,
+            net_domains: alloc::vec!["*".to_string()],
+            allow_sys_status,
             allow_ui_notify: false,
             allow_forge: false,
             allow_scheduler,
@@ -683,6 +677,7 @@ pub struct VirtualHostEnv {
     pub emitted_events: Vec<OsEvent>,
     pub capabilities: ScriptCapabilities,
     forge_handler: Option<Rc<RefCell<Box<ForgeHandler>>>>,
+    pub scheduler: Option<Rc<RefCell<crate::scheduler::ScriptScheduler>>>,
 }
 
 impl core::fmt::Debug for VirtualHostEnv {
@@ -691,6 +686,7 @@ impl core::fmt::Debug for VirtualHostEnv {
             .field("status", &self.status)
             .field("capabilities", &self.capabilities)
             .field("forge_enabled", &self.forge_handler.is_some())
+            .field("has_scheduler", &self.scheduler.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -699,6 +695,12 @@ impl VirtualHostEnv {
         self.capabilities.allow_forge = true;
         self.forge_handler = Some(Rc::new(RefCell::new(handler)));
     }
+
+    pub fn with_scheduler(mut self, scheduler: Rc<RefCell<crate::scheduler::ScriptScheduler>>) -> Self {
+        self.scheduler = Some(scheduler);
+        self
+    }
+
     /// Creates a new `VirtualHostEnv` with default system status and automation capabilities.
     pub fn new() -> Self {
         Self {
@@ -710,6 +712,7 @@ impl VirtualHostEnv {
             emitted_events: Vec::new(),
             capabilities: ScriptCapabilities::default_automation(),
             forge_handler: None,
+            scheduler: None,
         }
     }
 
@@ -833,5 +836,93 @@ impl AlloyOsHost for VirtualHostEnv {
 
     fn drain_emitted_events(&mut self) -> Vec<OsEvent> {
         core::mem::take(&mut self.emitted_events)
+    }
+
+    fn scheduler_list(&mut self) -> Result<JsValue, String> {
+        self.capabilities.check(&CapabilityRequest::SchedulerAccess)?;
+        if let Some(ref sched) = self.scheduler {
+            let sched_ref = sched.borrow();
+            let mut list = Vec::new();
+            for s in sched_ref.schedules() {
+                let mut obj = BTreeMap::new();
+                obj.insert("id".to_string(), JsValue::String(s.id.clone()));
+                obj.insert("title".to_string(), JsValue::String(s.id.clone()));
+                obj.insert("script_path".to_string(), JsValue::String(s.script_path.clone()));
+                obj.insert("trigger".to_string(), JsValue::String(s.trigger.serialize()));
+                obj.insert("enabled".to_string(), JsValue::Bool(true));
+                obj.insert("status".to_string(), JsValue::String("active".to_string()));
+                obj.insert("run_count".to_string(), JsValue::Number(if s.once_fired { 1 } else { 0 }));
+                obj.insert("last_result".to_string(), JsValue::Null);
+                list.push(JsValue::Object(obj));
+            }
+            Ok(JsValue::Array(list))
+        } else {
+            Err("SchedulerAccess capability unavailable".to_string())
+        }
+    }
+
+    fn scheduler_create(
+        &mut self,
+        id: &str,
+        script_path: &str,
+        trigger: &str,
+        source: &str,
+    ) -> Result<JsValue, String> {
+        self.capabilities.check(&CapabilityRequest::SchedulerAccess)?;
+        if let Some(ref sched) = self.scheduler {
+            let parsed = crate::scheduler::ScheduleTrigger::deserialize(trigger)?;
+            let mut sched_mut = sched.borrow_mut();
+            if !source.is_empty() {
+                sched_mut.register_script_source(script_path, source);
+            }
+            sched_mut.schedule_script(id, script_path, parsed);
+            let mut obj = BTreeMap::new();
+            obj.insert("id".to_string(), JsValue::String(id.to_string()));
+            obj.insert("script_path".to_string(), JsValue::String(script_path.to_string()));
+            obj.insert("trigger".to_string(), JsValue::String(trigger.to_string()));
+            obj.insert("created".to_string(), JsValue::Bool(true));
+            Ok(JsValue::Object(obj))
+        } else {
+            Err("SchedulerAccess capability unavailable".to_string())
+        }
+    }
+
+    fn scheduler_edit(
+        &mut self,
+        id: &str,
+        script_path: &str,
+        trigger: &str,
+        source: &str,
+    ) -> Result<JsValue, String> {
+        self.capabilities.check(&CapabilityRequest::SchedulerAccess)?;
+        if let Some(ref sched) = self.scheduler {
+            let mut sched_mut = sched.borrow_mut();
+            if !script_path.is_empty() && !trigger.is_empty() {
+                let parsed = crate::scheduler::ScheduleTrigger::deserialize(trigger)?;
+                if !source.is_empty() {
+                    sched_mut.register_script_source(script_path, source);
+                }
+                sched_mut.schedule_script(id, script_path, parsed);
+            }
+            let mut obj = BTreeMap::new();
+            obj.insert("id".to_string(), JsValue::String(id.to_string()));
+            obj.insert("updated".to_string(), JsValue::Bool(true));
+            Ok(JsValue::Object(obj))
+        } else {
+            Err("SchedulerAccess capability unavailable".to_string())
+        }
+    }
+
+    fn scheduler_delete(&mut self, id: &str) -> Result<JsValue, String> {
+        self.capabilities.check(&CapabilityRequest::SchedulerAccess)?;
+        if let Some(ref sched) = self.scheduler {
+            let ok = sched.borrow_mut().unregister_script(id);
+            let mut obj = BTreeMap::new();
+            obj.insert("id".to_string(), JsValue::String(id.to_string()));
+            obj.insert("deleted".to_string(), JsValue::Bool(ok));
+            Ok(JsValue::Object(obj))
+        } else {
+            Err("SchedulerAccess capability unavailable".to_string())
+        }
     }
 }

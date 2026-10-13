@@ -1,0 +1,110 @@
+[
+  {
+    "name": "tasks.list",
+    "description": "List all scheduled tasks managed by ScriptScheduler",
+    "params": [
+      {
+        "name": "include_disabled",
+        "type": "boolean",
+        "required": false,
+        "description": "Whether to include paused or disabled tasks"
+      }
+    ]
+  },
+  {
+    "name": "tasks.create",
+    "description": "Create and schedule a new task in ScriptScheduler",
+    "params": [
+      {
+        "name": "title",
+        "type": "string",
+        "required": true,
+        "description": "Human-readable task name"
+      },
+      {
+        "name": "script_path",
+        "type": "string",
+        "required": true,
+        "description": "Target JS module path under /scripts/*.js"
+      },
+      {
+        "name": "trigger",
+        "type": "string",
+        "required": true,
+        "description": "Schedule trigger (e.g. every:60s, cron:*/5 * * * *, boot, net:online)"
+      },
+      {
+        "name": "id",
+        "type": "string",
+        "required": false,
+        "description": "Custom schedule identifier"
+      },
+      {
+        "name": "source",
+        "type": "string",
+        "required": false,
+        "description": "JavaScript ES module source code"
+      },
+      {
+        "name": "enabled",
+        "type": "boolean",
+        "required": false,
+        "description": "Whether the schedule is immediately active"
+      }
+    ]
+  },
+  {
+    "name": "tasks.edit",
+    "description": "Edit an existing scheduled task's title, trigger, script path, JS source, or enabled state",
+    "params": [
+      {
+        "name": "id",
+        "type": "string",
+        "required": true,
+        "description": "Identifier of the scheduled task to edit"
+      },
+      {
+        "name": "title",
+        "type": "string",
+        "required": false,
+        "description": "Updated human-readable title"
+      },
+      {
+        "name": "trigger",
+        "type": "string",
+        "required": false,
+        "description": "Updated schedule trigger specification"
+      },
+      {
+        "name": "script_path",
+        "type": "string",
+        "required": false,
+        "description": "Updated /scripts/*.js target path"
+      },
+      {
+        "name": "source",
+        "type": "string",
+        "required": false,
+        "description": "Updated JavaScript source code"
+      },
+      {
+        "name": "enabled",
+        "type": "boolean",
+        "required": false,
+        "description": "Pause (false) or resume (true) the task"
+      }
+    ]
+  },
+  {
+    "name": "tasks.delete",
+    "description": "Delete an existing scheduled task by ID from ScriptScheduler",
+    "params": [
+      {
+        "name": "id",
+        "type": "string",
+        "required": true,
+        "description": "Identifier of the scheduled task to remove"
+      }
+    ]
+  }
+]

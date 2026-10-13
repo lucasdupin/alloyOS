@@ -7,6 +7,7 @@ use slint::PhysicalSize;
 /// The panel drags a tapered band of the workspace; viscosity trails velocity
 /// and relaxes after the slide, including when scrolling changes direction.
 pub struct LiquidDisplacement {
+    left_edge: bool,
     rows: Vec<f32>,
     columns: Vec<f32>,
     width: u32,
@@ -28,6 +29,7 @@ impl LiquidDisplacement {
             })
             .collect();
         Self {
+            left_edge: false,
             rows: vec![0.0; height as usize],
             columns,
             width,
@@ -38,6 +40,14 @@ impl LiquidDisplacement {
             time: Duration::ZERO,
             band: None,
         }
+    }
+
+    /// The same viscosity field rotated onto a left-edge drawer. Returned
+    /// damage bands are horizontal physical bounds rather than vertical ones.
+    pub fn from_left(width: u32, height: u32, scale: f32) -> Self {
+        let mut map = Self::new(height, width, scale);
+        map.left_edge = true;
+        map
     }
 
     pub fn advance(&mut self, time: Duration, reveal: f32, suspended: bool) -> Option<(u32, u32)> {
@@ -57,10 +67,13 @@ impl LiquidDisplacement {
         let edge = self.height as f32 - reveal * self.scale;
         let reach = 200.0 * self.scale;
         self.band = if self.pull != 0.0 {
-            Some((
-                (edge - reach).max(0.0) as u32,
-                ((edge as u32).saturating_add(1)).min(self.height),
-            ))
+            let first = (edge - reach).max(0.0) as u32;
+            let last = ((edge as u32).saturating_add(1)).min(self.height);
+            Some(if self.left_edge {
+                (self.height - last, self.height - first)
+            } else {
+                (first, last)
+            })
         } else {
             None
         };
@@ -78,16 +91,35 @@ impl LiquidDisplacement {
     /// Sample the pristine scene through the current map; the keyboard itself
     /// is outside the field and returns an unchanged pixel.
     pub fn pixel(&self, rgb: &[slint::Rgb8Pixel], x: u32, y: u32) -> slint::Rgb8Pixel {
-        assert_eq!(rgb.len(), self.width as usize * self.height as usize);
-        if self.rows[y as usize] == 0.0 {
-            rgb[(y * self.width + x) as usize]
+        let size = if self.left_edge {
+            PhysicalSize::new(self.height, self.width)
+        } else {
+            PhysicalSize::new(self.width, self.height)
+        };
+        assert_eq!(rgb.len(), size.width as usize * size.height as usize);
+        let row = if self.left_edge {
+            self.height - 1 - x
+        } else {
+            y
+        };
+        if self.rows[row as usize] == 0.0 {
+            rgb[(y * size.width + x) as usize]
         } else {
             let (sx, sy) = self.source(x as f32, y as f32);
-            sample_rgb(rgb, PhysicalSize::new(self.width, self.height), sx, sy)
+            sample_rgb(rgb, size, sx, sy)
         }
     }
 
     pub fn source(&self, x: f32, y: f32) -> (f32, f32) {
+        if self.left_edge {
+            let (sx, sy) = self.bottom_source(y, self.height as f32 - 1.0 - x);
+            (self.height as f32 - 1.0 - sy, sx)
+        } else {
+            self.bottom_source(x, y)
+        }
+    }
+
+    fn bottom_source(&self, x: f32, y: f32) -> (f32, f32) {
         let x = x.clamp(0.0, self.width.saturating_sub(1) as f32);
         let y = y.clamp(0.0, self.height.saturating_sub(1) as f32);
         let drag = self.rows[y as usize];
@@ -130,6 +162,41 @@ fn sample_rgb(rgb: &[slint::Rgb8Pixel], size: PhysicalSize, x: f32, y: f32) -> s
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn left_drawer_uses_the_same_field_and_keeps_panel_pixels_sharp() {
+        let mut left = LiquidDisplacement::from_left(402, 874, 1.0);
+        let mut bottom = LiquidDisplacement::new(874, 402, 1.0);
+        let time = Duration::from_millis(16);
+        assert_eq!(left.advance(time, 120.0, false), Some((119, 320)));
+        bottom.advance(time, 120.0, false);
+        let (sx, sy) = left.source(220.0, 437.0);
+        let rotated = bottom.source(437.0, 181.0);
+        assert_eq!((sx, sy), (401.0 - rotated.1, rotated.0));
+        assert!(sx < 220.0, "opening pulls the chat toward the right");
+        assert_eq!(
+            left.source(60.0, 437.0),
+            (60.0, 437.0),
+            "drawer stays sharp"
+        );
+        let rgb: Vec<_> = (0..402 * 874)
+            .map(|i| slint::Rgb8Pixel {
+                r: (i % 251) as u8,
+                g: 0,
+                b: 0,
+            })
+            .collect();
+        assert_eq!(left.pixel(&rgb, 60, 437), rgb[437 * 402 + 60]);
+        left.advance(Duration::from_millis(116), 30.0, false);
+        assert!(
+            left.source(130.0, 437.0).0 > 130.0,
+            "closing reverses the pull"
+        );
+        for frame in 1..=120 {
+            left.advance(Duration::from_millis(116 + frame * 16), 30.0, false);
+        }
+        assert_eq!(left.source(130.0, 437.0), (130.0, 437.0));
+    }
+
     #[test]
     fn displacement_tracks_motion_and_restores_pristine_pixels() {
         let mut map = LiquidDisplacement::new(402, 874, 1.0);

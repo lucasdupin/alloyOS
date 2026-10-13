@@ -1,0 +1,13 @@
+[
+  {
+    "name": "sample_scheduler.manage",
+    "description": "Guided prompt template for inspecting and managing scheduled sample_scheduler",
+    "params": [
+      {
+        "name": "goal",
+        "description": "Natural language automation goal",
+        "required": false
+      }
+    ]
+  }
+]

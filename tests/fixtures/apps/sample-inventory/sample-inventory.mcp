@@ -1,0 +1,5 @@
+# alloyOS Headless MCP App Manifest (/apps/sample-inventory/sample-inventory.mcp)
+app_id = sample-inventory
+name = Package Manager
+version = 0.1.0
+capabilities = ExposeMcpTools, ExposeMcpResources, ExposeSkills, ExposeTiles

@@ -15,14 +15,11 @@ use alloyos_forge::provider::{
 };
 use alloyos_forge::{Forge, GenerationRequest};
 use alloyos_js::{
-    json_stringify, parse_program, CalendarTime, CapabilityRequest, JsError, AlloyOsHost,
-    OsEvent, ScheduleTrigger, ScriptCapabilities, ScriptExecutionReport, ScriptScheduler,
-    SystemStatus, SCHEDULES_CONF_PATH,
+    json_stringify, parse_program, AlloyOsHost, CalendarTime, CapabilityRequest, JsError, OsEvent,
+    ScheduleTrigger, ScriptCapabilities, ScriptExecutionReport, ScriptScheduler, SystemStatus,
+    SCHEDULES_CONF_PATH,
 };
-use alloyos_mcp::{
-    register_builtin_apps_with_scheduler, McpCaller, McpRegistry, TASKS_APP_ID, TASKS_MANIFEST_MCP,
-    TASKS_MAIN_JS, TASKS_MAIN_PATH, TASKS_SKILL_MD, TASKS_SKILL_PATH,
-};
+use alloyos_mcp::{McpCaller, McpRegistry};
 
 pub use alloyos_forge::policy::{
     is_forbidden_shell_tool, validate_console_input_no_shell, SHELL_FREE_POLICY_MESSAGE,
@@ -44,6 +41,39 @@ pub trait ToolVfsBackend: core::fmt::Debug {
     fn write_file(&mut self, path: &str, content: &str) -> Result<(), String>;
     fn delete_file(&mut self, path: &str) -> Result<bool, String>;
     fn list_dir(&mut self, dir_path: &str) -> Vec<String>;
+    /// Capture the app tree. Backends with native directories override this to
+    /// preserve empty directories and include binary assets consistently.
+    fn package_snapshot(&mut self) -> Result<alloyos_mcp::PackageSnapshot, String> {
+        let mut snapshot = alloyos_mcp::PackageSnapshot::default();
+        let mut pending = vec!["/apps".to_string()];
+        let mut visited = BTreeSet::new();
+        while let Some(directory) = pending.pop() {
+            if !visited.insert(directory.clone()) {
+                continue;
+            }
+            if visited.len() > 256 {
+                return Err("package directory limit exceeded".into());
+            }
+            for entry in self.list_dir(&directory) {
+                let path = if entry.starts_with('/') {
+                    entry
+                } else {
+                    format!("{}/{}", directory, entry)
+                };
+                let path = path.trim_end_matches('/').to_string();
+                if !path.starts_with("/apps/") {
+                    continue;
+                }
+                if let Some(content) = self.read_file(&path) {
+                    snapshot.files.insert(path, content);
+                } else {
+                    snapshot.directories.push(path.clone());
+                    pending.push(path);
+                }
+            }
+        }
+        Ok(snapshot)
+    }
     /// Returns `true` when backed by durable disk storage (`CobaltFS`) and `false` for volatile `RamFS` fallback.
     fn is_persistent(&self) -> bool {
         true
@@ -138,7 +168,7 @@ pub struct ToolExecutionOutput {
 /// apps (centralized by Welder), user knowledge (`/knowledge/`), and Ferrofluid UI synthesis.
 ///
 /// Architectural invariants:
-/// 1. `Tasks` (`app_id = "tasks"`) is the **only** app that can access `ScriptScheduler`.
+/// 1. Applications receive scheduler access only through declared capabilities.
 /// 2. Welder goes through `Tasks` (`McpCaller::Welder`) to list, create, edit, or delete schedules.
 /// 3. No app can access another app; only Welder centralizes app access and orchestration.
 /// 4. Welder owns `/knowledge/`; apps cannot directly rewrite the user profile.
@@ -192,15 +222,8 @@ impl NativeToolRegistry {
             SCHEDULES_CONF_PATH.to_string(),
             "# alloyOS /etc/schedules.conf\n".to_string(),
         );
-        let heartbeat_src =
-            "export function main() { return AlloyOS.sys.status(); }\n".to_string();
+        let heartbeat_src = "export function main() { return AlloyOS.sys.status(); }\n".to_string();
         vfs_files.insert("/scripts/heartbeat.js".to_string(), heartbeat_src.clone());
-        vfs_files.insert(
-            "/apps/tasks/tasks.mcp".to_string(),
-            TASKS_MANIFEST_MCP.to_string(),
-        );
-        vfs_files.insert(TASKS_SKILL_PATH.to_string(), TASKS_SKILL_MD.to_string());
-        vfs_files.insert(TASKS_MAIN_PATH.to_string(), TASKS_MAIN_JS.to_string());
         vfs_files.insert(
             KNOWLEDGE_PROFILE_PATH.to_string(),
             DEFAULT_PROFILE_MD.to_string(),
@@ -222,10 +245,7 @@ impl NativeToolRegistry {
         raw_scheduler.register_script_source("/scripts/heartbeat.js", &heartbeat_src);
         let scheduler = Rc::new(RefCell::new(raw_scheduler));
 
-        let mut mcp_reg = McpRegistry::new();
-        register_builtin_apps_with_scheduler(&mut mcp_reg, scheduler.clone())
-            .expect("TasksApp registration must succeed");
-        let mcp_registry = Rc::new(RefCell::new(mcp_reg));
+        let mcp_registry = Rc::new(RefCell::new(McpRegistry::new()));
 
         let tools = Self::default_tool_specs();
         Self {
@@ -280,9 +300,6 @@ impl NativeToolRegistry {
                     "/scripts/heartbeat.js",
                     "export function main() { return AlloyOS.sys.status(); }\n",
                 ),
-                ("/apps/tasks/tasks.mcp", TASKS_MANIFEST_MCP),
-                (TASKS_SKILL_PATH, TASKS_SKILL_MD),
-                (TASKS_MAIN_PATH, TASKS_MAIN_JS),
                 (KNOWLEDGE_PROFILE_PATH, DEFAULT_PROFILE_MD),
                 (KNOWLEDGE_PREFERENCES_PATH, DEFAULT_PREFERENCES_MD),
                 (KNOWLEDGE_INTERESTS_PATH, DEFAULT_INTERESTS_MD),
@@ -297,8 +314,69 @@ impl NativeToolRegistry {
                 }
             }
         }
+
         self.vfs_backend = Some(backend);
         let _ = self.restore_automations_from_vfs();
+        let _ = self.refresh_app_packages();
+    }
+
+    /// Rescan the actual /apps tree, including packages not present in the image.
+    pub fn refresh_app_packages(&mut self) -> Result<usize, String> {
+        let mut snapshot = alloyos_mcp::PackageSnapshot::default();
+        if let Some(backend) = &self.vfs_backend {
+            snapshot = backend.borrow_mut().package_snapshot()?;
+        } else {
+            snapshot.files = self
+                .vfs_files
+                .iter()
+                .filter(|(path, _)| path.starts_with("/apps/"))
+                .map(|(path, value)| (path.clone(), value.clone()))
+                .collect();
+        }
+        // Include app state and OS-published resources in the isolate host view.
+        for (path, value) in &self.vfs_files {
+            if !path.starts_with("/apps/") {
+                snapshot.files.insert(path.clone(), value.clone());
+            }
+        }
+        if let Some(backend) = &self.vfs_backend {
+            let mut backend = backend.borrow_mut();
+            for path in backend.list_dir("/var") {
+                if let Some(value) = backend.read_file(&path) {
+                    snapshot.files.insert(path, value);
+                }
+            }
+            if let Some(value) = backend.read_file("/proc/app-packages.json") {
+                snapshot
+                    .files
+                    .insert("/proc/app-packages.json".into(), value);
+            }
+        }
+        let count = self
+            .mcp_registry
+            .borrow_mut()
+            .discover_and_register_packages(&snapshot, Some(self.scheduler.clone()))
+            .map_err(|error| error.to_mcp_error().message)?;
+        let inventory = self
+            .mcp_registry
+            .borrow()
+            .runtime_files()
+            .get("/proc/app-packages.json")
+            .cloned();
+        if let Some(inventory) = inventory {
+            self.write_vfs_raw("/proc/app-packages.json", &inventory)?;
+        }
+        Ok(count)
+    }
+
+    fn persist_app_files(&mut self) -> Result<(), String> {
+        let files = self.mcp_registry.borrow().runtime_files();
+        for (path, value) in files {
+            if path.starts_with("/var/") && self.vfs_files.get(&path) != Some(&value) {
+                self.write_vfs_raw(&path, &value)?;
+            }
+        }
+        Ok(())
     }
 
     /// Connects the shared `Forge` service for opt-in `AlloyOS.forge(...)` script invocations.
@@ -339,7 +417,7 @@ impl NativeToolRegistry {
         self.http_routes.insert(url.to_string(), body.to_string());
     }
 
-    /// Returns a shared borrow of the embedded `ScriptScheduler` (exclusively managed by `TasksApp`).
+    /// Returns a shared borrow of the embedded `ScriptScheduler` (managed by capability-authorized apps and OS tools).
     pub fn scheduler(&self) -> core::cell::Ref<'_, ScriptScheduler> {
         self.scheduler.borrow()
     }
@@ -476,7 +554,6 @@ impl NativeToolRegistry {
         self.sync_schedule_list();
         Ok(())
     }
-
 
     fn default_tool_specs() -> Vec<ToolSpec> {
         vec![
@@ -870,16 +947,12 @@ impl NativeToolRegistry {
                 KnowledgeCategory::Preferences,
                 KnowledgeCategory::Interests,
             ] {
-                if self
-                    .knowledge_entries_for(&explicit_cat)
-                    .iter()
-                    .any(|e| {
-                        let existing_scope = normalize_topic_key(&e.scope);
-                        e.basis == KnowledgeBasis::Explicit
-                            && normalize_topic_key(&e.title) == topic_key
-                            && (existing_scope == scope_key || existing_scope == "global")
-                    })
-                {
+                if self.knowledge_entries_for(&explicit_cat).iter().any(|e| {
+                    let existing_scope = normalize_topic_key(&e.scope);
+                    e.basis == KnowledgeBasis::Explicit
+                        && normalize_topic_key(&e.title) == topic_key
+                        && (existing_scope == scope_key || existing_scope == "global")
+                }) {
                     return Ok(validated);
                 }
             }
@@ -1120,10 +1193,9 @@ impl NativeToolRegistry {
     /// Composes the bounded `/knowledge/` context block to inject into a model request for `prompt`.
     /// Stored text is framed as untrusted context that never overrides current user instructions.
     pub fn build_turn_knowledge_context(&mut self, prompt: &str) -> Option<String> {
-        let summary =
-            self.knowledge_bounded_summary(crate::knowledge::DEFAULT_SUMMARY_MAX_BYTES);
-        let relevant = self
-            .knowledge_retrieve_relevant(prompt, crate::knowledge::DEFAULT_RETRIEVAL_MAX_BYTES);
+        let summary = self.knowledge_bounded_summary(crate::knowledge::DEFAULT_SUMMARY_MAX_BYTES);
+        let relevant =
+            self.knowledge_retrieve_relevant(prompt, crate::knowledge::DEFAULT_RETRIEVAL_MAX_BYTES);
 
         if summary.is_empty() && relevant.is_empty() {
             return None;
@@ -1357,9 +1429,8 @@ impl NativeToolRegistry {
             hops += 1;
             let batch = core::mem::take(&mut queue);
             for ev in batch {
-                let (reports, emitted) = self.run_scheduler_step(|sched, host| {
-                    sched.dispatch_event(&ev, host)
-                });
+                let (reports, emitted) =
+                    self.run_scheduler_step(|sched, host| sched.dispatch_event(&ev, host));
                 self.execution_reports.extend(reports.clone());
                 all_reports.extend(reports);
                 queue.extend(emitted);
@@ -1412,7 +1483,11 @@ impl NativeToolRegistry {
         self.dispatch_os_event(&OsEvent::NetInterfaceUp)
     }
 
-    pub fn notify_network_request(&mut self, port: u16, payload: &str) -> Vec<ScriptExecutionReport> {
+    pub fn notify_network_request(
+        &mut self,
+        port: u16,
+        payload: &str,
+    ) -> Vec<ScriptExecutionReport> {
         self.dispatch_os_event(&OsEvent::NetPacketReceived {
             port,
             payload: payload.to_string(),
@@ -1564,8 +1639,8 @@ impl NativeToolRegistry {
                             caller_app, path
                         )));
                     }
-                    let cat = KnowledgeCategory::parse(&path)
-                        .map_err(AiError::InvalidToolArguments)?;
+                    let cat =
+                        KnowledgeCategory::parse(&path).map_err(AiError::InvalidToolArguments)?;
                     if contains_secret_or_credential(&content) {
                         return Err(AiError::InvalidToolArguments(
                             "refusing to write secret or credential into /knowledge/".to_string(),
@@ -1701,8 +1776,8 @@ impl NativeToolRegistry {
                     }
                 }
 
-                let (eval_res, emitted) = self
-                    .run_scheduler_step(|sched, host| sched.eval_script_path(&path, host));
+                let (eval_res, emitted) =
+                    self.run_scheduler_step(|sched, host| sched.eval_script_path(&path, host));
 
                 for ev in emitted {
                     let _ = self.dispatch_os_event(&ev);
@@ -1743,8 +1818,6 @@ impl NativeToolRegistry {
                 }
             }
             "script_schedule" => {
-                // Architectural invariant: Welder MUST route scheduled task operations through
-                // the canonical `Tasks` app (`tasks.create`) via `McpRegistry`.
                 let raw_path = extract_json_string_field(&call.arguments_json, "path")
                     .ok_or_else(|| AiError::InvalidToolArguments("missing 'path'".to_string()))?;
                 let path = ScriptCapabilities::normalize_path(&raw_path);
@@ -1765,54 +1838,44 @@ impl NativeToolRegistry {
                     }
                 }
 
-                let mut tasks_args = BTreeMap::new();
-                if let Some(id) = extract_json_string_field(&call.arguments_json, "id") {
-                    tasks_args.insert("id".to_string(), alloyos_mcp::McpValue::Text(id));
-                }
-                tasks_args.insert("path".to_string(), alloyos_mcp::McpValue::Text(path));
-                tasks_args.insert(
-                    "trigger".to_string(),
-                    alloyos_mcp::McpValue::Text(trigger_str),
-                );
-
-                let mcp_result = self
-                    .mcp_registry
+                let id = extract_json_string_field(&call.arguments_json, "id")
+                    .unwrap_or_else(|| path.clone());
+                let trigger = ScheduleTrigger::deserialize(&trigger_str)
+                    .map_err(AiError::InvalidToolArguments)?;
+                self.scheduler
                     .borrow_mut()
-                    .call_tool_as(&McpCaller::Welder, "tasks.create", &tasks_args)
-                    .map_err(|e| AiError::InvalidToolArguments(e.message))?;
-
+                    .schedule_script(&id, &path, trigger);
                 self.sync_scheduler_to_vfs()
                     .map_err(AiError::InvalidToolArguments)?;
-
+                self.sync_schedule_list();
                 let entries = self
                     .scheduler
                     .borrow()
                     .schedules()
                     .iter()
-                    .map(|s| {
+                    .map(|schedule| {
                         UiScheduleEntry::new(
-                            s.script_path.clone(),
-                            s.trigger.serialize(),
+                            schedule.script_path.clone(),
+                            schedule.trigger.serialize(),
                             "scheduled",
                         )
                     })
                     .collect();
-                let tile = self.mcp_registry.borrow().render_tile("tasks.board").ok();
-                let view = ui_synth.synthesize_schedule_list_with_tile(
-                    "Scheduled JS Automations",
-                    entries,
-                    tile,
-                );
+                let view = ui_synth.synthesize_schedule_list("Scheduled JS Automations", entries);
                 Ok(ToolExecutionOutput {
                     tool_name: call.name.clone(),
-                    output_json: mcp_result.to_json(),
+                    output_json: format!("{{\"ok\":true,\"id\":\"{}\"}}", json_escape(&id)),
                     synthesized_view: Some(view),
                 })
             }
+
             "mcp_list_tools" => {
                 let reg = self.mcp_registry.borrow();
-                let apps: Vec<String> = reg.manifests().iter()
-                    .map(|manifest| format!("\"{}\"", json_escape(&manifest.app_id))).collect();
+                let apps: Vec<String> = reg
+                    .manifests()
+                    .iter()
+                    .map(|manifest| format!("\"{}\"", json_escape(&manifest.app_id)))
+                    .collect();
                 let tools: Vec<String> = reg
                     .list_tools()
                     .iter()
@@ -1842,10 +1905,10 @@ impl NativeToolRegistry {
             }
             "mcp_call_tool" => {
                 let raw_app = extract_json_string_field(&call.arguments_json, "app")
-                    .unwrap_or_else(|| TASKS_APP_ID.to_string());
+                    .ok_or_else(|| AiError::InvalidToolArguments("missing 'app'".into()))?;
                 let app_id = raw_app.trim_end_matches(".mcp").to_string();
                 let raw_tool = extract_json_string_field(&call.arguments_json, "tool")
-                    .unwrap_or_else(|| "tasks.list".to_string());
+                    .ok_or_else(|| AiError::InvalidToolArguments("missing 'tool'".into()))?;
 
                 // Enforce Welder-centralized orchestration: if a caller_app is supplied, verify via McpCaller::App
                 let caller = if let Some(caller_app) =
@@ -1881,13 +1944,15 @@ impl NativeToolRegistry {
                         }
                     })?;
 
-                if full_tool_name.starts_with("tasks.") && full_tool_name != "tasks.list" {
-                    let _ = self.sync_scheduler_to_vfs();
-                }
+                self.persist_app_files()
+                    .map_err(AiError::InvalidToolArguments)?;
+                let _ = self.sync_scheduler_to_vfs();
 
                 let tile = {
                     let registry = self.mcp_registry.borrow();
-                    registry.list_tiles().into_iter()
+                    registry
+                        .list_tiles()
+                        .into_iter()
                         .find(|tile| tile.folder() == Some(app_id.as_str()))
                         .and_then(|tile| registry.render_tile(&tile.tile_id).ok())
                 };
@@ -1908,10 +1973,10 @@ impl NativeToolRegistry {
             }
             "mcp_read_resource" => {
                 let raw_app = extract_json_string_field(&call.arguments_json, "app")
-                    .unwrap_or_else(|| TASKS_APP_ID.to_string());
+                    .ok_or_else(|| AiError::InvalidToolArguments("missing 'app'".into()))?;
                 let app_id = raw_app.trim_end_matches(".mcp").to_string();
                 let uri = extract_json_string_field(&call.arguments_json, "uri")
-                    .unwrap_or_else(|| "mcp://tasks/schedules".to_string());
+                    .ok_or_else(|| AiError::InvalidToolArguments("missing 'uri'".into()))?;
 
                 let caller = if let Some(caller_app) =
                     extract_json_string_field(&call.arguments_json, "caller_app")
@@ -1926,16 +1991,18 @@ impl NativeToolRegistry {
                     .borrow()
                     .read_resource_as(&caller, &uri)
                     .map_err(|e| {
-                        if e.code == alloyos_mcp::ERR_SANDBOX_VIOLATION {
-                            AiError::PolicyViolation(e.message)
-                        } else {
-                            AiError::InvalidToolArguments(e.message)
-                        }
-                    })?;
+                    if e.code == alloyos_mcp::ERR_SANDBOX_VIOLATION {
+                        AiError::PolicyViolation(e.message)
+                    } else {
+                        AiError::InvalidToolArguments(e.message)
+                    }
+                })?;
 
                 let tile = {
                     let registry = self.mcp_registry.borrow();
-                    registry.list_tiles().into_iter()
+                    registry
+                        .list_tiles()
+                        .into_iter()
                         .find(|tile| tile.folder() == Some(app_id.as_str()))
                         .and_then(|tile| registry.render_tile(&tile.tile_id).ok())
                 };
@@ -2007,8 +2074,7 @@ impl NativeToolRegistry {
                     scope_filter.as_deref(),
                     limit,
                 );
-                let entries_json: Vec<String> =
-                    matches.iter().map(|m| m.entry.to_json()).collect();
+                let entries_json: Vec<String> = matches.iter().map(|m| m.entry.to_json()).collect();
                 let storage = self.knowledge_storage_kind();
                 let payload = format!(
                     "{{\"ok\":true,\"query\":\"{}\",\"storage\":\"{}\",\"persistent\":{},\"learning_paused\":{},\"count\":{},\"entries\":[{}]}}",
@@ -2044,16 +2110,12 @@ impl NativeToolRegistry {
                     KnowledgeCategory::parse(&raw_cat).map_err(AiError::InvalidToolArguments)?;
                 let title = extract_json_string_field(&call.arguments_json, "title")
                     .or_else(|| extract_json_string_field(&call.arguments_json, "key"))
-                    .ok_or_else(|| {
-                        AiError::InvalidToolArguments("missing 'title'".to_string())
-                    })?;
+                    .ok_or_else(|| AiError::InvalidToolArguments("missing 'title'".to_string()))?;
                 let value = extract_json_string_field(&call.arguments_json, "value")
                     .or_else(|| extract_json_string_field(&call.arguments_json, "content"))
                     .or_else(|| extract_json_string_field(&call.arguments_json, "preference"))
                     .or_else(|| extract_json_string_field(&call.arguments_json, "fact"))
-                    .ok_or_else(|| {
-                        AiError::InvalidToolArguments("missing 'value'".to_string())
-                    })?;
+                    .ok_or_else(|| AiError::InvalidToolArguments("missing 'value'".to_string()))?;
                 let basis = if let Some(raw_basis) =
                     extract_json_string_field(&call.arguments_json, "basis")
                 {
@@ -2129,11 +2191,8 @@ impl NativeToolRegistry {
                     None
                 };
 
-                let removed = self.knowledge_forget(
-                    &query,
-                    category_filter.as_ref(),
-                    caller_app.as_deref(),
-                )?;
+                let removed =
+                    self.knowledge_forget(&query, category_filter.as_ref(), caller_app.as_deref())?;
                 let removed_titles: Vec<String> = removed
                     .iter()
                     .map(|e| format!("\"{}\"", json_escape(&e.title)))

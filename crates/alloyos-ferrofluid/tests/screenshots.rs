@@ -1,7 +1,10 @@
+#[path = "../../../tests/support/apps.rs"]
+mod fixture_apps;
+use fixture_apps::register_test_apps;
 #[path = "../../../tests/support/screenshots.rs"]
 mod golden;
 use alloyos_ferrofluid::FerrofluidSystemUi;
-use alloyos_mcp::{register_builtin_apps, McpRegistry};
+use alloyos_mcp::McpRegistry;
 use alloyos_proto::{
     display::{PHONE_HEIGHT, PHONE_SCALE, PHONE_WIDTH},
     InputEvent, InputEventKind,
@@ -72,13 +75,17 @@ fn system_ui_screenshots() {
     }
     snapshot(&mut suite, "keyboard-dismissed", &ui);
 
-    ui.set_transcript("You: What time is it?\n\nWelder: Here's your clock.");
+    let fixture =
+        alloyos_mcp::McpValue::from_json(include_str!("../../../tests/fixtures/dashboard.json"))
+            .unwrap();
+    let fixture = fixture.as_map().unwrap();
+    ui.set_transcript(fixture["transcript"].as_str().unwrap());
     let mut registry = McpRegistry::new();
-    register_builtin_apps(&mut registry).unwrap();
+    register_test_apps(&mut registry).unwrap();
     registry.update_uptime(45_296_000);
-    ui.set_tiles(&[registry.render_tile("clock.now").unwrap()]);
+    ui.set_tiles(&[registry.render_tile("sample_timer.now").unwrap()]);
     ui.render(Duration::from_millis(2600));
-    snapshot(&mut suite, "clock-tile", &ui);
+    snapshot(&mut suite, fixture["snapshot"].as_str().unwrap(), &ui);
 
     ui.set_tiles(&[]);
     ui.set_transcript("You: Help me plan the afternoon.");
@@ -161,12 +168,11 @@ fn system_ui_screenshots() {
     ui.set_transcript("Welder: Your apps are ready.");
     use alloyos_mcp::protocol::{AppTile, TileItem};
     let mut cards = Vec::new();
-    for (id, title, value) in [
-        ("clock.now", "Clock", "10:42"),
-        ("weather.now", "Weather", "Sunny · 23°C"),
-        ("tasks.board", "Tasks", "Review trip plans"),
-        ("notes.summary", "Notes", "Three ideas saved"),
-    ] {
+    for card in fixture["cards"].as_array().unwrap() {
+        let fields = card.as_array().unwrap();
+        let id = fields[0].as_str().unwrap();
+        let title = fields[1].as_str().unwrap();
+        let value = fields[2].as_str().unwrap();
         cards.push(AppTile {
             tile_id: id.into(),
             title: title.into(),
@@ -193,14 +199,72 @@ fn system_ui_screenshots() {
             .collect::<Vec<_>>(),
     );
     ui.render(Duration::from_millis(4616));
-    // Drag to the dashboard at the start of the shared conversation scroll.
-    pointer(&mut ui, InputEventKind::PointerButtonDown, 400, 500);
-    for (frame, y) in [600, 800, 1200, 1700, 2200].into_iter().enumerate() {
+    ui.set_chat_items(&[
+        alloyos_ferrofluid::ChatItem::Text("You: Help me plan the afternoon.".into()),
+        alloyos_ferrofluid::ChatItem::Text("Welder: Your pinned apps are a swipe away.\n\nTake a short walk, then review your tasks. Keep some time free for a break.".into()),
+    ]);
+    ui.render(Duration::from_millis(5016));
+    snapshot(&mut suite, "sidebar-hidden", &ui);
+    let closed = ui.pixels().to_vec();
+    pointer(&mut ui, InputEventKind::PointerButtonDown, 6, 1300);
+    pointer(&mut ui, InputEventKind::PointerMove, 300, 1300);
+    ui.render(Duration::from_millis(5032));
+    pointer(&mut ui, InputEventKind::PointerMove, 600, 1300);
+    ui.render(Duration::from_millis(5048));
+    snapshot(&mut suite, "sidebar-pulling", &ui);
+    let pulling = ui.pixels().to_vec();
+    ui.render(Duration::from_millis(5048));
+    assert!(ui.pixels() == pulling.as_slice(), "liquid and blur must be stable at a fixed time");
+    pointer(&mut ui, InputEventKind::PointerMove, 750, 1300);
+    ui.render(Duration::from_millis(5064));
+    pointer(&mut ui, InputEventKind::PointerButtonUp, 750, 1300);
+    for frame in 1..=90 { ui.render(Duration::from_millis(5064 + frame * 16)); }
+    assert!(ui.pixels() != closed.as_slice(), "edge drag opens the pinned drawer");
+    snapshot(&mut suite, "sidebar-open", &ui);
+    let open = ui.pixels().to_vec();
+    pointer(&mut ui, InputEventKind::PointerButtonDown, 880, 380);
+    pointer(&mut ui, InputEventKind::PointerButtonUp, 880, 380);
+    ui.render(Duration::from_millis(6520));
+    assert!(ui.pixels() != open.as_slice(), "drawer tile menus respond to pointer input");
+    snapshot(&mut suite, "tile-menu", &ui);
+    let chat_offset = ui.chat_scroll_offset();
+    let menu = ui.pixels().to_vec();
+    pointer(&mut ui, InputEventKind::PointerButtonDown, 400, 2100);
+    for (frame, y) in [2050, 1950, 1800, 1650].into_iter().enumerate() {
         pointer(&mut ui, InputEventKind::PointerMove, 400, y);
-        ui.render(Duration::from_millis(4632 + frame as u64 * 16));
+        ui.render(Duration::from_millis(6536 + frame as u64 * 16));
     }
-    pointer(&mut ui, InputEventKind::PointerButtonUp, 400, 2200);
-    ui.render(Duration::from_millis(5000));
-    snapshot(&mut suite, "dashboard-bento", &ui);
+    pointer(&mut ui, InputEventKind::PointerButtonUp, 400, 1650);
+    for frame in 1..=60 { ui.render(Duration::from_millis(6600 + frame * 16)); }
+    assert_eq!(ui.chat_scroll_offset(), chat_offset, "drawer scrolling must not move the conversation");
+    assert!(ui.pixels() != menu.as_slice(), "overflowing pins scroll within the drawer");
+    snapshot(&mut suite, "sidebar-scrolled", &ui);
+    // Pull the exposed drawer boundary back to the left to dismiss it.
+    pointer(&mut ui, InputEventKind::PointerButtonDown, 1014, 1300);
+    pointer(&mut ui, InputEventKind::PointerMove, 780, 1300);
+    ui.render(Duration::from_millis(7576));
+    pointer(&mut ui, InputEventKind::PointerButtonUp, 780, 1300);
+    for frame in 1..=120 { ui.render(Duration::from_millis(7576 + frame * 16)); }
+    snapshot(&mut suite, "sidebar-closed", &ui);
+    assert!(ui.pixels() == closed.as_slice(), "closing restores the sharp conversation without residue");
+    // An edge tap is a mouse/accessibility fallback for dragging; the scrim
+    // dismisses the drawer without forwarding a tap to the underlying chat.
+    pointer(&mut ui, InputEventKind::PointerButtonDown, 6, 1300);
+    pointer(&mut ui, InputEventKind::PointerButtonUp, 6, 1300);
+    for frame in 1..=90 { ui.render(Duration::from_millis(9496 + frame * 16)); }
+    assert!(ui.pixels() != closed.as_slice(), "edge tap opens pins");
+    // With all motion settled, the blur must not schedule an idle redraw loop.
+    assert!(ui.render(Duration::from_millis(10952)).is_none(), "settled drawer redraws only when content changes");
+    let conversation = ui.chat_items();
+    let before_update = ui.pixels().to_vec();
+    ui.set_chat_items(&[alloyos_ferrofluid::ChatItem::Text("Welder: A new reply arrived behind the drawer.".into())]);
+    ui.render(Duration::from_millis(10968));
+    assert!(ui.pixels() != before_update.as_slice(), "chat changes invalidate the cached backdrop");
+    ui.set_chat_items(&conversation);
+    ui.render(Duration::from_millis(10984));
+    pointer(&mut ui, InputEventKind::PointerButtonDown, 1170, 1300);
+    pointer(&mut ui, InputEventKind::PointerButtonUp, 1170, 1300);
+    for frame in 1..=120 { ui.render(Duration::from_millis(10984 + frame * 16)); }
+    assert!(ui.pixels() == closed.as_slice(), "backdrop tap dismisses pins without changing chat");
     suite.finish();
 }

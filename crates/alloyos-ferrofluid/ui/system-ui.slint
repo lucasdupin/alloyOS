@@ -7,16 +7,20 @@ component AlloyLineEdit inherits Rectangle {
     in property <string> placeholder-text;
     in-out property <string> text;
     out property <bool> has-focus: editor.has-focus;
+    out property <length> scroll-offset: -editor.x;
     forward-focus: editor;
     callback edited();
     callback accepted();
     height: 32px;
     vertical-stretch: 0;
     horizontal-stretch: 1;
-    background: AlloyPalette.charcoal;
-    border-radius: 6px;
-    border-width: 1px;
-    border-color: editor.has-focus ? AlloyPalette.silver : AlloyPalette.border;
+    background: transparent;
+    Rectangle {
+        y: parent.height - self.height;
+        width: parent.width;
+        height: 1px;
+        background: editor.has-focus ? AlloyPalette.silver : AlloyPalette.border;
+    }
     Text {
         x: 12px; y: 8px;
         width: parent.width - 24px; height: parent.height - 16px;
@@ -25,22 +29,38 @@ component AlloyLineEdit inherits Rectangle {
         color: AlloyPalette.muted;
         vertical-alignment: center;
     }
-    editor := TextInput {
+    viewport := Rectangle {
         x: 12px; y: 0px;
         width: parent.width - 24px; height: parent.height;
-        text <=> root.text;
-        color: AlloyPalette.text;
-        selection-background-color: AlloyPalette.silver;
-        selection-foreground-color: AlloyPalette.obsidian;
-        single-line: true;
-        vertical-alignment: center;
-        edited => { root.edited(); }
-        accepted => { root.accepted(); }
+        clip: true;
+        editor := TextInput {
+            property <length> computed-x: 0px;
+            x: min(0px, max(parent.width - self.width - self.text-cursor-width, self.computed-x));
+            width: max(parent.width - self.text-cursor-width, self.preferred-width);
+            height: parent.height;
+            text <=> root.text;
+            color: AlloyPalette.text;
+            selection-background-color: AlloyPalette.silver;
+            selection-foreground-color: AlloyPalette.obsidian;
+            single-line: true;
+            vertical-alignment: center;
+            cursor-position-changed(position) => {
+                if position.x + self.computed-x < 4px {
+                    self.computed-x = -position.x + 4px;
+                } else if position.x + self.computed-x > parent.width - 4px - self.text-cursor-width {
+                    self.computed-x = parent.width - position.x - 4px - self.text-cursor-width;
+                }
+            }
+            edited => { root.edited(); }
+            accepted => { root.accepted(); }
+        }
     }
 }
 
 component AlloyButton inherits FocusScope {
     in property <string> text;
+    in property <string> button-label: root.text;
+    in property <bool> flat: false;
     callback clicked();
     height: 36px;
     vertical-stretch: 0;
@@ -53,15 +73,15 @@ component AlloyButton inherits FocusScope {
         return reject;
     }
     Rectangle {
-        background: touch.pressed ? AlloyPalette.silver : touch.has-hover ? AlloyPalette.surface : AlloyPalette.charcoal;
+        background: root.flat ? transparent : touch.pressed ? AlloyPalette.silver : touch.has-hover ? AlloyPalette.surface : AlloyPalette.charcoal;
         border-radius: 6px;
-        border-width: 1px;
+        border-width: root.flat ? 0px : 1px;
         border-color: root.has-focus ? AlloyPalette.silver : AlloyPalette.border;
         opacity: root.enabled ? 1 : 0.45;
         label := Text {
             text: root.text;
             overflow: elide;
-            color: touch.pressed ? AlloyPalette.obsidian : AlloyPalette.text;
+            color: root.flat ? (touch.pressed ? AlloyPalette.silver : AlloyPalette.text) : touch.pressed ? AlloyPalette.obsidian : AlloyPalette.text;
             horizontal-alignment: center;
             vertical-alignment: center;
         }
@@ -69,7 +89,7 @@ component AlloyButton inherits FocusScope {
             enabled: root.enabled;
             mouse-cursor: pointer;
             accessible-role: button;
-            accessible-label: root.text;
+            accessible-label: root.button-label;
             clicked => { root.focus(); root.clicked(); }
         }
     }
@@ -84,52 +104,61 @@ export struct TileView {
     items: [TileItemView], actions: [TileActionView], refreshable: bool,
 }
 
-export struct DashboardRow { left: TileView, right: TileView, has-right: bool, wide: bool }
+export struct ChatItemView {
+    is-tile: bool,
+    text: string,
+    tile: TileView,
+}
+
 component TileCard inherits Rectangle {
     min-width: 0px;
     clip: true;
     in property <TileView> tile;
     in property <bool> pinned;
     in property <bool> pending;
+    property <bool> menu-open: false;
     callback action(string);
     callback pin();
     callback move();
     callback refresh();
-                                    background: AlloyPalette.charcoal;
-                                    border-radius: 12px;
-                                    border-width: 1px;
-                                    border-color: AlloyPalette.border;
-                                    height: tile-content.preferred-height;
-                                    tile-content := VerticalBox {
-                                        width: parent.width;
-                                        height: self.preferred-height;
-                                        padding: 16px;
-                                        spacing: 10px;
-                                        Text { text: root.tile.title; color: AlloyPalette.text; font-size: 20px; font-weight: 700; wrap: word-wrap; }
-                                        if root.tile.subtitle != "": Text { text: root.tile.subtitle; color: AlloyPalette.muted; wrap: word-wrap; }
-                                        for item in root.tile.items: VerticalBox {
-                                            spacing: 4px;
-                                            HorizontalBox {
-                                                Text { text: item.title; color: AlloyPalette.text; font-size: root.tile.tile-id == "clock.now" && item.id == "time" ? 26px : 18px; wrap: word-wrap; }
-                                                if item.badge != "": Text { text: item.badge; color: AlloyPalette.silver; horizontal-alignment: right; min-width: 0px; wrap: word-wrap; }
-                                            }
-                                            if item.subtitle != "": Text { text: item.subtitle; color: AlloyPalette.muted; wrap: word-wrap; }
-                                            if item.status != "": Text { text: item.status; color: AlloyPalette.muted; font-size: 13px; wrap: word-wrap; }
-                                        }
-                                        if root.tile.actions.length > 0: VerticalBox {
-                                            spacing: 8px;
-                                            for action in root.tile.actions: AlloyButton {
-                                                text: action.label;
-                                                enabled: !root.pending;
-                                                clicked => { root.action(action.id); }
-                                            }
-                                        }
-                                        VerticalBox {
-                                            AlloyButton { height: 26px; text: root.pinned ? "Unpin" : "Pin"; clicked => { root.pin(); } }
-                                            if root.pinned: AlloyButton { height: 26px; text: "First"; clicked => { root.move(); } }
-                                            if root.tile.refreshable: AlloyButton { height: 26px; text: "Refresh"; enabled: !root.pending; clicked => { root.refresh(); } }
-                                        }
-                                    }
+    background: AlloyPalette.charcoal;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: AlloyPalette.border;
+    height: tile-content.preferred-height;
+    tile-content := VerticalBox {
+        width: parent.width;
+        height: self.preferred-height;
+        padding: 16px;
+        spacing: 10px;
+        HorizontalBox {
+            Text { text: root.tile.title; color: AlloyPalette.text; font-size: 20px; font-weight: 700; wrap: word-wrap; horizontal-stretch: 1; min-width: 0px; }
+            AlloyButton { text: root.menu-open ? "×" : "..."; button-label: root.menu-open ? "Close tile menu" : "More tile options"; min-width: 32px; max-width: 32px; horizontal-stretch: 0; clicked => { root.menu-open = !root.menu-open; } }
+        }
+        if root.tile.subtitle != "": Text { text: root.tile.subtitle; color: AlloyPalette.muted; wrap: word-wrap; }
+        for item in root.tile.items: VerticalBox {
+            spacing: 4px;
+            HorizontalBox {
+                Text { text: item.title; color: AlloyPalette.text; font-size: root.tile.tile-id == "clock.now" && item.id == "time" ? 26px : 18px; wrap: word-wrap; }
+                if item.badge != "": Text { text: item.badge; color: AlloyPalette.silver; horizontal-alignment: right; min-width: 0px; wrap: word-wrap; }
+            }
+            if item.subtitle != "": Text { text: item.subtitle; color: AlloyPalette.muted; wrap: word-wrap; }
+            if item.status != "": Text { text: item.status; color: AlloyPalette.muted; font-size: 13px; wrap: word-wrap; }
+        }
+        if root.tile.actions.length > 0: VerticalBox {
+            spacing: 8px;
+            for action in root.tile.actions: AlloyButton {
+                text: action.label;
+                enabled: !root.pending;
+                clicked => { root.action(action.id); }
+            }
+        }
+        if root.menu-open: VerticalBox {
+            AlloyButton { height: 26px; text: root.pinned ? "Unpin" : "Pin"; clicked => { root.pin(); root.menu-open = false; } }
+            if root.pinned: AlloyButton { height: 26px; text: "Move to top"; clicked => { root.move(); root.menu-open = false; } }
+            if root.tile.refreshable: AlloyButton { height: 26px; text: "Refresh"; enabled: !root.pending; clicked => { root.refresh(); root.menu-open = false; } }
+        }
+    }
 }
 
 component ThinkingIndicator inherits Rectangle {
@@ -171,18 +200,30 @@ export component SystemUi inherits Window {
     default-font-family: "Quicksand";
     default-font-weight: 500;
     default-font-size: 16px;
+    in-out property <bool> sidebar-open: false;
+    in-out property <bool> sidebar-dragging: false;
+    in-out property <length> sidebar-drag-reveal: 0px;
+    in property <bool> sidebar-layer-visible: true;
+    in property <image> sidebar-backdrop;
+    out property <length> sidebar-width: min(340px, root.width - 48px);
+    out property <length> sidebar-reveal: root.sidebar-dragging ? root.sidebar-drag-reveal : root.sidebar-open ? root.sidebar-width : 0px;
+    animate sidebar-reveal { duration: root.sidebar-dragging ? 0ms : 260ms; easing: ease-out; }
+    callback release-editor();
+    release-editor => { unfocused.focus(); }
     in property <string> active-model: "Gemini";
     in property <string> model-selection-status;
     in property <string> transcript: "Welcome to alloyOS.\n\nYour workspace takes shape around what you need.";
     in-out property <string> draft;
+    out property <length> composer-scroll-offset: input.scroll-offset;
     in property <bool> reply-pending: false;
     in property <[TileView]> tiles;
+    in property <[ChatItemView]> chat-items;
     in property <[TileView]> dashboard-tiles;
-    in property <[DashboardRow]> dashboard-rows;
     callback pin-tile(string, bool);
     callback move-pin(string);
     callback refresh-tile(string);
     changed transcript => { scroll.content-y = min(0px, scroll.visible-height - scroll.content-height); }
+    changed chat-items => { scroll.content-y = min(0px, scroll.visible-height - scroll.content-height); }
     callback tile-action(string, string);
     callback submit(string);
     callback cycle-model();
@@ -274,44 +315,40 @@ export component SystemUi inherits Window {
                                 height: self.preferred-height;
                                 padding-left: 20px;
                                 padding-right: 20px;
-                                padding-top: 44px;
+                                padding-top: 16px;
                                 padding-bottom: 20px;
                                 spacing: 16px;
-                                Text { text: "Dashboard"; color: AlloyPalette.text; font-size: 24px; font-weight: 700; }
-                                if root.dashboard-rows.length == 0: Text { text: "Pin app cards here to shape your workspace."; color: AlloyPalette.muted; wrap: word-wrap; }
-                                for row in root.dashboard-rows: HorizontalBox {
-                                    spacing: 12px;
-                                    TileCard {
-                                        tile: row.left; pinned: true; pending: root.reply-pending;
-                                        width: row.wide ? scroll.visible-width - 40px : (scroll.visible-width - 52px) / 2;
-                                        horizontal-stretch: 0;
-                                        action(id) => { root.tile-action(row.left.tile-id, id); }
-                                        pin => { root.pin-tile(row.left.tile-id, false); }
-                                        move => { root.move-pin(row.left.tile-id); }
-                                        refresh => { root.refresh-tile(row.left.tile-id); }
-                                    }
-                                    if row.has-right: TileCard {
-                                        tile: row.right; pinned: true; pending: root.reply-pending;
-                                        width: (scroll.visible-width - 52px) / 2;
-                                        horizontal-stretch: 0;
-                                        action(id) => { root.tile-action(row.right.tile-id, id); }
-                                        pin => { root.pin-tile(row.right.tile-id, false); }
-                                        move => { root.move-pin(row.right.tile-id); }
-                                        refresh => { root.refresh-tile(row.right.tile-id); }
-                                    }
-                                }
-                                transcript-text := Text {
+                                if root.chat-items.length == 0: transcript-text := Text {
                                     text: root.transcript;
                                     color: AlloyPalette.body;
                                     wrap: word-wrap;
                                     horizontal-alignment: left;
                                     vertical-alignment: top;
                                 }
-                                for tile in root.tiles: TileCard {
-                                    tile: tile; pending: root.reply-pending;
-                                    action(id) => { root.tile-action(tile.tile-id, id); }
-                                    pin => { root.pin-tile(tile.tile-id, true); }
-                                    refresh => { root.refresh-tile(tile.tile-id); }
+                                if root.chat-items.length == 0: VerticalBox {
+                                    padding: 0px;
+                                    spacing: 16px;
+                                    for tile in root.tiles: TileCard {
+                                        tile: tile; pending: root.reply-pending;
+                                        action(id) => { root.tile-action(tile.tile-id, id); }
+                                        pin => { root.pin-tile(tile.tile-id, true); }
+                                        refresh => { root.refresh-tile(tile.tile-id); }
+                                    }
+                                }
+                                for item in root.chat-items: VerticalLayout {
+                                    if !item.is-tile: Text {
+                                        text: item.text;
+                                        color: AlloyPalette.body;
+                                        wrap: word-wrap;
+                                        horizontal-alignment: left;
+                                        vertical-alignment: top;
+                                    }
+                                    if item.is-tile: TileCard {
+                                        tile: item.tile; pending: root.reply-pending;
+                                        action(id) => { root.tile-action(item.tile.tile-id, id); }
+                                        pin => { root.pin-tile(item.tile.tile-id, true); }
+                                        refresh => { root.refresh-tile(item.tile.tile-id); }
+                                    }
                                 }
                                 if root.reply-pending: ThinkingIndicator { }
                             }
@@ -335,9 +372,101 @@ export component SystemUi inherits Window {
             y: parent.height - root.keyboard-reveal;
             width: parent.width - 8px;
             requested: input.has-focus;
-            suspended: root.booting;
+            suspended: root.booting || root.sidebar-reveal > 0px;
             key(value) => { root.soft-key(value); }
             dismiss => { unfocused.focus(); }
+        }
+        // This layer is omitted while the host captures the pristine workspace.
+        // Its image is a separately blurred backdrop; tiles are drawn afterwards.
+        sidebar-layer := Rectangle {
+            visible: root.sidebar-layer-visible && root.sidebar-reveal > 0px;
+            width: parent.width;
+            height: parent.height;
+            Image {
+                width: parent.width; height: parent.height;
+                source: root.sidebar-backdrop;
+                image-fit: fill;
+                opacity: min(1, root.sidebar-reveal / root.sidebar-width);
+            }
+            Rectangle {
+                width: parent.width; height: parent.height;
+                // Fade the entire chat scene into the workspace background as
+                // the blur grows; pinned content is painted after this layer.
+                background: AlloyPalette.obsidian;
+                opacity: 0.18 * root.sidebar-reveal / root.sidebar-width;
+            }
+            TouchArea {
+                width: parent.width; height: parent.height;
+                accessible-role: button;
+                accessible-label: "Close pinned tiles";
+                clicked => { root.sidebar-open = false; }
+            }
+            drawer := Rectangle {
+                x: root.sidebar-reveal - root.sidebar-width;
+                width: root.sidebar-width;
+                height: parent.height;
+                background: transparent;
+                clip: true;
+                // Consume blank-area taps rather than passing them to the scrim.
+                TouchArea { width: parent.width; height: parent.height; }
+                VerticalBox {
+                    padding: 16px;
+                    spacing: 16px;
+                    HorizontalBox {
+                        Text { text: "Pinned"; font-size: 24px; font-weight: 700; color: AlloyPalette.text; vertical-alignment: center; horizontal-stretch: 1; }
+                        AlloyButton { text: "×"; flat: true; button-label: "Close pinned tiles"; clicked => { root.sidebar-open = false; } }
+                    }
+                    pin-scroll := ScrollView {
+                        vertical-stretch: 1;
+                        mouse-drag-pan-enabled: true;
+                        horizontal-scrollbar-policy: always-off;
+                        content-width: self.visible-width;
+                        content-height: max(self.visible-height, pin-stream.preferred-height);
+                        pin-stream := VerticalBox {
+                            width: pin-scroll.visible-width;
+                            height: self.preferred-height;
+                            padding: 0px;
+                            padding-bottom: 16px;
+                            spacing: 12px;
+                            if root.dashboard-tiles.length == 0: Text {
+                                text: "Pin a tile from the conversation to keep it here.";
+                                color: AlloyPalette.muted;
+                                wrap: word-wrap;
+                            }
+                            for tile in root.dashboard-tiles: TileCard {
+                                tile: tile; pinned: true; pending: root.reply-pending;
+                                action(id) => { root.tile-action(tile.tile-id, id); }
+                                pin => { root.pin-tile(tile.tile-id, false); }
+                                move => { root.move-pin(tile.tile-id); }
+                                refresh => { root.refresh-tile(tile.tile-id); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Edge handle remains reachable independently of chat scroll position.
+        Rectangle {
+            visible: root.sidebar-layer-visible;
+            x: max(0px, root.sidebar-reveal - 9px);
+            y: (parent.height - 88px) / 2;
+            width: 18px;
+            height: 88px;
+            background: transparent;
+            Rectangle {
+                x: root.sidebar-reveal > 0px ? 6px : 0px;
+                width: 3px; height: parent.height;
+                border-radius: 2px;
+                background: AlloyPalette.silver;
+                opacity: root.sidebar-reveal > 0px ? 0.8 : 0.45;
+            }
+            TouchArea {
+                width: parent.width; height: parent.height;
+                mouse-cursor: pointer;
+                accessible-role: button;
+                accessible-label: root.sidebar-open ? "Close pinned tiles" : "Open pinned tiles";
+                clicked => { root.release-editor(); root.sidebar-open = !root.sidebar-open; }
+            }
         }
     }
 }

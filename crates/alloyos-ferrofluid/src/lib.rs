@@ -11,5 +11,7 @@ pub use dashboard::{DashboardState, TileEvent};
 pub mod system_ui;
 
 pub use auth::{AgentUiToken, CallerPrincipal, FerrofluidError, SecurityGate};
-pub use system_ui::FerrofluidSystemUi;
+pub use system_ui::{ChatItem, FerrofluidSystemUi};
 mod boot_liquid;
+
+mod sidebar;

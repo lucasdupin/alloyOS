@@ -52,3 +52,8 @@ cargo run -p alloyos-keyboard --features preview --example keyboard_preview -- /
 in `ui/keyboard.slint`; motion and sampling in `src/motion.rs`; action contracts
 in `src/lib.rs`. Slint remains pinned to the workspace's 1.18.1 software renderer
 and single-context execution model. All UI calls must stay on the UI owner.
+
+`LiquidDisplacement::from_left` rotates the same viscosity field for hosts with
+left-edge panels. Its damage bounds describe a horizontal band; scanout and
+inverse-mapped touches use the host's original width and height. Ferrofluid uses
+this variant for its pinned-tile drawer.

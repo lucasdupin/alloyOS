@@ -4,7 +4,7 @@
 use super::{rng, virtio_gpu, virtio_input};
 use alloc::{collections::VecDeque, string::String};
 use core::{task::Poll, time::Duration};
-use alloyos_ferrofluid::{system_ui::FerrofluidSystemUi, TileEvent};
+use alloyos_ferrofluid::{system_ui::FerrofluidSystemUi, ChatItem, TileEvent};
 
 pub fn create() -> FerrofluidSystemUi {
     let size = virtio_gpu::VIRTIO_GPU
@@ -29,15 +29,25 @@ pub fn run(
     mut agent: alloyos_welder::AgentRuntime,
 ) -> ! {
     let start = rng::monotonic_time_ns();
-    let mut transcript =
-        String::from("Welcome to alloyOS.\n\nYour workspace takes shape around what you need.");
+    let welcome = String::from("Welcome to alloyOS.\n\nYour workspace takes shape around what you need.");
+    let mut transcript = welcome.clone();
+    let mut chat_items: alloc::vec::Vec<ChatItem> = alloc::vec::Vec::new();
+    chat_items.push(ChatItem::Text(welcome));
     ui.set_active_model(agent.active_model_id());
+    if let Err(error) = agent.initialize_dashboard_tiles() {
+        let err_msg = alloc::format!("Welder: {}", error);
+        transcript.push_str(&alloc::format!("\n\n{}", err_msg));
+        chat_items.push(ChatItem::Text(err_msg));
+    }
     for id in agent.pinned_tile_ids().to_vec() {
         let _ = agent.refresh_tile(&id);
     }
-    ui.set_tiles(&agent.synthesized_tiles());
+    ui.set_available_tiles(&agent.synthesized_tiles());
     ui.restore_dashboard(agent.pinned_tile_ids());
+    let mut chat_tiles: alloc::vec::Vec<alloyos_mcp::AppTile> = alloc::vec::Vec::new();
+    ui.set_tiles(&chat_tiles);
     ui.set_transcript(&transcript);
+    ui.set_chat_items(&chat_items);
     let mut dashboard_revision = ui.dashboard_state().revision();
     let mut last_dashboard_refresh = 0u64;
     let mut refresh_queue = VecDeque::new();
@@ -58,9 +68,12 @@ pub fn run(
             crate::serial_println!("[systemui] Model boot phase finished.");
         }
         if let Some(error) = forge.take_boot_error() {
+            let err_msg = alloc::format!("Welder: {}", error);
             transcript.push_str("\n\nWelder: ");
             transcript.push_str(error);
+            chat_items.push(ChatItem::Text(err_msg));
             ui.set_transcript(&transcript);
+            ui.set_chat_items(&chat_items);
         }
         // Bound work per frame so a busy input device cannot starve rendering.
         for _ in 0..64 {
@@ -92,8 +105,11 @@ pub fn run(
                 Err(error) => {
                     ui.restore_dashboard(agent.pinned_tile_ids());
                     dashboard_revision = ui.dashboard_state().revision();
+                    let err_msg = alloc::format!("Welder: {}", error);
                     transcript.push_str(&alloc::format!("\n\nWelder: {}", error));
+                    chat_items.push(ChatItem::Text(err_msg));
                     ui.set_transcript(&transcript);
+                    ui.set_chat_items(&chat_items);
                 }
             }
         }
@@ -102,14 +118,39 @@ pub fn run(
                 continue;
             }
             let result = match event {
-                TileEvent::Action { tile_id, action } => agent.execute_tile_action_for(&tile_id, &action),
-                TileEvent::Refresh { tile_id, .. } => agent.refresh_tile(&tile_id),
+                TileEvent::Action { tile_id, action } => {
+                    agent.execute_tile_action_for(&tile_id, &action)
+                }
+                TileEvent::Refresh { tile_id, .. } => {
+                    agent.refresh_tile(&tile_id)
+                }
             };
             match result {
-                Ok(_) => ui.set_tiles(&agent.synthesized_tiles()),
+                Ok(output) => {
+                    if let Some(view) = output.synthesized_view {
+                        if let Some(tile) = view.tile {
+                            if let Some(existing) = chat_tiles.iter_mut().find(|t| t.tile_id == tile.tile_id) {
+                                *existing = tile.clone();
+                            }
+                            for item in chat_items.iter_mut() {
+                                if let ChatItem::Tile(existing) = item {
+                                    if existing.tile_id == tile.tile_id {
+                                        *existing = tile.clone();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    ui.set_available_tiles(&agent.synthesized_tiles());
+                    ui.set_tiles(&chat_tiles);
+                    ui.set_chat_items(&chat_items);
+                }
                 Err(error) => {
+                    let err_msg = alloc::format!("Welder: {}", error);
                     transcript.push_str(&alloc::format!("\n\nWelder: {}", error));
+                    chat_items.push(ChatItem::Text(err_msg));
                     ui.set_transcript(&transcript);
+                    ui.set_chat_items(&chat_items);
                 }
             }
         }
@@ -119,11 +160,49 @@ pub fn run(
                 ui.set_reply_pending(false);
                 transcript.push_str("\n\nWelder: ");
                 match result {
-                    Ok(output) => transcript.push_str(&output.response_text),
-                    Err(error) => transcript.push_str(&alloc::format!("{}", error)),
+                    Ok(output) => {
+                        transcript.push_str(&output.response_text);
+                        let welder_msg = alloc::format!("Welder: {}", output.response_text);
+                        if let Some(ChatItem::Text(last)) = chat_items.last_mut() {
+                            if last.starts_with("Welder:") {
+                                *last = welder_msg;
+                            } else {
+                                chat_items.push(ChatItem::Text(welder_msg));
+                            }
+                        } else {
+                            chat_items.push(ChatItem::Text(welder_msg));
+                        }
+                        for tool_out in &output.tool_outputs {
+                            if let Some(view) = &tool_out.synthesized_view {
+                                if let Some(tile) = &view.tile {
+                                    if let Some(existing) = chat_tiles.iter_mut().find(|t| t.tile_id == tile.tile_id) {
+                                        *existing = tile.clone();
+                                    } else {
+                                        chat_tiles.push(tile.clone());
+                                    }
+                                    chat_items.push(ChatItem::Tile(tile.clone()));
+                                }
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        let err_msg = alloc::format!("Welder: {}", error);
+                        transcript.push_str(&alloc::format!("{}", error));
+                        if let Some(ChatItem::Text(last)) = chat_items.last_mut() {
+                            if last.starts_with("Welder:") {
+                                *last = err_msg;
+                            } else {
+                                chat_items.push(ChatItem::Text(err_msg));
+                            }
+                        } else {
+                            chat_items.push(ChatItem::Text(err_msg));
+                        }
+                    }
                 }
+                ui.set_available_tiles(&agent.synthesized_tiles());
                 ui.set_transcript(&transcript);
-                ui.set_tiles(&agent.synthesized_tiles());
+                ui.set_tiles(&chat_tiles);
+                ui.set_chat_items(&chat_items);
             }
         }
         if pending {
@@ -136,6 +215,7 @@ pub fn run(
                         crate::serial_println!("[welder] Reply text advanced.");
                     }
                     ui.update_streaming_reply(&transcript, &partial);
+                    ui.update_streaming_chat_item(&partial);
                 }
             }
         }
@@ -143,12 +223,29 @@ pub fn run(
             if transcript.len() > 16 * 1024 {
                 transcript.clear();
             }
+            if chat_items.len() > 100 {
+                chat_items.drain(0..50);
+            }
             transcript.push_str("\n\nYou: ");
             transcript.push_str(&text);
+            chat_items.push(ChatItem::Text(alloc::format!("You: {}", text)));
             match agent.start_console_input(&text) {
                 Ok(Some(output)) => {
                     transcript.push_str("\n\nWelder: ");
                     transcript.push_str(&output.response_text);
+                    chat_items.push(ChatItem::Text(alloc::format!("Welder: {}", output.response_text)));
+                    for tool_out in &output.tool_outputs {
+                        if let Some(view) = &tool_out.synthesized_view {
+                            if let Some(tile) = &view.tile {
+                                if let Some(existing) = chat_tiles.iter_mut().find(|t| t.tile_id == tile.tile_id) {
+                                    *existing = tile.clone();
+                                } else {
+                                    chat_tiles.push(tile.clone());
+                                }
+                                chat_items.push(ChatItem::Tile(tile.clone()));
+                            }
+                        }
+                    }
                 }
                 Ok(None) => {
                     pending = true;
@@ -156,13 +253,16 @@ pub fn run(
                     ui.set_reply_pending(true);
                 }
                 Err(error) => {
-                    transcript.push_str("\n\nWelder: ");
-                    transcript.push_str(&alloc::format!("{}", error));
+                    let err_msg = alloc::format!("Welder: {}", error);
+                    transcript.push_str(&alloc::format!("\n\nWelder: {}", error));
+                    chat_items.push(ChatItem::Text(err_msg));
                 }
             }
             ui.set_active_model(agent.active_model_id());
+            ui.set_available_tiles(&agent.synthesized_tiles());
             ui.set_transcript(&transcript);
-            ui.set_tiles(&agent.synthesized_tiles());
+            ui.set_tiles(&chat_tiles);
+            ui.set_chat_items(&chat_items);
         }
         let elapsed = Duration::from_nanos(rng::monotonic_time_ns().saturating_sub(start));
         let _ = crate::fs::automation::tick_kernel_automations(&mut agent, elapsed.as_millis() as u64);
@@ -170,14 +270,18 @@ pub fn run(
         if let Ok(changes) = package_watcher.poll(now_ms) {
             if !changes.is_empty() {
                 let _ = package_watcher.publish_inventory();
+                let _ = agent.tool_registry.refresh_app_packages();
                 for change in changes {
                     if let alloyos_mcp::packages::PackageChange::Updated(status) = change {
                         if !status.ready {
                             for diagnostic in status.diagnostics {
-                                transcript.push_str(&alloc::format!("\n\nWelder: App {}: {} ({})",
-                                    status.app_id, diagnostic.message, diagnostic.path));
+                                let diag_msg = alloc::format!("Welder: App {}: {} ({})",
+                                    status.app_id, diagnostic.message, diagnostic.path);
+                                transcript.push_str(&alloc::format!("\n\n{}", diag_msg));
+                                chat_items.push(ChatItem::Text(diag_msg));
                             }
                             ui.set_transcript(&transcript);
+                            ui.set_chat_items(&chat_items);
                         }
                     }
                 }
@@ -193,7 +297,9 @@ pub fn run(
                 // rendering. Unpinned cards need no background refresh.
                 if ui.dashboard_state().pinned_ids().contains(&id) {
                     let _ = agent.refresh_tile(&id);
-                    ui.set_tiles(&agent.synthesized_tiles());
+                    ui.set_available_tiles(&agent.synthesized_tiles());
+                    ui.set_tiles(&chat_tiles);
+                    ui.set_chat_items(&chat_items);
                 }
             }
         }

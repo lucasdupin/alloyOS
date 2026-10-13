@@ -208,6 +208,11 @@ impl KernelVfsBackend {
 }
 
 impl ToolVfsBackend for KernelVfsBackend {
+    fn package_snapshot(&mut self) -> Result<alloyos_mcp::PackageSnapshot, String> {
+        self.with_vfs(super::packages::snapshot)
+            .unwrap_or_else(|| Err("VFS unavailable".into()))
+    }
+
     fn read_file(&mut self, path: &str) -> Option<String> {
         let norm = ScriptCapabilities::normalize_path(path);
         self.with_vfs(|vfs| {

@@ -1,0 +1,8 @@
+[
+  {
+    "uri": "mcp://clock/now",
+    "name": "Clock",
+    "mime_type": "application/json",
+    "description": "Current system uptime"
+  }
+]

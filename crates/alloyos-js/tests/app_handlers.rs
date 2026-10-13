@@ -5,7 +5,7 @@ use alloyos_js::{
 fn typed_arguments_fresh_scopes_and_no_implicit_main() {
     let source = "let count = 0; function main() { count = 100; } function callTool(name, args) { count += 1; return name + args.value + count; }";
     let args = [
-        JsValue::String("clock.now".into()),
+        JsValue::String("fixture.now".into()),
         JsValue::Object(
             [("value".into(), JsValue::String(":ok:".into()))]
                 .into_iter()
@@ -16,7 +16,7 @@ fn typed_arguments_fresh_scopes_and_no_implicit_main() {
     for _ in 0..2 {
         let result =
             invoke_app_handler(source, AppHandler::CallTool, &args, 500, &mut host).unwrap();
-        assert_eq!(result.text, "clock.now:ok:1");
+        assert_eq!(result.text, "fixture.now:ok:1");
         assert!(result.steps_executed > 0);
     }
 }
@@ -31,7 +31,7 @@ fn initialization_and_handler_share_fuel() {
             invoke_app_handler(
                 source,
                 AppHandler::RenderTile,
-                &[JsValue::String("clock.now".into())],
+                &[JsValue::String("fixture.now".into())],
                 100,
                 &mut host
             ),
@@ -57,7 +57,7 @@ fn validation_does_not_execute_and_checks_contract() {
     assert!(invoke_app_handler(
         "function renderTile(id) { return 42; }",
         AppHandler::RenderTile,
-        &[JsValue::String("clock.now".into())],
+        &[JsValue::String("fixture.now".into())],
         100,
         &mut host
     )

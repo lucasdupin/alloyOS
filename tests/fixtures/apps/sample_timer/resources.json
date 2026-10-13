@@ -1,0 +1,8 @@
+[
+  {
+    "uri": "mcp://sample_timer/now",
+    "name": "Sample Timer",
+    "mime_type": "application/json",
+    "description": "Current system uptime"
+  }
+]

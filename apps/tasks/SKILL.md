@@ -9,7 +9,7 @@ description: List, create, edit, and delete scheduled tasks backed by alloyOS Sc
 It is the **only** application permitted to access `ScriptScheduler` (`/etc/schedules.conf` and `/scripts/*.js`). Welder must always route schedule listing, creation, editing, and deletion through the `Tasks` MCP entry points.
 
 ## Architectural Rules
-1. **Exclusive Scheduler Access**: Only `/apps/tasks/` holds `ScriptSchedulerAccess`. No other app may access `ScriptScheduler` or `/etc/schedules.conf`.
+1. **Declared Scheduler Access**: This package declares `ScriptSchedulerAccess`. The host grants scheduler bindings from manifest capabilities rather than application names.
 2. **Centralized Orchestration**: Apps cannot invoke or access other apps. Only Welder orchestrates across apps.
 3. **Renderer-Agnostic Tiles**: `Tasks` exposes declarative `AppTile` schemas (`tasks.board` and `tasks.detail`) that Ferrofluid renders.
 

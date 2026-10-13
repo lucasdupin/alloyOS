@@ -1,3 +1,4 @@
+mod image;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -255,7 +256,7 @@ fn get_cobaltfs_image_path(workspace_root: &Path, release: bool) -> PathBuf {
 /// no external `mkfs.ext2` binary is required on macOS.
 fn ensure_cobaltfs_image(path: &Path) -> Result<()> {
     if path.exists() {
-        return Ok(());
+        return image::copy_tree(path, &get_workspace_root()?.join("apps"), "/apps");
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -346,7 +347,7 @@ fn ensure_cobaltfs_image(path: &Path) -> Result<()> {
 
     std::fs::write(path, &img)
         .with_context(|| format!("Failed to write CobaltFS image to {}", path.display()))?;
-    Ok(())
+    image::copy_tree(path, &get_workspace_root()?.join("apps"), "/apps")
 }
 
 fn build_crates(release: bool, debug_shell: bool) -> Result<PathBuf> {

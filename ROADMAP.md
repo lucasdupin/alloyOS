@@ -7,7 +7,7 @@
 - **No Shell for the AI**: The AI agent cannot see or execute shell commands (`sh`, `exec`, `spawn`). It interacts with the OS exclusively through typed native tools, local JavaScript (`alloyos-js`), and MCP servers.
 - **Agent-Exclusive UI & Declarative Tiles**: Developer apps are strictly headless (`alloyos-mcp`) and never link against or depend on any UI toolkit. Each app can expose **MCP entry points** (tools, resources, prompts), **SKILLs** (text files under `/apps/<app_id>/SKILL.md`), and declarative **Tiles** (`AppTile` schemas that can be embedded in the chat stream or pinned to the **Dashboard**). Only Welder and **Ferrofluid (`ferrofluidd`)** synthesize and render UI surfaces.
 - **One Process per App (required; pending)**: Every JavaScript app runs in its own independently scheduled OS process with a private virtual address space. `alloyos-mcp` invokes app handlers through IPC; manifest capabilities remain enforced inside each app process. An app fault or hang must not stop the host, Welder, Ferrofluid, or other apps.
-- **Welder-Centralized App Orchestration & Exclusive `Tasks` Scheduler Access**: No app can access or invoke another app; **only Welder centralizes app access and orchestration**. Furthermore, the canonical **Tasks** app (`app_id = "tasks"`) is the **only** app permitted to access `ScriptScheduler` (`/etc/schedules.conf` and `/scripts/*.js`), and Welder must route scheduled-task operations through `Tasks`.
+- **Welder-Centralized App Orchestration & Capability-Based Scheduler Access**: No app can access or invoke another app; **only Welder centralizes app access and orchestration**. Apps declare `ScriptSchedulerAccess` in their filesystem manifests to receive scheduler bindings and storage scopes. Rust OS services do not select applications by name.
 - **Agent-Owned User Knowledge**: The planned knowledge service maintains local user context under `/knowledge/`, with source tracking and user correction/deletion controls. Skills are supplied by `/apps/`, independently of knowledge; no top-level `/skills/` directory is planned.
 
 ---
@@ -167,7 +167,7 @@ soft keyboard and liquid displacement effects.
   - Customizable home surface and app launcher presented every time the user opens the device
   - Two-column bento layout with as many rows as needed; larger cards can span both columns
   - Hosts dynamic, live-updating **Tiles** pinned from installed apps (such as `tasks.board` from `Tasks`)
-  - Implemented increment: pin/unpin/order state, persistent pin preferences, periodic resource refresh and built-in cards; app launcher and historical chat placement remain pending
+  - Implemented increment: pin/unpin/order state, persistent pin preferences, periodic resource refresh and filesystem-discovered cards; app launcher and historical chat placement remain pending
   - The Dashboard is part of the conversation itself: conversations flow seamlessly underneath the Dashboard as the user scrolls and interacts
 - [ ] **Agent-generated views & embedded chat Tiles**
   - Render Welder's synthesized views and declarative `AppTile` descriptors inline in the chat stream or pinned to the Dashboard, routing tile actions back to Welder
@@ -237,7 +237,7 @@ Forge only through an explicitly granted `AlloyOS.forge(...)` capability.
   - Restore and verify automations across reboot
 - [ ] **Boa JavaScript engine support (deferred; low priority)**
   - Keep the current `alloyos-js` subset interpreter for near-term automation and headless apps; broader ECMAScript compatibility is a later developer-platform improvement, not a prerequisite for current milestones
-  - Introduce a shared engine boundary for source validation and execution, preserving `AlloyOS.*` capability policies, Welder-only app orchestration, and Tasks-only scheduler access
+  - Introduce a shared engine boundary for source validation and execution, preserving `AlloyOS.*` capability policies, Welder-only app orchestration, and manifest-declared scheduler access
   - Resolve Boa's upstream `std` dependency for the bare-metal ARM64 environment before committing to integration; measure binary size, startup cost, and memory use on the guest
   - Validate module loading, promises/async host I/O, and execution/memory limits within protected app processes before enabling Boa for developer apps
   - Define supported language and host APIs explicitly; Boa support does not imply Node.js or unrestricted npm package compatibility
@@ -253,7 +253,7 @@ Every alloyOS application is a headless package under `/apps/<app_id>/` that can
 
 Strict isolation and orchestration rules govern all apps:
 - **Tasks (`app_id = "tasks"`) is our first canonical app**: It allows Ferrofluid and Welder to list (`tasks.list`), create (`tasks.create`), edit (`tasks.edit`), and delete (`tasks.delete`) scheduled tasks, and exposes `/apps/tasks/SKILL.md` and the `tasks.board` Tile.
-- **Exclusive `ScriptScheduler` Access**: `Tasks` is the **only** app allowed to declare `ScriptSchedulerAccess` or touch `/etc/schedules.conf` and `/scripts/*.js`. Welder routes all schedule management through `Tasks`.
+- **Declared `ScriptScheduler` Access**: Apps declaring `ScriptSchedulerAccess` can use scheduler bindings and explicitly declared scheduler storage scopes. OS scheduling tools remain generic.
 - **Welder-Centralized App Orchestration**: No app can access or invoke another app (`McpCaller::App` is rejected by `McpRegistry`). Only Welder (`McpCaller::Welder`) centralizes app access and cross-app workflows.
 
 - [x] **MCP platform library (`alloyos-mcp`)**
@@ -264,20 +264,20 @@ Strict isolation and orchestration rules govern all apps:
   - Connected to Welder (`NativeToolRegistry`) with shared `ScriptScheduler` and VFS persistence
 - [x] **Manifest capability enforcement**
   - Manifest validation and runtime guards reject UI, raw-input, shell, cross-app (`CrossAppAccessForbidden`), and unauthorized scheduler (`SchedulerAccessForbidden`) capabilities
-  - Enforce that only `Tasks` can access `ScriptScheduler` and only Welder can invoke apps
-- [ ] **Default app storage and network access**
+  - Enforce declared scheduler capabilities and Welder-only app invocation
+- [x] **Default app storage and network access**
   - Automatically provide read/write access to `/var/<app_id>/` and outbound network access; apps do not need manifest grants for either
   - Keep `/apps/` read-only to apps and deny access to other apps' data directories; package installation and updates remain OS-managed
   - Update manifest-to-runtime policies and regression tests to enforce these defaults and boundaries
-- [ ] **Watch app packages and expose validation status to Welder**
+- [x] **Watch app packages and expose validation status to Welder**
   - Add an OS-owned recursive watcher for `/apps/*/`, covering package creation/deletion and changes to manifests, `main.js`, skills, and other package files; scan installed packages at startup too
-  - Implemented increment: settled recursive VFS snapshots, package inventory/diagnostics at `/proc/app-packages.json`, static handler checks and revision-bound registry gates; legacy built-in adapters are not yet bound to package revisions
+  - Implemented increment: settled recursive VFS snapshots, package inventory/diagnostics at `/proc/app-packages.json`, static handler checks and revision-bound registry gates; image-time filesystem copying and runtime JavaScript discovery; no app identities or contents are embedded in Rust
   - Coalesce related writes and validate a consistent package snapshot before registration or reload; notify Welder whenever a package changes so it can review validation results and explain failures
   - Check package layout, manifest/schema validity, JavaScript syntax and handler contracts, and permission boundaries; run execution checks in a bounded app process
   - Track each package's installed version, validated revision, readiness, and actionable errors with file locations; retain invalid packages in the inventory, but prevent invalid revisions from executing
   - Let users ask Welder which apps are installed and what errors each app has, including whether validation is pending or its result is stale
   - Verify nested edits, additions/removals, partial writes, invalid packages, and recovery after a fix with watcher and package-validation regression tests
-- [ ] **PackageManager app (proposed)**
+- [x] **PackageManager app**
   - Provide a JavaScript app under `/apps/package-manager/` with MCP tools/resources and a status Tile for installed apps, per-package errors, and revalidation, following the app pattern used by Tasks
   - Back its inventory and lifecycle operations with a typed OS package service; Welder orchestrates requests, and PackageManager does not directly invoke other apps or write `/apps/`
   - Keep the watcher, validation records, and diagnostic service available even if the PackageManager app itself is invalid or unavailable

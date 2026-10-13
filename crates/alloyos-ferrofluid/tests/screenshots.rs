@@ -266,5 +266,27 @@ fn system_ui_screenshots() {
     pointer(&mut ui, InputEventKind::PointerButtonUp, 1170, 1300);
     for frame in 1..=120 { ui.render(Duration::from_millis(10984 + frame * 16)); }
     assert!(ui.pixels() == closed.as_slice(), "backdrop tap dismisses pins without changing chat");
+    // Reading older messages must survive keyboard dismissal and periodic
+    // descriptor refreshes from the kernel bridge.
+    let history = vec![alloyos_ferrofluid::ChatItem::Text("Older conversation line\n".repeat(100))];
+    ui.set_chat_items(&history);
+    ui.render(Duration::from_millis(14000));
+    pointer(&mut ui, InputEventKind::PointerButtonDown, 300, 2500);
+    pointer(&mut ui, InputEventKind::PointerButtonUp, 300, 2500);
+    for frame in 1..=40 { ui.render(Duration::from_millis(14000 + frame * 16)); }
+    pointer(&mut ui, InputEventKind::PointerButtonDown, 400, 600);
+    for (frame, y) in [650, 750, 900, 1100, 1300, 1400].into_iter().enumerate() {
+        pointer(&mut ui, InputEventKind::PointerMove, 400, y);
+        ui.render(Duration::from_millis(14656 + frame as u64 * 16));
+    }
+    pointer(&mut ui, InputEventKind::PointerButtonUp, 400, 1400);
+    for frame in 1..=90 { ui.render(Duration::from_millis(14752 + frame * 16)); }
+    assert!(ui.chat_scroll_offset() < ui.chat_scroll_maximum() - 30.0,
+        "dismissing the keyboard during a history drag must not jump to the bottom");
+    let reading_offset = ui.chat_scroll_offset();
+    ui.set_chat_items(&history);
+    ui.render(Duration::from_millis(16208));
+    assert!((ui.chat_scroll_offset() - reading_offset).abs() < 1.0,
+        "refreshing unchanged chat items must preserve the reading position");
     suite.finish();
 }

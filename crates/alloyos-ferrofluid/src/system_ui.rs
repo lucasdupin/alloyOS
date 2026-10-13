@@ -61,8 +61,6 @@ pub struct FerrofluidSystemUi {
     tile_events: Rc<RefCell<VecDeque<crate::TileEvent>>>,
     rgb: Vec<slint::Rgb8Pixel>,
     argb: Vec<u32>,
-    top_blur: Vec<slint::Rgb8Pixel>,
-    previous_blur_top: Option<u32>,
     size: PhysicalSize,
     scale: f32,
     keys: EvdevKeyboard,
@@ -75,6 +73,8 @@ pub struct FerrofluidSystemUi {
     previous_sidebar_active: bool,
     previous_keyboard_reveal: f32,
     previous_chat_offset: f32,
+    top_blur: Vec<slint::Rgb8Pixel>,
+    previous_blur_top: Option<u32>,
 }
 
 impl FerrofluidSystemUi {
@@ -268,8 +268,6 @@ impl FerrofluidSystemUi {
             dashboard,
             tile_events,
             rgb: vec![slint::Rgb8Pixel::default(); width as usize * height as usize],
-            previous_blur_top: None,
-            top_blur: vec![slint::Rgb8Pixel::default(); width as usize * (40.0 * scale) as usize],
             argb: vec![0xff000000; width as usize * height as usize],
             size,
             scale,
@@ -283,6 +281,8 @@ impl FerrofluidSystemUi {
             previous_sidebar_active: false,
             previous_keyboard_reveal: 0.0,
             previous_chat_offset: 0.0,
+            previous_blur_top: None,
+            top_blur: vec![slint::Rgb8Pixel::default(); width as usize * (40.0 * scale) as usize],
         })
     }
 
@@ -327,6 +327,12 @@ impl FerrofluidSystemUi {
         );
     }
     pub fn set_chat_items(&self, items: &[ChatItem]) {
+        // Periodic pinned-tile refreshes resubmit the current conversation.
+        // Replacing an identical model triggers Slint's changed handler and
+        // resets the reading position, even though no message arrived.
+        if self.chat_items.borrow().as_slice() == items {
+            return;
+        }
         self.backdrop_dirty.set(true);
         *self.chat_items.borrow_mut() = items.to_vec();
         {
@@ -596,12 +602,15 @@ impl FerrofluidSystemUi {
                 rect.y = 0;
                 rect.height = self.size.height;
             }
+            // Rendering resolves layout and may update the scroll position.
+            let chat_offset = self.ui.get_scroll_offset();
             let chat_top = (self.ui.get_chat_top() * self.scale) as u32;
             let blur_height = (40.0 * self.scale) as u32;
             let blur_bottom = (chat_top + blur_height).min(self.size.height);
-            if !booting {
+            let blur_active = !booting && !sidebar_active && chat_offset > 0.0;
+            if blur_active {
                 if let Some(previous) = self.previous_blur_top {
-                    if previous != chat_top {
+                    if previous != chat_top || chat_offset != self.previous_chat_offset {
                         let bottom = (rect.y + rect.height)
                             .max((previous + blur_height).min(self.size.height))
                             .max(blur_bottom);
@@ -613,9 +622,17 @@ impl FerrofluidSystemUi {
                 }
                 self.previous_blur_top = Some(chat_top);
             } else {
+                if let Some(previous) = self.previous_blur_top {
+                    let bottom = (rect.y + rect.height)
+                        .max((previous + blur_height).min(self.size.height));
+                    rect.y = rect.y.min(previous);
+                    rect.height = bottom - rect.y;
+                    rect.x = 0;
+                    rect.width = self.size.width;
+                }
                 self.previous_blur_top = None;
             }
-            let blur_dirty = !booting && !sidebar_active && rect.y < blur_bottom && rect.y + rect.height > chat_top;
+            let blur_dirty = blur_active && rect.y < blur_bottom && rect.y + rect.height > chat_top;
             if blur_dirty {
                 // The blur samples neighboring pixels, so damage anywhere in
                 // its band invalidates the entire band, including its fringe.
@@ -658,7 +675,7 @@ impl FerrofluidSystemUi {
         }
         self.previous_sidebar_active = sidebar_active;
         self.previous_keyboard_reveal = keyboard_reveal;
-        self.previous_chat_offset = chat_offset;
+        self.previous_chat_offset = self.ui.get_scroll_offset();
         damage
     }
 }
@@ -1000,6 +1017,102 @@ mod tests {
         ui.render(Duration::ZERO);
     }
 
+    fn assert_mixed_chat_vertical_scrolling(ui: &mut FerrofluidSystemUi) {
+        use alloyos_mcp::protocol::TileItem;
+
+        let mut history = Vec::new();
+        for index in 0..12 {
+            history.push(ChatItem::Text(alloc::format!(
+                "You: Plan section {index}.\nFirst detail.\nSecond detail.\nThird detail."
+            )));
+            history.push(ChatItem::Tile(AppTile {
+                tile_id: alloc::format!("scroll-fixture.{index}"),
+                title: alloc::format!("Plan tile {index}"),
+                subtitle: "Details embedded in the conversation".into(),
+                refresh_resource_uri: None,
+                items: vec![TileItem {
+                    id: "detail".into(),
+                    title: alloc::format!("Task {index}"),
+                    subtitle: "Leave time for a break.".into(),
+                    badge: String::new(),
+                    status: "Ready".into(),
+                }],
+                actions: Vec::new(),
+            }));
+            history.push(ChatItem::Text(alloc::format!(
+                "Welder: Section {index} is ready.\nReview the tile above before continuing."
+            )));
+        }
+        ui.ui.invoke_release_editor();
+        ui.ui.set_sidebar_open(false);
+        ui.set_chat_items(&history);
+        for frame in 0..=60 {
+            ui.render(Duration::from_millis(4000 + frame * 16));
+        }
+        assert!(ui.chat_scroll_maximum() > 1000.0, "mixed content must overflow the viewport");
+        assert!((ui.chat_scroll_offset() - ui.chat_scroll_maximum()).abs() < 1.0,
+            "new mixed chat content must reveal the latest message after layout");
+        let initial_offset = ui.chat_scroll_offset();
+        let initial_pixels = ui.pixels().to_vec();
+        let first_drag_down = initial_offset > ui.chat_scroll_maximum() * 0.5;
+
+        let mut now_ms = 4960;
+        let mut drag = |ui: &mut FerrofluidSystemUi, start_y: i32, positions: &[i32]| {
+            ui.handle_input(InputEvent { kind: InputEventKind::PointerButtonDown, code: 0x110, x: 500, y: start_y });
+            for &y in positions {
+                ui.handle_input(InputEvent { kind: InputEventKind::PointerMove, code: 0x110, x: 500, y });
+                now_ms += 16;
+                ui.render(Duration::from_millis(now_ms));
+            }
+            ui.handle_input(InputEvent { kind: InputEventKind::PointerButtonUp, code: 0x110, x: 500, y: *positions.last().unwrap() });
+            for _ in 0..90 {
+                now_ms += 16;
+                ui.render(Duration::from_millis(now_ms));
+            }
+        };
+        if first_drag_down {
+            drag(ui, 700, &[750, 850, 1050, 1250, 1450]);
+        } else {
+            drag(ui, 1450, &[1400, 1300, 1100, 900, 700]);
+        }
+        let reading_offset = ui.chat_scroll_offset();
+        let movement = reading_offset - initial_offset;
+        assert!(if first_drag_down { movement < -100.0 } else { movement > 100.0 },
+            "a vertical drag across mixed text and tiles must move the history in the intended direction");
+        assert!(ui.pixels() != initial_pixels.as_slice(), "scrolling must repaint the visible history");
+        assert!(reading_offset >= 0.0 && reading_offset <= ui.chat_scroll_maximum());
+
+        ui.set_chat_items(&history);
+        // The drag helper has advanced the owner clock; a fixed-time render
+        // still processes any model update without introducing more inertia.
+        ui.render(ui.now.get());
+        assert!((ui.chat_scroll_offset() - reading_offset).abs() < 1.0,
+            "refreshing mixed content must preserve the reading position");
+
+        if first_drag_down {
+            drag(ui, 1450, &[1400, 1300, 1100, 900, 700]);
+        } else {
+            drag(ui, 700, &[750, 850, 1050, 1250, 1450]);
+        }
+        let reverse_movement = ui.chat_scroll_offset() - reading_offset;
+        assert!(if first_drag_down { reverse_movement > 50.0 } else { reverse_movement < -50.0 },
+            "the reverse drag must move through the history in the opposite direction");
+        assert!(ui.chat_scroll_offset() <= ui.chat_scroll_maximum());
+        assert_eq!(ui.chat_items(), history, "scrolling must preserve text/tile ordering and content");
+        history.push(ChatItem::Text("You: Show the latest message.".into()));
+        ui.set_chat_items(&history);
+        ui.render(Duration::from_millis(now_ms + 16));
+        assert!((ui.chat_scroll_offset() - ui.chat_scroll_maximum()).abs() < 1.0,
+            "appended message must be visible after reading older history");
+        ui.set_reply_pending(true);
+        ui.render(Duration::from_millis(now_ms + 32));
+        assert!((ui.chat_scroll_offset() - ui.chat_scroll_maximum()).abs() < 1.0,
+            "loading indicator must remain visible as content grows");
+        ui.set_reply_pending(false);
+        ui.render(Duration::from_millis(now_ms + 48));
+        assert!(ui.take_tile_event().is_none(), "scrolling must not dispatch tile actions");
+    }
+
     #[test]
     fn system_ui_renders_and_accepts_local_input() {
         use alloyos_proto::display::{PHONE_HEIGHT, PHONE_SCALE, PHONE_WIDTH};
@@ -1036,6 +1149,7 @@ mod tests {
         assert_eq!(ui.pixels().len(), (PHONE_WIDTH * PHONE_HEIGHT) as usize);
         assert!(ui.pixels().iter().all(|pixel| pixel >> 24 == 255));
         assert!(ui.pixels().iter().any(|pixel| *pixel != ui.pixels()[0]));
+        assert!(ui.previous_blur_top.is_none(), "chat starts without edge blur");
         assert_long_composer_scrolling(&mut ui);
         // Tapping the model name directly requests a model change.
         for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
@@ -1208,6 +1322,8 @@ mod tests {
         });
         ui.render(Duration::from_millis(1840));
         ui.render(Duration::from_millis(2384));
+        assert!(ui.ui.get_scroll_offset() > 0.0);
+        assert!(ui.previous_blur_top.is_some(), "scrolled chat blurs at the header");
         assert_eq!(
             ui.ui.get_keyboard_reveal(),
             0.0,
@@ -1396,6 +1512,7 @@ mod tests {
             ui.take_tile_action(),
             Some(TileAction::new("refresh", "Refresh", "fixture.now", alloc::collections::BTreeMap::new()))
         );
+        assert_mixed_chat_vertical_scrolling(&mut ui);
         // Key releases retain the original character even if Shift changes.
         let mut keys = EvdevKeyboard::default();
         keys.translate(42, true);

@@ -224,6 +224,11 @@ export component SystemUi inherits Window {
     callback refresh-tile(string);
     changed transcript => { scroll.content-y = min(0px, scroll.visible-height - scroll.content-height); }
     changed chat-items => { scroll.content-y = min(0px, scroll.visible-height - scroll.content-height); }
+    changed reply-pending => {
+        if root.reply-pending {
+            scroll.content-y = min(0px, scroll.visible-height - scroll.content-height);
+        }
+    }
     callback tile-action(string, string);
     callback submit(string);
     callback cycle-model();
@@ -299,6 +304,9 @@ export component SystemUi inherits Window {
                             content-height: max(self.visible-height, stream.preferred-height);
                             // Layout changes after streamed text, tiles, or the indicator
                             // appear always reveal the latest content.
+                            changed content-height => {
+                                self.content-y = min(0px, self.visible-height - self.content-height);
+                            }
                             changed visible-height => {
                                 self.content-y = min(0px, self.visible-height - self.content-height);
                             }

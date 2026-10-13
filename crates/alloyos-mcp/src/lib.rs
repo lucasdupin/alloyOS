@@ -7,6 +7,7 @@ extern crate alloc;
 
 pub mod apps;
 pub mod protocol;
+pub mod packages;
 pub mod registry;
 pub mod sandbox;
 
@@ -20,6 +21,7 @@ pub use protocol::{
     TileItem, ERR_INTERNAL_ERROR, ERR_INVALID_PARAMS, ERR_INVALID_REQUEST, ERR_METHOD_NOT_FOUND,
     ERR_PARSE_ERROR, ERR_RESOURCE_NOT_FOUND, ERR_SANDBOX_VIOLATION,
 };
+pub use packages::{PackageSnapshot, PackageService, PackageStatus, PackageDiagnostic, PackageChange, ValidatedPackageRevision};
 pub use registry::{McpApp, McpCaller, McpRegistry};
 pub use sandbox::{
     validate_app_manifest, AppCapability, AppManifest, McpSandboxError, RuntimeCapabilityGuard,

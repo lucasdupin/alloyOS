@@ -5,6 +5,8 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::packages::{PackageService, ValidatedPackageRevision};
+
 use crate::protocol::{
     mcp_map, methods, AppSkill, AppTile, McpError, McpPrompt, McpRequest, McpResource,
     McpResourceContent, McpResponse, McpTool, McpValue,
@@ -80,6 +82,8 @@ struct RegisteredApp {
 /// prompts, skills, and declarative tiles over JSON-RPC 2.0.
 pub struct McpRegistry {
     apps: BTreeMap<String, RegisteredApp>,
+    package_inventory: PackageService,
+    package_revisions: BTreeMap<String, Option<ValidatedPackageRevision>>,
 }
 
 impl Default for McpRegistry {
@@ -98,7 +102,42 @@ impl McpRegistry {
     pub fn new() -> Self {
         Self {
             apps: BTreeMap::new(),
+            package_inventory: PackageService::new(),
+            package_revisions: BTreeMap::new(),
         }
+    }
+
+    /// Install OS validation results. Newly observed, invalid, deleted, or changed
+    /// packages remain blocked until the execution owner binds a current revision.
+    pub fn sync_package_inventory(&mut self, service: &PackageService) {
+        for status in service.inventory() {
+            self.package_revisions.entry(status.app_id.clone()).or_insert(None);
+        }
+        self.package_inventory = service.clone();
+    }
+
+    /// The owner must call this only after loading this exact immutable revision.
+    /// This binds validation to a registered executor; it does not load JS itself.
+    pub fn bind_package_revision(&mut self, revision: ValidatedPackageRevision) -> Result<(), McpError> {
+        if !self.package_inventory.is_current(&revision) {
+            return Err(McpError::invalid_params("package revision is not currently validated"));
+        }
+        let app = self.apps.get(revision.app_id()).ok_or_else(|| McpError::invalid_params("package executor is not registered"))?;
+        let status = self.package_inventory.status(revision.app_id()).unwrap();
+        if status.installed_version.as_deref() != Some(app.app.manifest().version.as_str()) {
+            return Err(McpError::invalid_params("registered executor version differs from package"));
+        }
+        self.package_revisions.insert(revision.app_id().into(), Some(revision));
+        Ok(())
+    }
+
+    fn verify_package_revision(&self, app_id: &str) -> Result<(), McpError> {
+        if let Some(revision) = self.package_revisions.get(app_id) {
+            if !revision.as_ref().map(|revision| self.package_inventory.is_current(revision)).unwrap_or(false) {
+                return Err(McpError::invalid_params(format!("package '{}' has no loaded current validated revision", app_id)));
+            }
+        }
+        Ok(())
     }
 
     /// Register a developer MCP app after validating its manifest against the
@@ -141,7 +180,7 @@ impl McpRegistry {
         target_app_id: &str,
     ) -> Result<(), McpError> {
         match caller {
-            McpCaller::Welder => Ok(()),
+            McpCaller::Welder => self.verify_package_revision(target_app_id),
             McpCaller::App(caller_app_id) => Err(McpSandboxError::CrossAppAccessForbidden {
                 caller_app_id: caller_app_id.clone(),
                 target_app_id: target_app_id.to_string(),
@@ -269,6 +308,7 @@ impl McpRegistry {
                 tile_id
             ))
         })?;
+        self.verify_package_revision(app_id)?;
         let entry = self.apps.get(app_id).ok_or_else(|| {
             McpError::resource_not_found(format!(
                 "no registered MCP app '{}' for tile '{}'",
@@ -346,6 +386,7 @@ impl McpRegistry {
 
         self.verify_caller_access(caller, app_id)?;
 
+        self.verify_package_revision(app_id)?;
         let entry = self.apps.get(app_id).ok_or_else(|| {
             McpError::resource_not_found(format!(
                 "no registered MCP app '{}' for URI '{}'",
@@ -373,6 +414,7 @@ impl McpRegistry {
         args: &BTreeMap<String, String>,
     ) -> Result<String, McpError> {
         if let Some((app_id, _short_name)) = name.split_once('.') {
+            self.verify_package_revision(app_id)?;
             let entry = self.apps.get(app_id).ok_or_else(|| {
                 McpError::method_not_found(format!("unknown MCP app '{}'", app_id))
             })?;
@@ -383,7 +425,8 @@ impl McpRegistry {
             return entry.app.get_prompt(name, args);
         }
 
-        for entry in self.apps.values() {
+        for (app_id, entry) in &self.apps {
+            if self.verify_package_revision(app_id).is_err() { continue; }
             if entry
                 .guard
                 .enforce_capability(&AppCapability::ExposeMcpPrompts)

@@ -1,4 +1,5 @@
 pub mod automation;
+pub mod packages;
 pub mod block;
 pub mod cobaltfs;
 pub mod devfs;

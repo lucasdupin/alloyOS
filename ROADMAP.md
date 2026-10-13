@@ -275,6 +275,7 @@ Strict isolation and orchestration rules govern all apps:
   - Update manifest-to-runtime policies and regression tests to enforce these defaults and boundaries
 - [ ] **Watch app packages and expose validation status to Welder**
   - Add an OS-owned recursive watcher for `/apps/*/`, covering package creation/deletion and changes to manifests, `main.js`, skills, and other package files; scan installed packages at startup too
+  - Implemented increment: settled recursive VFS snapshots, package inventory/diagnostics at `/proc/app-packages.json`, static handler checks and revision-bound registry gates; legacy built-in adapters are not yet bound to package revisions
   - Coalesce related writes and validate a consistent package snapshot before registration or reload; notify Welder whenever a package changes so it can review validation results and explain failures
   - Check package layout, manifest/schema validity, JavaScript syntax and handler contracts, and permission boundaries; run execution checks in a bounded app process
   - Track each package's installed version, validated revision, readiness, and actionable errors with file locations; retain invalid packages in the inventory, but prevent invalid revisions from executing

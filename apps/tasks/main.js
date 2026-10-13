@@ -36,7 +36,7 @@ function callTool(toolName, args) {
 }
 
 function readResource(uri) {
-    if (uri === "mcp://tasks/scheduled") {
+    if (uri === "mcp://tasks/schedules") {
         let tasks = AlloyOS.scheduler.list();
         return JSON.stringify(tasks);
     }
@@ -51,27 +51,34 @@ function renderTile(tileId) {
             let t = tasks[i];
             items.push({
                 id: t.id,
-                label: t.id + " (" + t.script_path + ")",
-                value: t.trigger + " · runs: " + t.run_count,
+                title: t.id,
+                subtitle: t.script_path,
+                badge: t.trigger + " · runs: " + t.run_count,
                 status: t.last_result || "pending"
             });
         }
         return JSON.stringify({
             tile_id: "tasks.board",
-            app_id: "tasks",
             title: "Scheduled Tasks",
             subtitle: tasks.length + " active task(s)",
-            placements: ["ChatStream", "Dashboard"],
+            refresh_resource_uri: "mcp://tasks/schedules",
             items: items,
             actions: [
                 {
                     id: "refresh",
                     label: "Refresh Tasks",
                     tool_name: "tasks.list",
-                    arguments_json: "{}"
+                    default_args: {}
                 }
             ]
         });
     }
     return JSON.stringify({ error: "Unknown tile ID: " + tileId });
+}
+
+function getPrompt(name, args) {
+    if (name !== "tasks.manage") {
+        return "Unknown Tasks prompt";
+    }
+    return "Use tasks.list to inspect schedules, then tasks.create, tasks.edit, or tasks.delete for the requested change. Present the tasks.board Tile.";
 }

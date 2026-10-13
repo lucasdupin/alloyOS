@@ -1,0 +1,14 @@
+[
+  {
+    "uri": "mcp://weather/current",
+    "name": "Current Weather Snapshot",
+    "mime_type": "application/json",
+    "description": "Snapshot of current weather conditions and temperature"
+  },
+  {
+    "uri": "mcp://weather/config",
+    "name": "Weather Configuration",
+    "mime_type": "application/json",
+    "description": "Configured default location and temperature preferences"
+  }
+]

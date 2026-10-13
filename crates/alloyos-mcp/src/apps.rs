@@ -263,6 +263,7 @@ pub struct JsApp {
     skills: Vec<AppSkill>,
     scheduler: Option<Rc<RefCell<ScriptScheduler>>>,
     vfs_files: Option<Rc<RefCell<BTreeMap<String, String>>>>,
+    http_routes: Option<Rc<RefCell<BTreeMap<String, String>>>>,
     uptime_ms: u64,
     tile_ids: Vec<String>,
 }
@@ -288,6 +289,7 @@ impl JsApp {
             skills,
             scheduler,
             vfs_files: Some(Rc::new(RefCell::new(BTreeMap::new()))),
+            http_routes: None,
             uptime_ms: 0,
             tile_ids: Vec::new(),
         })
@@ -295,6 +297,11 @@ impl JsApp {
 
     pub fn with_vfs_files(mut self, vfs: Rc<RefCell<BTreeMap<String, String>>>) -> Self {
         self.vfs_files = Some(vfs);
+        self
+    }
+
+    pub fn with_http_routes(mut self, routes: Rc<RefCell<BTreeMap<String, String>>>) -> Self {
+        self.http_routes = Some(routes);
         self
     }
 
@@ -388,12 +395,18 @@ impl JsApp {
         if let Some(ref vfs) = self.vfs_files {
             host.files = vfs.borrow().clone();
         }
+        if let Some(ref routes) = self.http_routes {
+            host.http_routes = routes.borrow().clone();
+        }
         host
     }
 
     fn sync_host(&mut self, host: alloyos_js::VirtualHostEnv) {
         if let Some(ref vfs) = self.vfs_files {
             *vfs.borrow_mut() = host.files;
+        }
+        if let Some(ref routes) = self.http_routes {
+            *routes.borrow_mut() = host.http_routes;
         }
     }
 }

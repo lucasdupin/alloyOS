@@ -377,3 +377,137 @@ fn every_declared_fixture_tile_renders() {
         }
     }
 }
+
+pub fn repo_apps_snapshot() -> alloyos_mcp::PackageSnapshot {
+    fn walk(path: &std::path::Path, root: &std::path::Path, result: &mut alloyos_mcp::PackageSnapshot) {
+        for entry in std::fs::read_dir(path).unwrap() {
+            let p = entry.unwrap().path();
+            let target = format!("/apps/{}", p.strip_prefix(root).unwrap().display());
+            if p.is_dir() {
+                result.directories.push(target);
+                walk(&p, root, result);
+            } else {
+                result
+                    .files
+                    .insert(target, std::fs::read_to_string(p).unwrap());
+            }
+        }
+    }
+    let mut result = alloyos_mcp::PackageSnapshot::default();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps");
+    walk(&root, &root, &mut result);
+    result
+}
+
+#[test]
+fn every_repo_installed_package_passes_validation() {
+    let mut service = alloyos_mcp::PackageService::new();
+    service.scan_startup(repo_apps_snapshot());
+    let statuses = service.inventory();
+    assert!(statuses.len() >= 6, "expected at least 6 apps (clock, tasks, package-manager, calc, memory, weather), found {}", statuses.len());
+    for status in statuses {
+        assert!(status.ready, "{}: {:?}", status.app_id, status.diagnostics);
+    }
+}
+
+#[test]
+fn every_repo_installed_app_renders_tiles() {
+    let snapshot = repo_apps_snapshot();
+    let scheduler = std::rc::Rc::new(std::cell::RefCell::new(alloyos_js::ScriptScheduler::new()));
+    use alloyos_mcp::McpApp;
+    for directory in snapshot
+        .directories
+        .iter()
+        .filter(|dir| dir.trim_matches('/').split('/').count() == 2)
+    {
+        let app_id = directory.rsplit('/').next().unwrap();
+        let app = alloyos_mcp::JsApp::from_package_files(
+            app_id,
+            &snapshot.files,
+            Some(scheduler.clone()),
+        )
+        .unwrap();
+        if let Some(ids) = snapshot.files.get(&format!("{}/tiles.json", directory)) {
+            let ids = McpValue::from_json(ids).unwrap();
+            for id in ids.as_array().unwrap() {
+                let rendered = app.render_tile(id.as_str().unwrap());
+                assert!(
+                    rendered.is_ok(),
+                    "app {} tile {} failed to render: {:?}",
+                    app_id,
+                    id.as_str().unwrap(),
+                    rendered
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn calc_memory_and_weather_tools_execute() {
+    let snapshot = repo_apps_snapshot();
+    let mut registry = McpRegistry::new();
+    let scheduler = std::rc::Rc::new(std::cell::RefCell::new(alloyos_js::ScriptScheduler::new()));
+    registry.discover_and_register_packages(&snapshot, Some(scheduler)).unwrap();
+
+    // 1. Calc
+    let mut calc_args = BTreeMap::new();
+    calc_args.insert("expression".to_string(), McpValue::Text("15 + 27 * 3".to_string()));
+    let calc_res = registry.call_tool("calc.evaluate", &calc_args).unwrap();
+    let calc_map = calc_res.as_map().unwrap();
+    assert_eq!(calc_map["result"].as_i64(), Some(96));
+
+    let mut convert_args = BTreeMap::new();
+    convert_args.insert("value".to_string(), McpValue::Int(5));
+    convert_args.insert("from".to_string(), McpValue::Text("km".to_string()));
+    convert_args.insert("to".to_string(), McpValue::Text("m".to_string()));
+    let conv_res = registry.call_tool("calc.convert", &convert_args).unwrap();
+    let conv_map = conv_res.as_map().unwrap();
+    assert_eq!(conv_map["result"].as_i64(), Some(5000));
+
+    // 2. Memory
+    let mut mem_args = BTreeMap::new();
+    mem_args.insert("content".to_string(), McpValue::Text("User prefers dark obsidian palette".to_string()));
+    mem_args.insert("category".to_string(), McpValue::Text("preference".to_string()));
+    let mem_res = registry.call_tool("memory.remember", &mem_args).unwrap();
+    let mem_map = mem_res.as_map().unwrap();
+    assert_eq!(mem_map["status"].as_str(), Some("recorded"));
+
+    let list_res = registry.call_tool("memory.list", &BTreeMap::new()).unwrap();
+    let list_arr = list_res.as_array().unwrap();
+    assert!(!list_arr.is_empty());
+
+    // 3. Weather (network API fetch)
+    registry.register_http_response(
+        "https://wttr.in/Tokyo?format=j1",
+        r#"{
+            "current_condition": [
+                {
+                    "temp_C": "24",
+                    "temp_F": "75",
+                    "weatherDesc": [{"value": "Clear"}],
+                    "humidity": "55",
+                    "windspeedKmph": "10"
+                }
+            ],
+            "weather": [
+                {
+                    "date": "2026-10-14",
+                    "maxtempC": "26",
+                    "mintempC": "18",
+                    "hourly": [{"weatherDesc": [{"value": "Sunny"}]}]
+                }
+            ]
+        }"#,
+    );
+
+    let mut weather_args = BTreeMap::new();
+    weather_args.insert("city".to_string(), McpValue::Text("Tokyo".to_string()));
+    weather_args.insert("units".to_string(), McpValue::Text("celsius".to_string()));
+    let w_res = registry.call_tool("weather.current", &weather_args).unwrap();
+    let w_map = w_res.as_map().unwrap();
+    assert_eq!(w_map["city"].as_str(), Some("Tokyo"));
+    assert_eq!(w_map["temperature"].as_str(), Some("24°C"));
+    assert_eq!(w_map["condition"].as_str(), Some("Clear"));
+}
+

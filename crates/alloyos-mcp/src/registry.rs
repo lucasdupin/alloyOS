@@ -83,6 +83,7 @@ pub struct McpRegistry {
     package_inventory: PackageService,
     package_revisions: BTreeMap<String, Option<ValidatedPackageRevision>>,
     runtime_files: Rc<RefCell<BTreeMap<String, String>>>,
+    http_routes: Rc<RefCell<BTreeMap<String, String>>>,
 }
 
 impl Default for McpRegistry {
@@ -104,7 +105,18 @@ impl McpRegistry {
             package_inventory: PackageService::new(),
             package_revisions: BTreeMap::new(),
             runtime_files: Rc::new(RefCell::new(BTreeMap::new())),
+            http_routes: Rc::new(RefCell::new(BTreeMap::new())),
         }
+    }
+
+    /// Registers a mock or cached HTTP response for `AlloyOS.net.fetch(url)`.
+    pub fn register_http_response(&mut self, url: &str, body: &str) {
+        self.http_routes.borrow_mut().insert(url.to_string(), body.to_string());
+    }
+
+    /// Returns a shared reference to the HTTP routes map.
+    pub fn http_routes(&self) -> Rc<RefCell<BTreeMap<String, String>>> {
+        self.http_routes.clone()
     }
 
     /// Install OS validation results. Newly observed, invalid, deleted, or changed
@@ -268,7 +280,8 @@ impl McpRegistry {
                 &snapshot.files,
                 scheduler.clone(),
             )?
-            .with_vfs_files(vfs.clone());
+            .with_vfs_files(vfs.clone())
+            .with_http_routes(self.http_routes.clone());
             self.register_app(Box::new(app))?;
             self.bind_package_revision(revision).map_err(|error| {
                 McpSandboxError::InvalidManifest {

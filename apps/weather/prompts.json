@@ -1,0 +1,12 @@
+[
+  {
+    "name": "weather.briefing",
+    "description": "Deliver a concise weather report and recommendation",
+    "params": [
+      {
+        "name": "city",
+        "description": "City name for the weather report"
+      }
+    ]
+  }
+]

@@ -1,0 +1,50 @@
+[
+  {
+    "name": "weather.current",
+    "description": "Fetch current weather conditions for a city or default location",
+    "params": [
+      {
+        "name": "city",
+        "type": "string",
+        "required": false,
+        "description": "City name (defaults to configured location)"
+      },
+      {
+        "name": "units",
+        "type": "string",
+        "required": false,
+        "description": "Temperature units ('celsius' or 'fahrenheit')"
+      }
+    ]
+  },
+  {
+    "name": "weather.forecast",
+    "description": "Fetch weather forecast for upcoming days",
+    "params": [
+      {
+        "name": "city",
+        "type": "string",
+        "required": false,
+        "description": "City name (defaults to configured location)"
+      },
+      {
+        "name": "days",
+        "type": "number",
+        "required": false,
+        "description": "Forecast horizon in days (1 to 5)"
+      }
+    ]
+  },
+  {
+    "name": "weather.set_location",
+    "description": "Set the default city for weather queries",
+    "params": [
+      {
+        "name": "city",
+        "type": "string",
+        "required": true,
+        "description": "Default city name"
+      }
+    ]
+  }
+]

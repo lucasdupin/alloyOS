@@ -1,0 +1,5 @@
+# alloyOS Headless MCP App Manifest (/apps/weather/weather.mcp)
+app_id = weather
+name = Weather
+version = 1.0.0
+capabilities = ExposeMcpTools, ExposeMcpResources, ExposeMcpPrompts, ExposeSkills, ExposeTiles

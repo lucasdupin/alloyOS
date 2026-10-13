@@ -30,10 +30,12 @@ alloyOS exposes a unified POSIX-inspired hierarchy managed by the kernel's Virtu
 ├── scripts/                # Local JavaScript ES modules executed by scriptd (alloyos-js)
 │   └── heartbeat.js        # Default system telemetry heartbeat script
 ├── apps/                   # Headless MCP apps (MCP entry points, SKILL.md files & declarative Tiles)
-│   └── tasks/              # First canonical app: Tasks (exclusive ScriptScheduler access)
-│       ├── tasks.mcp       # Tasks capability manifest
-│       ├── SKILL.md        # Tasks agent skill & orchestration guide
-│       └── main.js         # Bundled JS entrypoint; host execution migration pending
+│   ├── clock/              # System uptime & time awareness (clock.now)
+│   ├── tasks/              # Scheduled automation CRUD (tasks.board, exclusive ScriptScheduler access)
+│   ├── package-manager/    # System package inventory & validation diagnostics (package_manager.status)
+│   ├── calc/               # Deterministic math & unit conversions (calc.scratchpad)
+│   ├── memory/             # User facts, preferences & bookmarks (memory.profile)
+│   └── weather/            # Ambient meteorological observations & forecasts (weather.card)
 └── knowledge/              # Local user context managed by Welder
     ├── profile.md          # Explicit user facts
     ├── preferences.md      # Scoped communication, visual, and workflow preferences

@@ -415,6 +415,7 @@ impl NativeToolRegistry {
     /// Registers an HTTP response body for `AlloyOS.net.fetch(url)`.
     pub fn register_http_response(&mut self, url: &str, body: &str) {
         self.http_routes.insert(url.to_string(), body.to_string());
+        self.mcp_registry.borrow_mut().register_http_response(url, body);
     }
 
     /// Returns a shared borrow of the embedded `ScriptScheduler` (managed by capability-authorized apps and OS tools).

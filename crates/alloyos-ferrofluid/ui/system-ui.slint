@@ -44,7 +44,7 @@ component AlloyButton inherits FocusScope {
     callback clicked();
     height: 36px;
     vertical-stretch: 0;
-    min-width: label.preferred-width + 24px;
+    min-width: min(label.preferred-width + 24px, 100px);
     key-pressed(event) => {
         if (root.enabled && (event.text == " " || event.text == Key.Return)) {
             root.clicked();
@@ -60,6 +60,7 @@ component AlloyButton inherits FocusScope {
         opacity: root.enabled ? 1 : 0.45;
         label := Text {
             text: root.text;
+            overflow: elide;
             color: touch.pressed ? AlloyPalette.obsidian : AlloyPalette.text;
             horizontal-alignment: center;
             vertical-alignment: center;
@@ -80,7 +81,55 @@ export struct TileItemView {
 export struct TileActionView { id: string, label: string }
 export struct TileView {
     tile-id: string, title: string, subtitle: string,
-    items: [TileItemView], actions: [TileActionView],
+    items: [TileItemView], actions: [TileActionView], refreshable: bool,
+}
+
+export struct DashboardRow { left: TileView, right: TileView, has-right: bool, wide: bool }
+component TileCard inherits Rectangle {
+    min-width: 0px;
+    clip: true;
+    in property <TileView> tile;
+    in property <bool> pinned;
+    in property <bool> pending;
+    callback action(string);
+    callback pin();
+    callback move();
+    callback refresh();
+                                    background: AlloyPalette.charcoal;
+                                    border-radius: 12px;
+                                    border-width: 1px;
+                                    border-color: AlloyPalette.border;
+                                    height: tile-content.preferred-height;
+                                    tile-content := VerticalBox {
+                                        width: parent.width;
+                                        height: self.preferred-height;
+                                        padding: 16px;
+                                        spacing: 10px;
+                                        Text { text: root.tile.title; color: AlloyPalette.text; font-size: 20px; font-weight: 700; wrap: word-wrap; }
+                                        if root.tile.subtitle != "": Text { text: root.tile.subtitle; color: AlloyPalette.muted; wrap: word-wrap; }
+                                        for item in root.tile.items: VerticalBox {
+                                            spacing: 4px;
+                                            HorizontalBox {
+                                                Text { text: item.title; color: AlloyPalette.text; font-size: root.tile.tile-id == "clock.now" && item.id == "time" ? 26px : 18px; wrap: word-wrap; }
+                                                if item.badge != "": Text { text: item.badge; color: AlloyPalette.silver; horizontal-alignment: right; min-width: 0px; wrap: word-wrap; }
+                                            }
+                                            if item.subtitle != "": Text { text: item.subtitle; color: AlloyPalette.muted; wrap: word-wrap; }
+                                            if item.status != "": Text { text: item.status; color: AlloyPalette.muted; font-size: 13px; wrap: word-wrap; }
+                                        }
+                                        if root.tile.actions.length > 0: VerticalBox {
+                                            spacing: 8px;
+                                            for action in root.tile.actions: AlloyButton {
+                                                text: action.label;
+                                                enabled: !root.pending;
+                                                clicked => { root.action(action.id); }
+                                            }
+                                        }
+                                        VerticalBox {
+                                            AlloyButton { height: 26px; text: root.pinned ? "Unpin" : "Pin"; clicked => { root.pin(); } }
+                                            if root.pinned: AlloyButton { height: 26px; text: "First"; clicked => { root.move(); } }
+                                            if root.tile.refreshable: AlloyButton { height: 26px; text: "Refresh"; enabled: !root.pending; clicked => { root.refresh(); } }
+                                        }
+                                    }
 }
 
 component ThinkingIndicator inherits Rectangle {
@@ -128,8 +177,12 @@ export component SystemUi inherits Window {
     in-out property <string> draft;
     in property <bool> reply-pending: false;
     in property <[TileView]> tiles;
+    in property <[TileView]> dashboard-tiles;
+    in property <[DashboardRow]> dashboard-rows;
+    callback pin-tile(string, bool);
+    callback move-pin(string);
+    callback refresh-tile(string);
     changed transcript => { scroll.content-y = min(0px, scroll.visible-height - scroll.content-height); }
-    changed tiles => { scroll.content-y = min(0px, scroll.visible-height - scroll.content-height); }
     callback tile-action(string, string);
     callback submit(string);
     callback cycle-model();
@@ -205,9 +258,6 @@ export component SystemUi inherits Window {
                             content-height: max(self.visible-height, stream.preferred-height);
                             // Layout changes after streamed text, tiles, or the indicator
                             // appear always reveal the latest content.
-                            changed content-height => {
-                                self.content-y = min(0px, self.visible-height - self.content-height);
-                            }
                             changed visible-height => {
                                 self.content-y = min(0px, self.visible-height - self.content-height);
                             }
@@ -227,6 +277,29 @@ export component SystemUi inherits Window {
                                 padding-top: 44px;
                                 padding-bottom: 20px;
                                 spacing: 16px;
+                                Text { text: "Dashboard"; color: AlloyPalette.text; font-size: 24px; font-weight: 700; }
+                                if root.dashboard-rows.length == 0: Text { text: "Pin app cards here to shape your workspace."; color: AlloyPalette.muted; wrap: word-wrap; }
+                                for row in root.dashboard-rows: HorizontalBox {
+                                    spacing: 12px;
+                                    TileCard {
+                                        tile: row.left; pinned: true; pending: root.reply-pending;
+                                        width: row.wide ? scroll.visible-width - 40px : (scroll.visible-width - 52px) / 2;
+                                        horizontal-stretch: 0;
+                                        action(id) => { root.tile-action(row.left.tile-id, id); }
+                                        pin => { root.pin-tile(row.left.tile-id, false); }
+                                        move => { root.move-pin(row.left.tile-id); }
+                                        refresh => { root.refresh-tile(row.left.tile-id); }
+                                    }
+                                    if row.has-right: TileCard {
+                                        tile: row.right; pinned: true; pending: root.reply-pending;
+                                        width: (scroll.visible-width - 52px) / 2;
+                                        horizontal-stretch: 0;
+                                        action(id) => { root.tile-action(row.right.tile-id, id); }
+                                        pin => { root.pin-tile(row.right.tile-id, false); }
+                                        move => { root.move-pin(row.right.tile-id); }
+                                        refresh => { root.refresh-tile(row.right.tile-id); }
+                                    }
+                                }
                                 transcript-text := Text {
                                     text: root.transcript;
                                     color: AlloyPalette.body;
@@ -234,37 +307,11 @@ export component SystemUi inherits Window {
                                     horizontal-alignment: left;
                                     vertical-alignment: top;
                                 }
-                                for tile in root.tiles: Rectangle {
-                                    background: AlloyPalette.charcoal;
-                                    border-radius: 12px;
-                                    border-width: 1px;
-                                    border-color: AlloyPalette.border;
-                                    height: tile-content.preferred-height;
-                                    tile-content := VerticalBox {
-                                        width: parent.width;
-                                        height: self.preferred-height;
-                                        padding: 16px;
-                                        spacing: 10px;
-                                        Text { text: tile.title; color: AlloyPalette.text; font-size: 20px; font-weight: 700; wrap: word-wrap; }
-                                        if tile.subtitle != "": Text { text: tile.subtitle; color: AlloyPalette.muted; wrap: word-wrap; }
-                                        for item in tile.items: VerticalBox {
-                                            spacing: 4px;
-                                            HorizontalBox {
-                                                Text { text: item.title; color: AlloyPalette.text; font-size: tile.tile-id == "clock.now" && item.id == "time" ? 26px : 18px; wrap: word-wrap; }
-                                                if item.badge != "": Text { text: item.badge; color: AlloyPalette.silver; horizontal-alignment: right; min-width: self.preferred-width; }
-                                            }
-                                            if item.subtitle != "": Text { text: item.subtitle; color: AlloyPalette.muted; wrap: word-wrap; }
-                                            if item.status != "": Text { text: item.status; color: AlloyPalette.muted; font-size: 13px; wrap: word-wrap; }
-                                        }
-                                        if tile.actions.length > 0: HorizontalBox {
-                                            spacing: 8px;
-                                            for action in tile.actions: AlloyButton {
-                                                text: action.label;
-                                                enabled: !root.reply-pending;
-                                                clicked => { root.tile-action(tile.tile-id, action.id); }
-                                            }
-                                        }
-                                    }
+                                for tile in root.tiles: TileCard {
+                                    tile: tile; pending: root.reply-pending;
+                                    action(id) => { root.tile-action(tile.tile-id, id); }
+                                    pin => { root.pin-tile(tile.tile-id, true); }
+                                    refresh => { root.refresh-tile(tile.tile-id); }
                                 }
                                 if root.reply-pending: ThinkingIndicator { }
                             }

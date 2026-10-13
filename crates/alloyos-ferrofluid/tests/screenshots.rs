@@ -133,6 +133,13 @@ fn system_ui_screenshots() {
         ui.chat_scroll_offset() < ui.chat_scroll_maximum() - 1.0,
         "manual drag must move away from the latest content"
     );
+    let offset_before_refresh = ui.chat_scroll_offset();
+    ui.set_tiles(&[]);
+    ui.render(Duration::from_millis(4501));
+    assert!(
+        (ui.chat_scroll_offset() - offset_before_refresh).abs() < 1.0,
+        "descriptor refresh must preserve manual scroll position"
+    );
     let height_before = ui.chat_scroll_maximum();
     reply.push('x');
     ui.update_streaming_reply(base, &reply);
@@ -150,5 +157,50 @@ fn system_ui_screenshots() {
     ui.set_model_selection_status("Model unavailable. Please try again.");
     ui.render(Duration::from_millis(4600));
     snapshot(&mut suite, "model-error", &ui);
+    ui.set_model_selection_status("");
+    ui.set_transcript("Welder: Your apps are ready.");
+    use alloyos_mcp::protocol::{AppTile, TileItem};
+    let mut cards = Vec::new();
+    for (id, title, value) in [
+        ("clock.now", "Clock", "10:42"),
+        ("weather.now", "Weather", "Sunny · 23°C"),
+        ("tasks.board", "Tasks", "Review trip plans"),
+        ("notes.summary", "Notes", "Three ideas saved"),
+    ] {
+        cards.push(AppTile {
+            tile_id: id.into(),
+            title: title.into(),
+            subtitle: String::new(),
+            refresh_resource_uri: None,
+            items: vec![TileItem {
+                id: "value".into(),
+                title: value.into(),
+                subtitle: String::new(),
+                badge: String::new(),
+                status: String::new(),
+            }],
+            actions: Vec::new(),
+        });
+    }
+    let item = cards[2].items[0].clone();
+    cards[2].items.push(item.clone());
+    cards[2].items.push(item);
+    ui.set_tiles(&cards);
+    ui.restore_dashboard(
+        &cards
+            .iter()
+            .map(|card| card.tile_id.clone())
+            .collect::<Vec<_>>(),
+    );
+    ui.render(Duration::from_millis(4616));
+    // Drag to the dashboard at the start of the shared conversation scroll.
+    pointer(&mut ui, InputEventKind::PointerButtonDown, 400, 500);
+    for (frame, y) in [600, 800, 1200, 1700, 2200].into_iter().enumerate() {
+        pointer(&mut ui, InputEventKind::PointerMove, 400, y);
+        ui.render(Duration::from_millis(4632 + frame as u64 * 16));
+    }
+    pointer(&mut ui, InputEventKind::PointerButtonUp, 400, 2200);
+    ui.render(Duration::from_millis(5000));
+    snapshot(&mut suite, "dashboard-bento", &ui);
     suite.finish();
 }

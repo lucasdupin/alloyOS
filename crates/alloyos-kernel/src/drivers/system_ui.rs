@@ -2,9 +2,9 @@
 //! Slint lives on the boot/UI context, never in a shared driver static or IRQ.
 
 use super::{rng, virtio_gpu, virtio_input};
-use alloc::string::String;
+use alloc::{collections::VecDeque, string::String};
 use core::{task::Poll, time::Duration};
-use alloyos_ferrofluid::system_ui::FerrofluidSystemUi;
+use alloyos_ferrofluid::{system_ui::FerrofluidSystemUi, TileEvent};
 
 pub fn create() -> FerrofluidSystemUi {
     let size = virtio_gpu::VIRTIO_GPU
@@ -32,7 +32,16 @@ pub fn run(
     let mut transcript =
         String::from("Welcome to alloyOS.\n\nYour workspace takes shape around what you need.");
     ui.set_active_model(agent.active_model_id());
+    if let Err(error) = agent.initialize_dashboard_tiles() {
+        transcript.push_str(&alloc::format!("\n\nWelder: {}", error));
+    }
     ui.set_tiles(&agent.synthesized_tiles());
+    ui.restore_dashboard(agent.pinned_tile_ids());
+    ui.set_transcript(&transcript);
+    let mut dashboard_revision = ui.dashboard_state().revision();
+    let mut last_dashboard_refresh = 0u64;
+    let mut refresh_queue = VecDeque::new();
+    let mut package_watcher = crate::fs::packages::PackageWatcher::default();
     let mut pending = false;
     let mut partial = String::new();
     let mut booting = forge.is_boot_loading();
@@ -76,12 +85,30 @@ pub fn run(
                 }
             }
         }
-        while let Some(action) = ui.take_tile_action() {
-            match agent.execute_tile_action(&action) {
+        let dashboard = ui.dashboard_state();
+        if dashboard.revision() != dashboard_revision {
+            match agent.set_pinned_tile_ids(dashboard.pinned_ids()) {
+                Ok(()) => dashboard_revision = dashboard.revision(),
+                Err(error) => {
+                    ui.restore_dashboard(agent.pinned_tile_ids());
+                    dashboard_revision = ui.dashboard_state().revision();
+                    transcript.push_str(&alloc::format!("\n\nWelder: {}", error));
+                    ui.set_transcript(&transcript);
+                }
+            }
+        }
+        while let Some(event) = ui.take_tile_event() {
+            if pending {
+                continue;
+            }
+            let result = match event {
+                TileEvent::Action { tile_id, action } => agent.execute_tile_action_for(&tile_id, &action),
+                TileEvent::Refresh { tile_id, .. } => agent.refresh_tile(&tile_id),
+            };
+            match result {
                 Ok(_) => ui.set_tiles(&agent.synthesized_tiles()),
                 Err(error) => {
-                    transcript.push_str("\n\nWelder: ");
-                    transcript.push_str(&alloc::format!("{}", error));
+                    transcript.push_str(&alloc::format!("\n\nWelder: {}", error));
                     ui.set_transcript(&transcript);
                 }
             }
@@ -139,6 +166,37 @@ pub fn run(
         }
         let elapsed = Duration::from_nanos(rng::monotonic_time_ns().saturating_sub(start));
         let _ = crate::fs::automation::tick_kernel_automations(&mut agent, elapsed.as_millis() as u64);
+        let now_ms = elapsed.as_millis() as u64;
+        if let Ok(changes) = package_watcher.poll(now_ms) {
+            if !changes.is_empty() {
+                let _ = package_watcher.publish_inventory();
+                for change in changes {
+                    if let alloyos_mcp::packages::PackageChange::Updated(status) = change {
+                        if !status.ready {
+                            for diagnostic in status.diagnostics {
+                                transcript.push_str(&alloc::format!("\n\nWelder: App {}: {} ({})",
+                                    status.app_id, diagnostic.message, diagnostic.path));
+                            }
+                            ui.set_transcript(&transcript);
+                        }
+                    }
+                }
+            }
+        }
+        if !pending && refresh_queue.is_empty() && now_ms.saturating_sub(last_dashboard_refresh) >= 5_000 {
+            last_dashboard_refresh = now_ms;
+            refresh_queue.extend(ui.dashboard_state().pinned_ids().iter().cloned());
+        }
+        if !pending {
+            if let Some(id) = refresh_queue.pop_front() {
+                // One card per frame keeps large dashboards from monopolizing
+                // rendering. Unpinned cards need no background refresh.
+                if ui.dashboard_state().pinned_ids().contains(&id) {
+                    let _ = agent.refresh_tile(&id);
+                    ui.set_tiles(&agent.synthesized_tiles());
+                }
+            }
+        }
         if let Some(damage) = ui.render(elapsed) {
             if let Some(gpu) = virtio_gpu::VIRTIO_GPU.lock().as_mut() {
                 let size = ui.size();

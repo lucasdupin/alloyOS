@@ -237,16 +237,11 @@ impl TasksApp {
         };
 
         let items = tasks.iter().map(|t| t.to_tile_item()).collect();
-        let actions = vec![
-            TileAction::new(
-                "create_task",
-                "New Task",
-                "tasks.create",
-                mcp_map(&[("trigger", McpValue::Text("every:60s".to_string()))]),
-            ),
-            TileAction::new("edit_task", "Edit Task", "tasks.edit", BTreeMap::new()),
-            TileAction::new("refresh_tasks", "Refresh", "tasks.list", BTreeMap::new()),
-        ];
+        // Creation/editing require input fields; expose them through Welder's
+        // typed tools until Tile forms exist rather than dispatching empty args.
+        let actions = vec![TileAction::new(
+            "refresh_tasks", "Refresh", "tasks.list", BTreeMap::new(),
+        )];
 
         AppTile {
             tile_id: "tasks.board".to_string(),

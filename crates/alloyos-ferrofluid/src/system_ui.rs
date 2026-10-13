@@ -5,13 +5,13 @@
 //! owner local to the UI loop; do not put it in a global mutex or mark it Send.
 
 use alloc::{boxed::Box, collections::VecDeque, rc::Rc, string::String, vec, vec::Vec};
+use alloyos_keyboard::{LiquidDisplacement, SoftKey};
+use alloyos_mcp::protocol::{AppTile, TileAction};
+use alloyos_proto::{DirtyRect, InputEvent, InputEventKind};
 use core::{
     cell::{Cell, RefCell},
     time::Duration,
 };
-use alloyos_keyboard::{LiquidDisplacement, SoftKey};
-use alloyos_mcp::protocol::{AppTile, TileAction};
-use alloyos_proto::{DirtyRect, InputEvent, InputEventKind};
 use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
 use slint::platform::{Key, Platform, PointerEventButton, WindowAdapter, WindowEvent};
 use slint::{ComponentHandle, LogicalPosition, ModelRc, PhysicalSize, SharedString, VecModel};
@@ -48,7 +48,8 @@ pub struct FerrofluidSystemUi {
     submissions: Rc<RefCell<VecDeque<String>>>,
     model_cycles: Rc<Cell<usize>>,
     tiles: Rc<RefCell<Vec<AppTile>>>,
-    tile_actions: Rc<RefCell<VecDeque<TileAction>>>,
+    dashboard: Rc<RefCell<crate::DashboardState>>,
+    tile_events: Rc<RefCell<VecDeque<crate::TileEvent>>>,
     rgb: Vec<slint::Rgb8Pixel>,
     argb: Vec<u32>,
     top_blur: Vec<slint::Rgb8Pixel>,
@@ -113,27 +114,83 @@ impl FerrofluidSystemUi {
             soft_window.dispatch_event(WindowEvent::KeyReleased { text });
         });
         let tiles = Rc::new(RefCell::new(Vec::<AppTile>::new()));
-        let tile_actions = Rc::new(RefCell::new(VecDeque::new()));
-        let action_tiles = tiles.clone();
-        let action_queue = tile_actions.clone();
+        let dashboard = Rc::new(RefCell::new(crate::DashboardState::default()));
+        let tile_events = Rc::new(RefCell::new(VecDeque::new()));
+        let state = dashboard.clone();
+        let available = tiles.clone();
         let weak = ui.as_weak();
-        ui.on_tile_action(move |tile_id, action_id| {
+        ui.on_pin_tile(move |id, pin| {
+            if !available
+                .borrow()
+                .iter()
+                .any(|tile| tile.tile_id == id.as_str())
+            {
+                return;
+            }
+            if pin {
+                state.borrow_mut().pin(id.as_str());
+            } else {
+                state.borrow_mut().unpin(id.as_str());
+            }
+            if let Some(ui) = weak.upgrade() {
+                update_dashboard(&ui, &state.borrow().tiles(&available.borrow()));
+            }
+        });
+        let state = dashboard.clone();
+        let available = tiles.clone();
+        let weak = ui.as_weak();
+        ui.on_move_pin(move |id| {
+            state.borrow_mut().move_to(id.as_str(), 0);
+            if let Some(ui) = weak.upgrade() {
+                update_dashboard(&ui, &state.borrow().tiles(&available.borrow()));
+            }
+        });
+        let events = tile_events.clone();
+        let available = tiles.clone();
+        let weak = ui.as_weak();
+        ui.on_refresh_tile(move |id| {
             if weak.upgrade().is_some_and(|ui| ui.get_reply_pending()) {
                 return;
             }
-            if let Some(action) = action_tiles
+            if let Some(tile) = available
                 .borrow()
                 .iter()
-                .find(|tile| tile.tile_id == tile_id.as_str())
-                .and_then(|tile| {
-                    tile.actions
-                        .iter()
-                        .find(|action| action.id == action_id.as_str())
-                })
+                .find(|tile| tile.tile_id == id.as_str())
             {
-                let mut queue = action_queue.borrow_mut();
-                if queue.len() < 16 {
-                    queue.push_back(action.clone());
+                if let Some(uri) = &tile.refresh_resource_uri {
+                    if events.borrow().len() < 16 {
+                        events.borrow_mut().push_back(crate::TileEvent::Refresh {
+                            tile_id: tile.tile_id.clone(),
+                            resource_uri: uri.clone(),
+                        });
+                    }
+                }
+            }
+        });
+        // Typed events resolve action IDs against the current descriptor.
+        let events = tile_events.clone();
+        let available = tiles.clone();
+        let weak = ui.as_weak();
+        ui.on_tile_action(move |id, action_id| {
+            if weak.upgrade().is_some_and(|ui| ui.get_reply_pending()) {
+                return;
+            }
+            if let Some(tile) = available
+                .borrow()
+                .iter()
+                .find(|tile| tile.tile_id == id.as_str())
+            {
+                if let Some(action) = tile
+                    .actions
+                    .iter()
+                    .find(|action| action.id == action_id.as_str())
+                {
+                    if events.borrow().len() < 16 {
+                        events.borrow_mut().push_back(crate::TileEvent::Action {
+                            tile_id: tile.tile_id.clone(),
+                            action: action.clone(),
+                        });
+                    }
                 }
             }
         });
@@ -146,7 +203,8 @@ impl FerrofluidSystemUi {
             submissions,
             model_cycles,
             tiles,
-            tile_actions,
+            dashboard,
+            tile_events,
             rgb: vec![slint::Rgb8Pixel::default(); width as usize * height as usize],
             previous_blur_top: None,
             top_blur: vec![slint::Rgb8Pixel::default(); width as usize * (40.0 * scale) as usize],
@@ -171,40 +229,32 @@ impl FerrofluidSystemUi {
         if self.tiles.borrow().as_slice() == tiles {
             return;
         }
-        let views = tiles
-            .iter()
-            .map(|tile| TileView {
-                tile_id: tile.tile_id.as_str().into(),
-                title: tile.title.as_str().into(),
-                subtitle: tile.subtitle.as_str().into(),
-                items: ModelRc::new(VecModel::from(
-                    tile.items
-                        .iter()
-                        .map(|item| TileItemView {
-                            id: item.id.as_str().into(),
-                            title: item.title.as_str().into(),
-                            subtitle: item.subtitle.as_str().into(),
-                            badge: item.badge.as_str().into(),
-                            status: item.status.as_str().into(),
-                        })
-                        .collect::<Vec<_>>(),
-                )),
-                actions: ModelRc::new(VecModel::from(
-                    tile.actions
-                        .iter()
-                        .map(|action| TileActionView {
-                            id: action.id.as_str().into(),
-                            label: action.label.as_str().into(),
-                        })
-                        .collect::<Vec<_>>(),
-                )),
-            })
-            .collect::<Vec<_>>();
         *self.tiles.borrow_mut() = tiles.to_vec();
-        self.ui.set_tiles(ModelRc::new(VecModel::from(views)));
+        self.ui.set_tiles(tile_views(tiles));
+        update_dashboard(&self.ui, &self.dashboard.borrow().tiles(tiles));
+    }
+    pub fn dashboard_state(&self) -> crate::DashboardState {
+        self.dashboard.borrow().clone()
+    }
+    pub fn restore_dashboard(&self, ids: &[String]) {
+        self.dashboard.borrow_mut().restore(ids);
+        update_dashboard(
+            &self.ui,
+            &self.dashboard.borrow().tiles(&self.tiles.borrow()),
+        );
+    }
+    pub fn take_tile_event(&self) -> Option<crate::TileEvent> {
+        self.tile_events.borrow_mut().pop_front()
     }
     pub fn take_tile_action(&self) -> Option<TileAction> {
-        self.tile_actions.borrow_mut().pop_front()
+        let mut events = self.tile_events.borrow_mut();
+        let index = events
+            .iter()
+            .position(|event| matches!(event, crate::TileEvent::Action { .. }))?;
+        match events.remove(index)? {
+            crate::TileEvent::Action { action, .. } => Some(action),
+            _ => None,
+        }
     }
     pub fn set_transcript(&self, text: &str) {
         self.ui.set_transcript(text.into());
@@ -392,6 +442,68 @@ impl FerrofluidSystemUi {
         });
         damage
     }
+}
+
+fn update_dashboard(ui: &SystemUi, tiles: &[AppTile]) {
+    use slint::Model;
+    let views = tile_views(tiles);
+    let mut rows = Vec::new();
+    let mut index = 0;
+    while index < tiles.len() {
+        let wide = tiles[index].items.len() > 2 || tiles[index].actions.len() > 1;
+        let has_right = !wide
+            && index + 1 < tiles.len()
+            && tiles[index + 1].items.len() <= 2
+            && tiles[index + 1].actions.len() <= 1;
+        rows.push(DashboardRow {
+            left: views.row_data(index).unwrap(),
+            right: if has_right {
+                views.row_data(index + 1).unwrap()
+            } else {
+                TileView::default()
+            },
+            has_right,
+            wide,
+        });
+        index += if has_right { 2 } else { 1 };
+    }
+    ui.set_dashboard_tiles(views);
+    ui.set_dashboard_rows(ModelRc::new(VecModel::from(rows)));
+}
+
+fn tile_views(tiles: &[AppTile]) -> ModelRc<TileView> {
+    ModelRc::new(VecModel::from(
+        tiles
+            .iter()
+            .map(|tile| TileView {
+                tile_id: tile.tile_id.as_str().into(),
+                title: tile.title.as_str().into(),
+                subtitle: tile.subtitle.as_str().into(),
+                refreshable: tile.refresh_resource_uri.is_some(),
+                items: ModelRc::new(VecModel::from(
+                    tile.items
+                        .iter()
+                        .map(|item| TileItemView {
+                            id: item.id.as_str().into(),
+                            title: item.title.as_str().into(),
+                            subtitle: item.subtitle.as_str().into(),
+                            badge: item.badge.as_str().into(),
+                            status: item.status.as_str().into(),
+                        })
+                        .collect::<Vec<_>>(),
+                )),
+                actions: ModelRc::new(VecModel::from(
+                    tile.actions
+                        .iter()
+                        .map(|action| TileActionView {
+                            id: action.id.as_str().into(),
+                            label: action.label.as_str().into(),
+                        })
+                        .collect::<Vec<_>>(),
+                )),
+            })
+            .collect::<Vec<_>>(),
+    ))
 }
 
 /// Two sliding box passes keep the scroll-edge blur linear in band size.
@@ -642,6 +754,7 @@ impl EvdevKeyboard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slint::Model;
 
     // Only one test owns Slint's process-wide, single-context platform.
     #[test]
@@ -694,13 +807,29 @@ mod tests {
         }
         assert!(ui.take_model_cycle());
         assert!(!ui.take_model_cycle());
-        for model in ["gemma-2-2b-it", "claude-sonnet-4-6", "gemini-3.8-flash", "gpt-4.1"] {
+        for model in [
+            "gemma-2-2b-it",
+            "claude-sonnet-4-6",
+            "gemini-3.8-flash",
+            "gpt-4.1",
+        ] {
             ui.set_active_model(model);
             ui.render(Duration::from_millis(16));
-            for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
-                ui.handle_input(InputEvent { kind, code: 0x110, x: 1050, y: 110 });
+            for kind in [
+                InputEventKind::PointerButtonDown,
+                InputEventKind::PointerButtonUp,
+            ] {
+                ui.handle_input(InputEvent {
+                    kind,
+                    code: 0x110,
+                    x: 1050,
+                    y: 110,
+                });
             }
-            assert!(ui.take_model_cycle(), "tap must reach model selector for {model}");
+            assert!(
+                ui.take_model_cycle(),
+                "tap must reach model selector for {model}"
+            );
         }
         ui.set_active_model("Gemini");
         ui.set_reply_pending(true);
@@ -906,24 +1035,95 @@ mod tests {
             ui.transcript(),
             "Welcome to alloyOS.\n\nYou: Stream test\n\nWelder: Hello alloyOS!"
         );
-        let refresh = TileAction::new(
-            "refresh", "Refresh", "clock.now", Default::default(),
-        );
+        let refresh = TileAction::new("refresh", "Refresh", "clock.now", Default::default());
         ui.set_tiles(&[AppTile {
-            tile_id: "clock.now".into(), title: "Clock".into(), subtitle: String::new(),
-            refresh_resource_uri: None, items: Vec::new(), actions: vec![refresh.clone()],
+            tile_id: "clock.now".into(),
+            title: "Clock".into(),
+            subtitle: String::new(),
+            refresh_resource_uri: None,
+            items: Vec::new(),
+            actions: vec![refresh.clone()],
         }]);
-        ui.ui.invoke_tile_action("clock.now".into(), "refresh".into());
+        ui.ui.invoke_pin_tile("clock.now".into(), true);
+        assert_eq!(
+            ui.dashboard_state().pinned_ids(),
+            &[String::from("clock.now")]
+        );
+        assert_eq!(ui.ui.get_dashboard_rows().row_count(), 1);
+        ui.ui.invoke_pin_tile("missing.tile".into(), true);
+        assert_eq!(ui.dashboard_state().pinned_ids().len(), 1);
+        ui.ui
+            .invoke_tile_action("clock.now".into(), "refresh".into());
+        assert_eq!(
+            ui.take_tile_event(),
+            Some(crate::TileEvent::Action {
+                tile_id: "clock.now".into(),
+                action: refresh.clone()
+            })
+        );
+        ui.ui
+            .invoke_tile_action("clock.now".into(), "refresh".into());
         assert_eq!(ui.take_tile_action(), Some(refresh));
-        ui.ui.invoke_tile_action("clock.now".into(), "unknown".into());
+        let mut clock = ui.tiles.borrow()[0].clone();
+        clock.refresh_resource_uri = Some("mcp://clock/now".into());
+        let mut second = clock.clone();
+        second.tile_id = "tasks.board".into();
+        let mut third = clock.clone();
+        third.tile_id = "notes.summary".into();
+        ui.set_tiles(&[clock.clone(), second.clone(), third.clone()]);
+        ui.restore_dashboard(&[
+            clock.tile_id.clone(),
+            second.tile_id.clone(),
+            third.tile_id.clone(),
+        ]);
+        assert_eq!(
+            ui.ui.get_dashboard_rows().row_count(),
+            2,
+            "two columns with unlimited rows"
+        );
+        assert!(ui.ui.get_dashboard_rows().row_data(0).unwrap().has_right);
+        third.actions.push(TileAction::new(
+            "edit",
+            "Edit",
+            "notes.edit",
+            Default::default(),
+        ));
+        ui.set_tiles(&[clock.clone(), second.clone(), third]);
+        assert!(ui.ui.get_dashboard_rows().row_data(1).unwrap().wide);
+        ui.ui.invoke_refresh_tile("clock.now".into());
+        assert_eq!(
+            ui.take_tile_event(),
+            Some(crate::TileEvent::Refresh {
+                tile_id: "clock.now".into(),
+                resource_uri: "mcp://clock/now".into()
+            })
+        );
+        ui.set_reply_pending(true);
+        ui.ui.invoke_refresh_tile("clock.now".into());
+        assert!(ui.take_tile_event().is_none(), "pending replies disable resource refresh");
+        ui.set_reply_pending(false);
+        ui.ui.invoke_pin_tile("tasks.board".into(), false);
+        assert_eq!(ui.dashboard_state().pinned_ids().len(), 2);
+        ui.ui.invoke_move_pin("notes.summary".into());
+        assert_eq!(ui.dashboard_state().pinned_ids()[0], "notes.summary");
+        ui.ui
+            .invoke_tile_action("clock.now".into(), "unknown".into());
         assert!(ui.take_tile_action().is_none());
         ui.set_reply_pending(true);
-        ui.ui.invoke_tile_action("clock.now".into(), "refresh".into());
-        assert!(ui.take_tile_action().is_none(), "pending replies disable tile actions");
+        ui.ui
+            .invoke_tile_action("clock.now".into(), "refresh".into());
+        assert!(
+            ui.take_tile_action().is_none(),
+            "pending replies disable tile actions"
+        );
         ui.set_reply_pending(false);
         ui.set_tiles(&[]);
-        ui.ui.invoke_tile_action("clock.now".into(), "refresh".into());
-        assert!(ui.take_tile_action().is_none(), "removed tiles cannot dispatch actions");
+        ui.ui
+            .invoke_tile_action("clock.now".into(), "refresh".into());
+        assert!(
+            ui.take_tile_action().is_none(),
+            "removed tiles cannot dispatch actions"
+        );
         // Key releases retain the original character even if Shift changes.
         let mut keys = EvdevKeyboard::default();
         keys.translate(42, true);

@@ -31,6 +31,7 @@ pub struct ConsoleTurnOutput {
 #[derive(Clone, Debug)]
 pub struct AgentRuntime {
     gateway: ModelGateway,
+    pinned_tile_ids: Vec<String>,
     pub history: Vec<Message>,
     pub tool_registry: NativeToolRegistry,
     pub ui_synthesizer: AgentUiSynthesizer,
@@ -43,11 +44,14 @@ impl Default for AgentRuntime {
 }
 
 impl AgentRuntime {
+    pub const DASHBOARD_CONFIG_PATH: &'static str = "/etc/dashboard.conf";
+
     pub const CONFIG_PATH: &'static str = "/etc/ai.conf";
 
     pub fn new() -> Self {
         let mut runtime = Self {
             gateway: ModelGateway::new(),
+            pinned_tile_ids: Vec::new(),
             history: vec![Message::system(
                 "You are the alloyOS Ferrofluid AI Agent running on bare-metal ARM64. \
                  POSIX shells (sh, bash) do not exist for the agent; use structured OS tools, \
@@ -57,6 +61,7 @@ impl AgentRuntime {
             ui_synthesizer: AgentUiSynthesizer::new(),
         };
         runtime.persist_config_to_vfs();
+        runtime.restore_dashboard();
         runtime
     }
 
@@ -72,6 +77,7 @@ impl AgentRuntime {
     pub fn with_vfs_backend(backend: Rc<RefCell<dyn ToolVfsBackend>>) -> Self {
         let mut runtime = Self {
             gateway: ModelGateway::new(),
+            pinned_tile_ids: Vec::new(),
             history: vec![Message::system(
                 "You are the alloyOS Ferrofluid AI Agent running on bare-metal ARM64. \
                  POSIX shells (sh, bash) do not exist for the agent; use structured OS tools, \
@@ -85,6 +91,7 @@ impl AgentRuntime {
         } else {
             runtime.persist_config_to_vfs();
         }
+        runtime.restore_dashboard();
         runtime
     }
 
@@ -105,6 +112,7 @@ impl AgentRuntime {
         } else {
             self.persist_config_to_vfs();
         }
+        self.restore_dashboard();
         self.tool_registry
             .restore_automations_from_vfs()
             .map_err(AiError::ConfigError)
@@ -351,10 +359,25 @@ impl AgentRuntime {
         action: &alloyos_mcp::TileAction,
     ) -> Result<ToolExecutionOutput, AiError> {
         let tiles = self.synthesized_tiles();
-        let tile = tiles.iter().find(|tile| tile.actions.contains(action))
+        let matching: Vec<_> = tiles.iter().filter(|tile| tile.actions.contains(action)).collect();
+        if matching.len() != 1 {
+            return Err(AiError::PolicyViolation("tile action is unexposed or ambiguous".into()));
+        }
+        self.execute_tile_action_for(&matching[0].tile_id, action)
+    }
+
+    /// Authorize against the current descriptor of the explicitly selected tile.
+    pub fn execute_tile_action_for(
+        &mut self,
+        tile_id: &str,
+        action: &alloyos_mcp::TileAction,
+    ) -> Result<ToolExecutionOutput, AiError> {
+        let tiles = self.synthesized_tiles();
+        let tile = tiles.iter().find(|tile| tile.tile_id == tile_id && tile.actions.contains(action))
             .ok_or_else(|| AiError::PolicyViolation("tile action is not currently exposed".into()))?;
         let app = tile.folder()
             .ok_or_else(|| AiError::InvalidToolArguments("tile has no app namespace".into()))?;
+
         let args = alloyos_mcp::McpValue::Map(action.default_args.clone()).to_json();
         let arguments = format!(
             "{{\"app\":\"{}\",\"tool\":\"{}\",\"args\":\"{}\"}}",
@@ -368,6 +391,75 @@ impl AgentRuntime {
         self.tool_registry.execute_tool(&call, &mut self.ui_synthesizer)
     }
 
+    /// Refresh only the resource URI exposed by the selected current tile.
+    pub fn refresh_tile(&mut self, tile_id: &str) -> Result<ToolExecutionOutput, AiError> {
+        let tile = self.synthesized_tiles().into_iter().find(|tile| tile.tile_id == tile_id)
+            .ok_or_else(|| AiError::PolicyViolation("tile is not currently exposed".into()))?;
+        let app = tile.folder().ok_or_else(|| AiError::InvalidToolArguments("tile has no app namespace".into()))?.to_string();
+        let uri = tile.refresh_resource_uri.ok_or_else(|| AiError::PolicyViolation("tile exposes no refresh resource".into()))?;
+        let arguments = format!("{{\"app\":\"{}\",\"uri\":\"{}\"}}",
+            alloyos_forge::provider::json_escape(&app), alloyos_forge::provider::json_escape(&uri));
+        let call = alloyos_forge::provider::ToolCall::new("tile_refresh", "mcp_read_resource", arguments);
+        // Resource dispatch must not publish a different tile from the same app.
+        let mut synthesis = self.ui_synthesizer.clone();
+        let mut output = self.tool_registry.execute_tool(&call, &mut synthesis)?;
+        let refreshed = self.tool_registry.mcp_registry().render_tile(tile_id)
+            .map_err(|error| AiError::InvalidToolArguments(error.message))?;
+        let view = self.ui_synthesizer.synthesize_from_mcp_output_with_tile(
+            &crate::ui_synth::UiCallerOrigin::AiAgent, &app, &uri, &output.output_json, Some(refreshed))?;
+        output.synthesized_view = Some(view);
+        Ok(output)
+    }
+
+    pub fn pinned_tile_ids(&self) -> &[String] {
+        &self.pinned_tile_ids
+    }
+
+    /// Persist pin order. Unavailable apps retain their pins for later restoration.
+    pub fn set_pinned_tile_ids(&mut self, ids: &[String]) -> Result<(), AiError> {
+        let mut unique = Vec::new();
+        for id in ids {
+            if id.is_empty() || id.contains('\n') || id.contains('\r') || !id.contains('.') {
+                return Err(AiError::InvalidToolArguments("invalid pinned tile ID".into()));
+            }
+            if !unique.contains(id) { unique.push(id.clone()); }
+        }
+        self.tool_registry.persist_ui_config(Self::DASHBOARD_CONFIG_PATH, &unique.join("\n"))
+            .map_err(AiError::ConfigError)?;
+        self.pinned_tile_ids = unique;
+        Ok(())
+    }
+
+    /// Populate built-in app cards locally without a model request.
+    pub fn initialize_dashboard_tiles(&mut self) -> Result<(), AiError> {
+        let descriptors = {
+            let registry = self.tool_registry.mcp_registry();
+            registry.list_tiles().into_iter().filter_map(|tile| registry.render_tile(&tile.tile_id).ok()).collect::<Vec<_>>()
+        };
+        for tile in descriptors {
+            let app = tile.folder().unwrap_or("").to_string();
+            let id = tile.tile_id.clone();
+            self.ui_synthesizer.synthesize_from_mcp_output_with_tile(
+                &crate::ui_synth::UiCallerOrigin::AiAgent, &app, &id, "{}", Some(tile))?;
+        }
+        Ok(())
+    }
+
+    fn restore_dashboard(&mut self) {
+        if self.tool_registry.vfs_read(Self::DASHBOARD_CONFIG_PATH).is_none() {
+            self.pinned_tile_ids = vec!["clock.now".to_string(), "tasks.board".to_string()];
+            return;
+        }
+        let saved = self.tool_registry.vfs_read(Self::DASHBOARD_CONFIG_PATH)
+            .unwrap_or("").to_string();
+        self.pinned_tile_ids.clear();
+        for id in saved.lines().filter(|id| !id.is_empty() && id.contains('.')) {
+            if !self.pinned_tile_ids.iter().any(|existing| existing == id) {
+                self.pinned_tile_ids.push(id.to_string());
+            }
+        }
+    }
+
     /// Returns all UI views synthesized by the AI agent for Ferrofluid (`ferrofluidd`).
     pub fn synthesized_views(&self) -> &[SynthesizedUiView] {
         self.ui_synthesizer.views()
@@ -379,6 +471,51 @@ mod tests {
     use super::*;
     use crate::{ProviderToolCall as ToolCall, ToolSpec, UiCallerOrigin, ViewKind};
     use alloyos_forge::provider::TokenUsage;
+    #[test]
+    fn shared_action_requires_tile_identity_and_stale_actions_are_rejected() {
+        let mut runtime = AgentRuntime::new();
+        runtime.initialize_dashboard_tiles().unwrap();
+        let mut clock = runtime.synthesized_tiles().into_iter().find(|tile| tile.tile_id == "clock.now").unwrap();
+        let action = clock.actions[0].clone();
+        clock.tile_id = "clock.copy".into();
+        runtime.ui_synthesizer.synthesize_from_mcp_output_with_tile(
+            &crate::ui_synth::UiCallerOrigin::AiAgent, "clock", "copy", "{}", Some(clock.clone())).unwrap();
+        assert!(matches!(runtime.execute_tile_action(&action), Err(AiError::PolicyViolation(_))));
+        runtime.execute_tile_action_for("clock.now", &action).unwrap();
+        clock.actions.clear();
+        runtime.ui_synthesizer.synthesize_from_mcp_output_with_tile(
+            &crate::ui_synth::UiCallerOrigin::AiAgent, "clock", "copy", "{}", Some(clock)).unwrap();
+        assert!(matches!(runtime.execute_tile_action_for("clock.copy", &action), Err(AiError::PolicyViolation(_))));
+    }
+
+    #[test]
+    fn dashboard_pin_order_restores_and_empty_is_intentional() {
+        let backend = Rc::new(RefCell::new(crate::tools::SharedMapVfsBackend::new()));
+        let mut runtime = AgentRuntime::with_vfs_backend(backend.clone());
+        assert_eq!(runtime.pinned_tile_ids(), &["clock.now", "tasks.board"]);
+        runtime.set_pinned_tile_ids(&["tasks.board".into(), "clock.now".into(), "tasks.board".into()]).unwrap();
+        let mut restored = AgentRuntime::with_vfs_backend(backend.clone());
+        assert_eq!(restored.pinned_tile_ids(), &["tasks.board", "clock.now"]);
+        restored.set_pinned_tile_ids(&[]).unwrap();
+        assert!(AgentRuntime::with_vfs_backend(backend).pinned_tile_ids().is_empty());
+    }
+
+    #[test]
+    fn resource_refresh_is_scoped_to_current_tile() {
+        let mut runtime = AgentRuntime::new();
+        runtime.initialize_dashboard_tiles().unwrap();
+        runtime.tick_scheduler(2000, None);
+        let output = runtime.refresh_tile("clock.now").unwrap();
+        assert_eq!(output.synthesized_view.unwrap().tile.unwrap().tile_id, "clock.now");
+        assert!(runtime.synthesized_tiles().iter().any(|tile| tile.tile_id == "clock.now" && tile.items[0].title == "00:00:02"));
+        assert!(matches!(runtime.refresh_tile("clock.unknown"), Err(AiError::PolicyViolation(_))));
+        let action = runtime.synthesized_tiles().iter().find(|tile| tile.tile_id == "clock.now").unwrap().actions[0].clone();
+        assert!(matches!(runtime.execute_tile_action_for("tasks.board", &action), Err(AiError::PolicyViolation(_))));
+        let mut stale = action;
+        stale.label.push_str("stale");
+        assert!(matches!(runtime.execute_tile_action_for("clock.now", &stale), Err(AiError::PolicyViolation(_))));
+    }
+
     #[test]
     fn clock_tile_refresh_uses_live_host_uptime() {
         let mut runtime = AgentRuntime::new();

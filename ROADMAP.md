@@ -165,7 +165,9 @@ soft keyboard and liquid displacement effects.
   - Capability gate rejects app-owned UI and invalid agent credentials
 - [ ] **The Dashboard (Customizable App Launcher & Dynamic Pinned Tiles)**
   - Customizable home surface and app launcher presented every time the user opens the device
+  - Two-column bento layout with as many rows as needed; larger cards can span both columns
   - Hosts dynamic, live-updating **Tiles** pinned from installed apps (such as `tasks.board` from `Tasks`)
+  - Implemented increment: pin/unpin/order state, persistent pin preferences, periodic resource refresh and built-in cards; app launcher and historical chat placement remain pending
   - The Dashboard is part of the conversation itself: conversations flow seamlessly underneath the Dashboard as the user scrolls and interacts
 - [ ] **Agent-generated views & embedded chat Tiles**
   - Render Welder's synthesized views and declarative `AppTile` descriptors inline in the chat stream or pinned to the Dashboard, routing tile actions back to Welder
@@ -184,9 +186,8 @@ interaction. Forge is its model gateway: it owns model discovery and selection,
 resident inference, cloud adapters, credentials, and provider transport. Gemma 2
 2B IT is the resident default; cloud models require configured access and
 explicit selection. Missing backends and failed requests return errors without
-silently switching providers. The planned default model selection is **Auto**,
-which prefers local inference and routes more complex tasks to configured cloud
-models.
+silently switching providers. Model selection remains manual through the
+console model commands; task complexity does not change the selected provider.
 
 - [x] **Forge resident inference**
   - Multi-model registry, bounded requests and resident backend lifecycle
@@ -206,11 +207,6 @@ models.
 - [ ] **Complete console agent integration**
   - Connect the graphical console to the bounded multi-step tool loop and real OS/app capabilities
   - Persist configuration, conversation and first-boot preferences on CobaltFS
-- [ ] **Auto model selection by default**
-  - Make `Auto` the default model option in Ferrofluid and persist it in the agent configuration
-  - Automatically assess task complexity and required capabilities; prefer a ready local model for tasks it can handle and select a configured cloud model for more complex tasks
-  - Keep routing in Forge, driven by Welder's task requirements, and preserve manual model selection as an override
-  - Show which model Auto selected and respect configured cloud access; report unavailable models rather than treating request failures as task complexity
 - [ ] **Full-model acceptance and performance**
   - Verify readiness and generation with official Gemma weights in the target guest
   - Library fixtures establish interface and numeric behavior, not full-model acceptance
@@ -333,7 +329,7 @@ learning. See [KNOWLEDGE.md](KNOWLEDGE.md) for the design.
 | **M2: Networking & Model Transport** | Guest TCP/IP and authenticated Forge cloud access | `alloyos-kernel`, `alloyos-user`, `alloyos-forge`, `alloyos-dev-harness` | Implemented |
 | **M3: Boot & Model Readiness** | Liquid boot logo, resident weight loading and workspace transition | `alloyos-boot`, `alloyos-kernel`, `alloyos-ferrofluid` | Logo turbulence and loading implemented |
 | **M4: Ferrofluid System UI & Dashboard** | System UI rendering, customizable Dashboard with dynamic Tiles, chat bridge and native input | `alloyos-ferrofluid`, `alloyos-keyboard`, `alloyos-kernel` | Chat and keyboard connected; Dashboard, inline Tile rendering, IRQ wakeups and voice pending |
-| **M5: Welder & Forge** | Centralized app orchestration, resident inference and cloud adapters | `alloyos-welder`, `alloyos-forge` | Runtime libraries and model access implemented; default Auto routing, complete agent integration and full-model acceptance pending |
+| **M5: Welder & Forge** | Centralized app orchestration, resident inference and cloud adapters | `alloyos-welder`, `alloyos-forge` | Runtime libraries and model access implemented; complete agent integration and full-model acceptance pending |
 | **M6: JS Automation** | Capability-scoped interpreter and time/event scheduler | `alloyos-js`, `alloyos-welder`, `alloyos-kernel` | Current interpreter and scheduler implemented; Boa support deferred, low priority |
 | **M7: Headless Apps (MCP, SKILLs & Tiles)** | JavaScript apps in separate protected processes, MCP entry points, `SKILL.md` files, declarative Tiles, and Welder-only orchestration | `alloyos-mcp`, `alloyos-js`, `alloyos-kernel`, `alloyos-welder`, `alloyos-ferrofluid` | MCP surfaces and manifest guards implemented; per-app process isolation and Ferrofluid Dashboard/chat Tile rendering pending |
 | **M8: User Knowledge** | Durable profile, retrieval, learning and user controls | `alloyos-welder`, `alloyos-kernel`, `alloyos-ferrofluid` | Planned |

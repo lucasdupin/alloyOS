@@ -28,7 +28,11 @@ metalOS exposes a unified POSIX-inspired hierarchy managed by the kernel's Virtu
 ├── tmp/                    # Scratch directory for temporary files
 ├── scripts/                # Local JavaScript ES modules executed by scriptd (metalos-js)
 │   └── heartbeat.js        # Default system telemetry heartbeat script
-├── apps/                   # Headless MCP apps with endpoints and skill-like recipes
+├── apps/                   # Headless MCP apps (MCP entry points, SKILL.md files & declarative Tiles)
+│   └── tasks/              # First canonical app: Tasks (exclusive ScriptScheduler access)
+│       ├── tasks.mcp       # Tasks capability manifest
+│       ├── SKILL.md        # Tasks agent skill & orchestration guide
+│       └── main.js         # Bundled JS entrypoint; host execution migration pending
 └── knowledge/              # Planned local user context; not seeded yet
     ├── profile.md          # Explicit user facts
     ├── preferences.md      # Scoped communication, visual, and workflow preferences
@@ -66,18 +70,23 @@ Populated during [`Vfs::with_root`](crates/metalos-kernel/src/fs/vfs.rs) initial
 ### `/etc` — System & AI Configuration
 Holds system-wide configuration files shared between the kernel, `metal-sh`, and the AI runtime ([`metalos-welder`](crates/metalos-welder)):
 - `/etc/motd`: Welcome banner (`Welcome to metalOS v0.1.0 (aarch64 POSIX-compliant Rust kernel)`).
-- `/etc/ai.conf`: Default AI operator settings (`provider=gemini`, `model=gemini-2.5-pro`, `shell_access=disabled`).
-- `/etc/schedules.conf`: Registry of time- and event-triggered JavaScript jobs managed by `script_schedule`.
+- `/etc/ai.conf`: Default AI operator settings (`provider=forge`, `model=gemma-2-2b-it`, `shell_access=disabled`).
+- `/etc/schedules.conf`: Registry of time- and event-triggered JavaScript jobs managed exclusively through the `Tasks` app (`tasks.create`, `tasks.edit`, `tasks.delete`).
 
 ### `/scripts` — Local JavaScript Automation ([`metalos-js`](crates/metalos-js))
-Stores sandboxed JavaScript scripts executed by `scriptd` via the `MetalOS.*` host bindings (`MetalOS.fs`, `MetalOS.net`, `MetalOS.mcp`, `MetalOS.ui`, `MetalOS.sys`):
+Stores sandboxed JavaScript scripts executed by `scriptd` via the `MetalOS.*` host bindings (`MetalOS.fs`, `MetalOS.net`, `MetalOS.ui`, `MetalOS.sys`):
 - `/scripts/heartbeat.js`: Built-in health-check script (`export function main() { return MetalOS.sys.status(); }`).
 
-### `/apps` — Headless MCP Applications ([`metalos-mcp`](crates/metalos-mcp))
-Mount point and package directory for headless Model Context Protocol (MCP) developer applications (`notes`, `sysmon`, `fetch`). MCP apps expose tools, resources, and prompt templates to the AI operator and are strictly forbidden from creating their own UI windows or invoking a shell.
+### `/apps` — Headless MCP Applications, SKILLs & Tiles ([`metalos-mcp`](crates/metalos-mcp))
+Package directory for headless Model Context Protocol (MCP) applications. Each app under `/apps/<app_id>/` can expose:
+- **MCP entry points**: Tools, resources, and prompts (`<app_id>.mcp` manifest).
+- **SKILLs**: Plain-text Markdown instruction files (`/apps/<app_id>/SKILL.md`) read by Welder.
+- **Tiles**: Declarative, UI-agnostic `AppTile` descriptors that Ferrofluid can embed in the chat stream or pin to the Dashboard.
 
-Apps will also provide skills and task instructions from `/apps/`. Skill
-discovery is planned; no separate top-level `/skills/` directory is introduced.
+Isolation invariants enforced by `metalos-mcp` and `metalos-welder`:
+- `/apps/tasks/` (**Tasks**) is the first canonical app and is the **only** app allowed to access `ScriptScheduler` (`/etc/schedules.conf` and `/scripts/*.js`). Welder routes all schedule management through `Tasks`.
+- No app can access or invoke another app; **only Welder centralizes app access and orchestration**.
+
 
 ### `/knowledge` — Local User Context (Planned)
 

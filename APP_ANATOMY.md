@@ -1,107 +1,243 @@
-# metalOS App Anatomy (`APP_ANATOMY.md`)
+# Getting started with metalOS apps
 
-In **metalOS**, third-party and built-in developer applications are **strictly headless Model Context Protocol (MCP) servers** managed by [`metalos-mcp`](crates/metalos-mcp/src/lib.rs). Applications never own windows, draw to the framebuffer, capture raw input events, execute shell commands, or call other apps directly. Instead, apps expose **MCP entry points** (Tools, Resources, Prompts), **Skills** (`SKILL.md`), and declarative **Tiles** (`AppTile`) that **Welder** (the AI agent orchestrator) discovers, invokes, and synthesizes into **Ferrofluid** (the Slint System UI).
+Build a metalOS app by writing JavaScript, a manifest, and an optional skill.
+Your app exposes tools and data to **Welder**, which presents them through
+**Ferrofluid**. The Clock example below shows the complete path from a developer's
+files to a time display and a Refresh action.
 
----
+**Implementation status:** this guide defines the agreed app architecture and the
+contract the app host must implement. The migration is in progress: existing Rust
+app implementations remain, and the manifest extensions, JavaScript app loader,
+and clock binding illustrated below are not yet a complete working SDK. Examples
+marked as the target contract guide that implementation; they are not installation
+commands that work on the current kernel.
 
-## 1. Core Architectural Invariants
+## How your app runs
 
-Every metalOS application is validated at registration and guarded at runtime by [`RuntimeCapabilityGuard`](crates/metalos-mcp/src/sandbox.rs):
+The kernel, CobaltFS, Forge, Welder, Ferrofluid, and the MCP app host are Rust OS
+services. **All apps, including built-in apps, are JavaScript files on disk.**
 
-| Invariant | Enforcement Rule | Sandbox Error on Violation |
-|---|---|---|
-| **Zero App-Owned UI** | Apps cannot declare or invoke `CreateWindow`, `DirectFramebuffer`, or `RawInputCapture`. Apps expose declarative `AppTile` schemas via `ExposeTiles`; Ferrofluid owns all rendering. | `McpSandboxError::UiCapabilityForbidden` |
-| **No Shell Execution** | Apps cannot declare `ShellExecution` or invoke `fork`, `execve`, or `kill` syscalls. | `McpSandboxError::ShellCapabilityForbidden` |
-| **Centralized Orchestration** | **No app can access another app.** Only `McpCaller::Welder` may invoke tools or read resources across registered apps. | `McpSandboxError::CrossAppAccessForbidden` |
-| **Exclusive Scheduler Access** | Only the system `/apps/tasks/` app may hold `ScriptSchedulerAccess` or access `/scripts` and `/etc/schedules.conf`. | `McpSandboxError::SchedulerAccessForbidden` |
-| **Capability-Scoped Storage & Net** | Filesystem access requires `ScopedStorage(/var/<folder>)` (normalized, no `..` traversal). Socket syscalls require `ScopedNetwork`. | `McpSandboxError::MissingCapability` |
+`metalos-mcp` owns app execution through `metalos-js`. Welder invokes the MCP host;
+it does not import `metalos-js`, create app isolates, or execute app source itself.
+The host loads your JavaScript into a capability-scoped execution environment,
+calls a handler, validates its result, and returns it to Welder.
 
 ```mermaid
 flowchart LR
-    User["User"] -->|"Natural language / Tile action"| Ferrofluid["Ferrofluid<br/>(Slint System UI)"]
-    Ferrofluid <-->|"Requests & synthesized views"| Welder["Welder<br/>(Central AI Orchestrator)"]
-    Welder -->|"Reads /apps/<folder>/SKILL.md"| Skill["App Skill<br/>(Untrusted guidance)"]
-    Welder <-->|"JSON-RPC 2.0 (McpCaller::Welder)"| Registry["McpRegistry + RuntimeCapabilityGuard"]
-    Registry <-->|"tools / resources / prompts / tiles"| App["Headless MCP App<br/>(/apps/<folder>/<folder>.mcp)"]
-    App <-->|"ScopedStorage(/var/<folder>)"| Cobalt["CobaltFS / VFS"]
+    User --> Ferrofluid
+    Ferrofluid <-->|Conversation and views| Welder
+    Welder <-->|MCP requests and results| Host[metalos-mcp app host]
+    Host -->|Load manifest and main.js| Disk[CobaltFS /apps/clock/]
+    Host <-->|IPC: invoke handlers and receive results| JS[App process: metalos-js]
+    JS -->|Declared host operations| OS[Rust OS services]
 ```
 
----
+An app returns semantic **Tiles**: titles, rows, badges, and tool actions. Welder
+selects the view and Ferrofluid draws it. Apps do not open windows, draw pixels,
+receive raw keyboard events, run shells, or call other apps. To combine two apps,
+Welder invokes each app separately.
 
-## 2. File Hierarchy Convention
+Each app must run in its own OS process, with a private virtual address space
+and independently scheduled execution. The process hosts `metalos-js`; its
+JavaScript isolates enforce the manifest's capabilities within that process.
+The MCP host invokes handlers through IPC. An app crash or infinite loop must
+not stop Welder, Ferrofluid, or another app.
 
-Each application is identified by its folder name under `/apps/<folder>/` on the root filesystem (CobaltFS or RamFS fallback) and stores its mutable runtime state under `/var/<folder>/`. A separate `app_id` field is not needed—the folder name **is** the application identifier:
+**Not implemented yet:** today's app registry executes app implementations inside
+the host. Process isolation is required migration work tracked in
+[Roadmap Phase 7](ROADMAP.md#phase-7-headless-mcp-apps-skills-declarative-tiles--tasks-app).
+
+## 1. Create the Clock package
+
+Use a lowercase folder name containing letters, digits, underscores, or hyphens.
+The folder is the app's identifier; all public names use it as their namespace.
 
 ```text
-/
-├── apps/
-│   └── <folder>/
-│       ├── <folder>.mcp        # Required: Declarative app manifest & capability allowlist
-│       └── SKILL.md            # Optional (requires ExposeSkills): Agent instructions & recipes
-└── var/
-    └── <folder>/               # Optional (requires ScopedStorage(/var/<folder>)): App data
-        └── state.json
+/apps/clock/        # Installed package; read-only to apps
+├── clock.mcp       # Identity, entrypoint, permissions, and public schemas
+├── SKILL.md        # Instructions that help Welder use Clock
+└── main.js         # JavaScript handlers
+
+/var/clock/         # Writable app data
 ```
 
-### Naming Conventions
-- **`<folder>`**: Lowercase ASCII alphanumeric, underscore, or hyphen (`[a-z0-9_-]+`), e.g. `clock`, `notes`, `tasks`, `syspulse`.
-- **Namespaced identifiers**: Every tool, prompt, resource, and tile exposed by `/apps/<folder>/` is namespaced with `<folder>`:
-  - **Tools**: `<folder>.<tool_name>` (e.g. `clock.now`)
-  - **Resources**: `mcp://<folder>/<path>` (e.g. `mcp://clock/now`, `mcp://clock/tiles`, `mcp://clock/skill`)
-  - **Prompts**: `<folder>.<prompt_name>` (e.g. `clock.tell_time`)
-  - **Tiles**: `<folder>.<tile_name>` (e.g. `clock.now`)
+The repository currently contains [Clock's manifest](apps/clock/clock.mcp) and
+[skill](apps/clock/SKILL.md). Its JavaScript implementation is the migration target
+shown below. **`/apps/` is read-only to apps.** App data and preferences belong
+under **`/var/<app_id>/`**, with writes confined to that app's own directory. For Clock, this is `/var/clock/`. The OS manages package installation
+and updates under `/apps/` through Welder's authorized app-update flow.
 
----
+Use these names consistently:
 
-## 3. App Manifest (`/apps/<folder>/<folder>.mcp`)
+| Surface | Clock example |
+|---|---|
+| Tool | `clock.now` |
+| Resource | `mcp://clock/now` |
+| Prompt | `clock.tell_time` |
+| Tile | `clock.now` |
+| Skill | `/apps/clock/SKILL.md` |
 
-The manifest file `/apps/<folder>/<folder>.mcp` is a line-oriented `key = value` configuration parsed by [`AppManifest::parse_in_folder`](crates/metalos-mcp/src/sandbox.rs):
+## 2. Describe the app in `clock.mcp`
+
+The manifest is the host's source of truth for discovery, validation, and
+permissions. Tool schemas describe what Welder can pass; Tile schemas describe
+what the host will accept. JavaScript implements the declared behavior, and
+`SKILL.md` explains how to use it.
+
+The **target manifest contract** retains `key = value` configuration. Descriptor
+keys (`tool`, `resource`, `prompt`, and `tile`) are repeatable, with one JSON object
+per line. The descriptor keys require extending the existing manifest parser;
+`entrypoint` is already parsed and checked to stay inside the app package. The `ReadClock` grant and `MetalOS.clock.now()` binding below are also part
+of the target contract.
 
 ```ini
-# metalOS Headless MCP App Manifest (/apps/clock/clock.mcp)
+# /apps/clock/clock.mcp
 name = Clock
 version = 1.0.0
-capabilities = ExposeMcpTools, ExposeMcpResources, ExposeMcpPrompts, ExposeSkills, ExposeTiles, ScopedStorage(/var/clock)
+entrypoint = /apps/clock/main.js
+capabilities = ExposeMcpTools, ExposeMcpResources, ExposeMcpPrompts, ExposeSkills, ExposeTiles, ReadClock
+
+tool = {"name":"clock.now","description":"Read the current time and uptime.","inputSchema":{"type":"object","properties":{"utc_offset_hours":{"type":"integer","minimum":-12,"maximum":14,"default":0},"format_24h":{"type":"boolean","default":true}},"additionalProperties":false}}
+resource = {"uri":"mcp://clock/now","name":"Current time","mimeType":"application/json"}
+prompt = {"name":"clock.tell_time","description":"Answer a time question using Clock.","arguments":[{"name":"timezone","required":false}]}
+tile = {"tile_id":"clock.now","schema":"AppTile"}
 ```
 
-### Supported Capabilities
-- `ExposeMcpTools` (`mcp.tools`) — Allows the app to publish callable MCP tools (`tools/list`, `tools/call`).
-- `ExposeMcpResources` (`mcp.resources`) — Allows the app to publish readable `mcp://<folder>/*` resources (`resources/list`, `resources/read`).
-- `ExposeMcpPrompts` (`mcp.prompts`) — Allows the app to publish parameterized prompt templates (`prompts/list`, `prompts/get`).
-- `ExposeSkills` (`app.skills`) — Allows the app to publish `/apps/<folder>/SKILL.md` (`skills/list`, `skills/read`).
-- `ExposeTiles` (`app.tiles`) — Allows the app to publish declarative `AppTile` descriptors (`tiles/list`, `tiles/render`).
-- `ScopedStorage(/var/<folder>)` (`storage:/var/<folder>`) — Grants read/write access strictly beneath the specified absolute path prefix.
-- `ScopedNetwork` (`net.scoped`) — Permits outbound network socket creation (`SyscallNo::Socket`, `SyscallNo::Connect`).
-- `ScriptSchedulerAccess` (`scheduler.access`) — **Reserved exclusively for `/apps/tasks/`**. Rejected for all other apps.
+`schema = "AppTile"` selects the host's standard Tile schema, whose fields are
+shown in step 3. A tool result containing a Tile must satisfy that schema too.
 
-> [!IMPORTANT]
-> Every app manifest must declare at least one surface capability (`ExposeMcpTools`, `ExposeMcpResources`, `ExposeMcpPrompts`, `ExposeSkills`, or `ExposeTiles`), or registration fails with `McpSandboxError::EmptyMcpSurface`.
+## 3. Implement `main.js`
 
+The host-visible handler contract is:
+
+| Handler | Called for | Return value |
+|---|---|---|
+| `callTool(name, args)` | `tools/call` | JSON text containing the tool result |
+| `readResource(uri)` | `resources/read` | JSON text for a JSON resource |
+| `getPrompt(name, args)` | `prompts/get` | Prompt text |
+| `renderTile(tileId)` | `tiles/render` | JSON text containing an `AppTile` |
+
+Define ordinary named functions at the top level. The host invokes them by name;
+this contract does not require ES module `export` syntax, Node.js packages, or
+browser APIs. Discovery comes from the manifest, so handlers do not implement
+`tools/list` or parse JSON-RPC envelopes. Implement only the handlers for the
+surfaces you declare.
+
+The target `MetalOS.clock.now()` binding returns a fresh OS snapshot with
+`epoch_seconds` (UTC wall-clock time) and `uptime_seconds` (monotonic uptime).
+Wall-clock time must come from a real clock source; uptime alone cannot establish
+the current date or time. If that source is unavailable, the host reports an error
+instead of inventing a timestamp.
+
+```javascript
+// /apps/clock/main.js
+function pad2(value) {
+    if (value < 10) { return "0" + value; }
+    return "" + value;
+}
+
+function formatTime(seconds, use24h) {
+    let day = ((seconds % 86400) + 86400) % 86400;
+    let hour = Math.floor(day / 3600);
+    let minute = Math.floor((day % 3600) / 60);
+    let second = day % 60;
+    let suffix = "";
+    if (!use24h) {
+        suffix = hour < 12 ? " AM" : " PM";
+        hour = hour % 12;
+        if (hour === 0) { hour = 12; }
+    }
+    return pad2(hour) + ":" + pad2(minute) + ":" + pad2(second) + suffix;
+}
+
+function snapshot(args) {
+    let offset = args.utc_offset_hours || 0;
+    let use24h = args.format_24h !== false;
+    let now = MetalOS.clock.now();
+    let time = formatTime(now.epoch_seconds + offset * 3600, use24h);
+    let badge = "UTC" + (offset < 0 ? "-" : "+") + pad2(Math.abs(offset)) + ":00";
+    return {
+        formatted_time: time + " " + badge,
+        utc_offset_hours: offset,
+        uptime_seconds: now.uptime_seconds,
+        tile: {
+            tile_id: "clock.now",
+            title: "Clock",
+            subtitle: "System & World Time",
+            refresh_resource_uri: "mcp://clock/now",
+            items: [{id: "wall_clock", title: time, subtitle: "Local offset time",
+                     badge: badge, status: "synced"}],
+            actions: [{id: "refresh", label: "Refresh", tool_name: "clock.now",
+                       default_args: {utc_offset_hours: offset, format_24h: use24h}}]
+        }
+    };
+}
+
+function callTool(name, args) {
+    if (name !== "clock.now") { throw new Error("Unknown Clock tool"); }
+    return JSON.stringify(snapshot(args));
+}
+
+function readResource(uri) {
+    if (uri !== "mcp://clock/now") { throw new Error("Unknown Clock resource"); }
+    return JSON.stringify(snapshot({}));
+}
+
+function getPrompt(name, args) {
+    if (name !== "clock.tell_time") { throw new Error("Unknown Clock prompt"); }
+    return "Call clock.now and present the clock.now Tile. Use a UTC offset if requested.";
+}
+
+function renderTile(tileId) {
+    if (tileId !== "clock.now") { throw new Error("Unknown Clock Tile"); }
+    return JSON.stringify(snapshot({}).tile);
+}
+```
+
+The host validates tool arguments before invoking `callTool`, including the
+integer offset range and boolean format. It parses returned JSON and validates
+namespaces, Tile fields, resource URIs, and action targets. Unknown handlers,
+invalid JSON, host failures, or execution limits become structured MCP errors that
+Welder can explain in the chat.
+
+Each invocation must work in a fresh isolate. Do not rely on globals surviving
+between calls; store durable preferences in `/var/clock/`. A
+Refresh action preserves the selected format through `default_args`. Clock's
+resource and standalone Tile use UTC and 24-hour defaults in this minimal example.
+
+This example handles fixed UTC offsets. Named time zones and daylight-saving
+rules need a time-zone service; `-7` is not a year-round rule for Los Angeles.
+
+## 4. Teach Welder with `SKILL.md`
+
+A skill supplies usage guidance, not permissions. Its frontmatter identifies the
+app and explains when Welder should load the instructions.
+
+```markdown
+---
+name: clock
+description: Read the current time and uptime, and present a Clock Tile.
 ---
 
-## 4. How MCP Works in metalOS
+# Clock
 
-[`McpRegistry`](crates/metalos-mcp/src/registry.rs) speaks JSON-RPC 2.0 (`protocolVersion = "2024-11-05"`) and dispatches requests to registered [`McpApp`](crates/metalos-mcp/src/registry.rs) implementations after checking caller identity (`McpCaller::Welder`) and manifest capabilities.
+Use clock.now when the user asks for the time or system uptime.
+Pass utc_offset_hours when the user requests a fixed UTC offset.
+Use format_24h=false for a 12-hour display.
 
-### Supported JSON-RPC 2.0 Methods
+Present the returned clock.now Tile. Its Refresh action calls clock.now again.
+Do not infer UTC wall-clock time from uptime. Explain clock-source errors to the user.
+```
 
-| Method | Required Capability | Description |
-|---|---|---|
-| `initialize` | — | Returns protocol version, host capabilities (`zeroAppOwnedUi: true`, `welderCentralizedOrchestration: true`), and `installedApps`. |
-| `tools/list` | `ExposeMcpTools` | Lists all registered tools across apps, auto-namespaced as `<folder>.<tool_name>`. |
-| `tools/call` | `ExposeMcpTools` | Invokes `<folder>.<tool_name>` with `arguments: { ... }`. Requires `McpCaller::Welder`. |
-| `resources/list` | `ExposeMcpResources` | Lists all `mcp://<folder>/*` resource descriptors (`uri`, `name`, `mimeType`, `description`). |
-| `resources/read` | `ExposeMcpResources` | Reads `mcp://<folder>/<path>` and returns `McpResourceContent` (`uri`, `mimeType`, `text`). |
-| `prompts/list` | `ExposeMcpPrompts` | Lists all prompt templates, auto-namespaced as `<folder>.<prompt_name>`. |
-| `prompts/get` | `ExposeMcpPrompts` | Renders a prompt template with string arguments into a structured user message. |
-| `skills/list` | `ExposeSkills` | Lists all `AppSkill` metadata (`name`, `path`, `description`, `content`). |
-| `skills/read` | `ExposeSkills` | Reads an `AppSkill` by folder name or VFS path (`/apps/<folder>/SKILL.md`). |
-| `tiles/list` | `ExposeTiles` | Lists all declarative `AppTile` descriptors across registered apps. |
-| `tiles/render` | `ExposeTiles` | Renders a fresh `AppTile` snapshot by `tile_id` (`<folder>.<tile_name>`). |
+The host serves this file through `skills/list` and `skills/read`; JavaScript does
+not need a handler just to return its skill. Welder treats app skills as untrusted
+guidance and follows the user's instructions when they conflict.
 
-### Example JSON-RPC 2.0 Request & Response
+## 5. Follow one request through the OS
 
-**Request (`tools/call`)**:
+For “What time is it at UTC−7?”, Welder discovers `clock.now` and its input schema,
+then sends this request to the MCP host:
+
 ```json
 {
   "jsonrpc": "2.0",
@@ -109,414 +245,34 @@ capabilities = ExposeMcpTools, ExposeMcpResources, ExposeMcpPrompts, ExposeSkill
   "method": "tools/call",
   "params": {
     "name": "clock.now",
-    "arguments": {
-      "utc_offset_hours": -7,
-      "format_24h": true
-    }
+    "arguments": {"utc_offset_hours": -7, "format_24h": true}
   }
 }
 ```
 
-**Response**:
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "result": {
-    "formatted_time": "17:06:45 UTC-07:00",
-    "tile": {
-      "actions": [
-        {
-          "default_args": { "format_24h": true, "utc_offset_hours": -7 },
-          "id": "refresh",
-          "label": "Refresh",
-          "tool_name": "clock.now"
-        }
-      ],
-      "items": [
-        {
-          "badge": "UTC-07:00",
-          "id": "wall_clock",
-          "status": "synced",
-          "subtitle": "Local offset time",
-          "title": "17:06:45"
-        },
-        {
-          "badge": "monotonic",
-          "id": "uptime",
-          "status": "online",
-          "subtitle": "Kernel uptime",
-          "title": "00:42:18"
-        }
-      ],
-      "refresh_resource_uri": "mcp://clock/now",
-      "subtitle": "System & World Time",
-      "tile_id": "clock.now",
-      "title": "Clock"
-    },
-    "uptime_seconds": 2538,
-    "utc_offset_hours": -7
-  }
-}
-```
+The host authenticates Welder as the caller, checks Clock's manifest, validates
+the arguments, loads `/apps/clock/main.js`, and invokes `callTool` in the scoped
+isolate. It decodes the JSON result and returns it through MCP. Welder presents
+the time and hands the validated Tile to Ferrofluid. Tapping Refresh follows the
+same Welder → MCP host → JavaScript path.
 
----
+The host implements discovery methods (`tools/list`, `resources/list`,
+`prompts/list`, `skills/list`, and `tiles/list`) from the installed package.
+`resources/read`, `prompts/get`, and `tiles/render` dispatch to their corresponding
+handlers. Apps never construct the final MCP response envelope themselves.
 
-## 5. What Tiles Look Like (`AppTile`)
+## 6. Install and update your app
 
-Because apps cannot create windows or import Slint, they describe visual surfaces semantically using [`AppTile`](crates/metalos-mcp/src/protocol.rs). Welder inspects tool outputs and `tiles/render` responses, authorizes them through [`AgentUiSynthesizer`](crates/metalos-welder/src/ui_synth.rs), and instructs Ferrofluid to render them.
+Add your app package under `/apps/<app_id>/`. For Clock, place `clock.mcp`,
+`SKILL.md`, and `main.js` in `/apps/clock/`.
 
-### Tile Structure
+Welder automatically discovers and validates all installed apps. Whenever you
+add or change a package, Welder checks it again and lets the user know if there
+is a problem with your app, including what failed and where to fix it. You do
+not need to register the app manually or request a reload.
 
-- **`AppTile`**:
-  - `tile_id: String` — Namespaced identifier (`<folder>.<tile_name>`, e.g. `clock.now`, `tasks.board`). Its `<folder>` prefix identifies the owning app directory (`/apps/<folder>/`) via `tile.folder()`.
-  - `title: String` — Primary card header (`"Clock"`).
-  - `subtitle: String` — Secondary context line (`"System & World Time"`).
-  - `refresh_resource_uri: Option<String>` — Optional `mcp://<folder>/...` URI used to poll/refresh tile state.
-  - `items: Vec<TileItem>` — Ordered semantic rows inside the tile:
-    - `id`: Row identifier (`"wall_clock"`)
-    - `title`: Primary text or metric value (`"17:06:45"`)
-    - `subtitle`: Supporting label (`"Local offset time"`)
-    - `badge`: Pill/tag text (`"UTC-07:00"`)
-    - `status`: Semantic state (`"synced"`, `"active"`, `"paused"`, `"nominal"`)
-  - `actions: Vec<TileAction>` — Interactive buttons rendered on the tile that route back through Welder to an MCP tool:
-    - `id`: Action identifier (`"refresh"`)
-    - `label`: Button label (`"Refresh"`)
-    - `tool_name`: Target namespaced MCP tool (`"clock.now"`)
-    - `default_args`: Pre-populated `BTreeMap<String, McpValue>` arguments passed when clicked.
+Users can ask Welder which apps are installed and whether any of them have errors.
+App data stays under `/var/<app_id>/`; `/apps/` remains read-only to running apps.
 
-### Visual Layout Concept in Ferrofluid
-
-```text
-┌──────────────────────────────────────────────────────────┐
-│  Clock                                    [UTC-07:00]    │
-│  System & World Time                                     │
-├──────────────────────────────────────────────────────────┤
-│  17:06:45                         [UTC-07:00]  ● synced  │
-│  Local offset time                                       │
-│  ──────────────────────────────────────────────────────  │
-│  00:42:18                         [monotonic]  ● online  │
-│  Kernel uptime                                           │
-├──────────────────────────────────────────────────────────┤
-│  [ Refresh ]                          [ Toggle 12h/24h ] │
-└──────────────────────────────────────────────────────────┘
-```
-
----
-
-## 6. What Skills Are (`SKILL.md`)
-
-An **App Skill** (`/apps/<folder>/SKILL.md`, represented in Rust by [`AppSkill`](crates/metalos-mcp/src/protocol.rs)) is a Markdown document with YAML frontmatter that teaches Welder *when* and *how* to use an application's MCP tools, resources, prompts, and tiles.
-
-### Format of `/apps/<folder>/SKILL.md`
-1. **YAML Frontmatter** (required):
-   - `name`: Matches the `/apps/<folder>/` directory name.
-   - `description`: One-line trigger description used by Welder to decide when to load the full skill.
-2. **Markdown Body**:
-   - Architectural constraints specific to the app.
-   - Tool parameter conventions and multi-step orchestration recipes.
-   - Which `AppTile` to present after specific tool invocations.
-
-### Security & Ownership Boundaries for Skills
-- **Skills live under `/apps/<folder>/SKILL.md`**: There is no top-level `/skills/` directory in metalOS.
-- **Skills are distinct from `/knowledge/`**: Skills describe *how an app works*; `/knowledge/` stores *facts and preferences about the user*.
-- **Untrusted Context, Not Capability Grant**: Reading a `SKILL.md` never grants an app additional permissions or overrides the user's explicit instructions. All capability checks remain enforced by [`RuntimeCapabilityGuard`](crates/metalos-mcp/src/sandbox.rs).
-
----
-
-## 7. Quick Proof of Concept: The `clock` App ("Tell the Time")
-
-The proof-of-concept files are located at:
-- Manifest: [`apps/clock/clock.mcp`](apps/clock/clock.mcp)
-- Skill: [`apps/clock/SKILL.md`](apps/clock/SKILL.md)
-
-### 7.1 Manifest (`apps/clock/clock.mcp`)
-```ini
-# metalOS Headless MCP App Manifest (/apps/clock/clock.mcp)
-name = Clock
-version = 1.0.0
-capabilities = ExposeMcpTools, ExposeMcpResources, ExposeMcpPrompts, ExposeSkills, ExposeTiles, ScopedStorage(/var/clock)
-```
-
-### 7.2 Rust `McpApp` Implementation
-Below is the complete `#![no_std]` Rust implementation of `ClockApp` implementing [`McpApp`](crates/metalos-mcp/src/registry.rs):
-
-```rust
-use alloc::collections::BTreeMap;
-use alloc::format;
-use alloc::string::{String, ToString};
-use alloc::vec;
-use alloc::vec::Vec;
-
-use metalos_mcp::protocol::{
-    mcp_map, AppSkill, AppTile, McpError, McpParamSpec, McpPrompt, McpResource,
-    McpResourceContent, McpTool, McpValue, TileAction, TileItem,
-};
-use metalos_mcp::registry::McpApp;
-use metalos_mcp::sandbox::AppManifest;
-
-pub const CLOCK_MANIFEST_MCP: &str = include_str!("../../../apps/clock/clock.mcp");
-pub const CLOCK_SKILL_MD: &str = include_str!("../../../apps/clock/SKILL.md");
-
-pub struct ClockApp {
-    manifest: AppManifest,
-    /// Simulated or RTC-seeded base epoch seconds (e.g. 2026-10-13T00:06:45Z).
-    epoch_seconds: u64,
-    /// Monotonic system uptime in seconds.
-    uptime_seconds: u64,
-    /// Default UTC offset in hours stored under /var/clock.
-    utc_offset_hours: i64,
-    /// 24-hour vs 12-hour display preference.
-    format_24h: bool,
-}
-
-impl ClockApp {
-    pub fn new(epoch_seconds: u64, uptime_seconds: u64) -> Self {
-        let manifest = AppManifest::parse_in_folder("clock", CLOCK_MANIFEST_MCP)
-            .expect("valid /apps/clock/clock.mcp manifest");
-        Self {
-            manifest,
-            epoch_seconds,
-            uptime_seconds,
-            utc_offset_hours: -7,
-            format_24h: true,
-        }
-    }
-
-    fn format_hms(total_seconds: i64, format_24h: bool) -> String {
-        let day_secs = total_seconds.rem_euclid(86_400);
-        let hours24 = (day_secs / 3600) as u32;
-        let minutes = ((day_secs % 3600) / 60) as u32;
-        let seconds = (day_secs % 60) as u32;
-
-        if format_24h {
-            format!("{:02}:{:02}:{:02}", hours24, minutes, seconds)
-        } else {
-            let (hour12, suffix) = match hours24 {
-                0 => (12, "AM"),
-                1..=11 => (hours24, "AM"),
-                12 => (12, "PM"),
-                _ => (hours24 - 12, "PM"),
-            };
-            format!("{}:{:02}:{:02} {}", hour12, minutes, seconds, suffix)
-        }
-    }
-
-    fn format_offset_badge(offset_hours: i64) -> String {
-        if offset_hours >= 0 {
-            format!("UTC+{:02}:00", offset_hours)
-        } else {
-            format!("UTC-{:02}:00", offset_hours.unsigned_abs())
-        }
-    }
-
-    fn build_now_tile(&self, offset_hours: i64, format_24h: bool) -> AppTile {
-        let adjusted_secs = (self.epoch_seconds as i64) + offset_hours * 3600;
-        let clock_str = Self::format_hms(adjusted_secs, format_24h);
-        let badge = Self::format_offset_badge(offset_hours);
-        let uptime_str = Self::format_hms(self.uptime_seconds as i64, true);
-
-        AppTile {
-            tile_id: "clock.now".to_string(),
-            title: "Clock".to_string(),
-            subtitle: "System & World Time".to_string(),
-            refresh_resource_uri: Some("mcp://clock/now".to_string()),
-            items: vec![
-                TileItem::new(
-                    "wall_clock",
-                    clock_str,
-                    "Local offset time",
-                    badge,
-                    "synced",
-                ),
-                TileItem::new(
-                    "uptime",
-                    uptime_str,
-                    "Kernel uptime",
-                    "monotonic",
-                    "online",
-                ),
-            ],
-            actions: vec![TileAction::new(
-                "refresh",
-                "Refresh",
-                "clock.now",
-                mcp_map(&[
-                    ("utc_offset_hours", McpValue::Int(offset_hours)),
-                    ("format_24h", McpValue::Bool(format_24h)),
-                ]),
-            )],
-        }
-    }
-}
-
-impl McpApp for ClockApp {
-    fn manifest(&self) -> &AppManifest {
-        &self.manifest
-    }
-
-    fn tools(&self) -> Vec<McpTool> {
-        vec![McpTool::new(
-            "clock.now",
-            "Return the current time, timezone-adjusted clock, and monotonic system uptime.",
-            vec![
-                McpParamSpec::new(
-                    "utc_offset_hours",
-                    "integer",
-                    false,
-                    "Signed hour offset from UTC (e.g. -7 for PDT, 0 for UTC)",
-                ),
-                McpParamSpec::new(
-                    "format_24h",
-                    "boolean",
-                    false,
-                    "Format time in 24-hour notation (true) or 12-hour AM/PM notation (false)",
-                ),
-            ],
-        )]
-    }
-
-    fn resources(&self) -> Vec<McpResource> {
-        vec![
-            McpResource::new(
-                "mcp://clock/now",
-                "Current Time Snapshot",
-                "application/json",
-                "Live UTC time, local offset time, and kernel uptime",
-            ),
-            McpResource::new(
-                "mcp://clock/tiles",
-                "Clock Declarative Tiles",
-                "application/json",
-                "Declarative AppTile descriptor for clock.now",
-            ),
-            McpResource::new(
-                "mcp://clock/skill",
-                "Clock App Skill",
-                "text/markdown",
-                "SKILL.md instructions for orchestrating the Clock app",
-            ),
-        ]
-    }
-
-    fn prompts(&self) -> Vec<McpPrompt> {
-        vec![McpPrompt::new(
-            "clock.tell_time",
-            "Answer a natural-language question about the current time or timezone.",
-            vec!["timezone".to_string()],
-        )]
-    }
-
-    fn skills(&self) -> Vec<AppSkill> {
-        vec![AppSkill::new(
-            "clock",
-            "clock",
-            "/apps/clock/SKILL.md",
-            "Tell the current system time, monotonic uptime, and formatted timezone offsets.",
-            CLOCK_SKILL_MD,
-        )]
-    }
-
-    fn tiles(&self) -> Vec<AppTile> {
-        vec![self.build_now_tile(self.utc_offset_hours, self.format_24h)]
-    }
-
-    fn call_tool(
-        &mut self,
-        tool_name: &str,
-        args: &BTreeMap<String, McpValue>,
-    ) -> Result<McpValue, McpError> {
-        match tool_name {
-            "clock.now" | "now" => {
-                if let Some(offset) = args.get("utc_offset_hours").and_then(|v| v.as_i64()) {
-                    if !(-12..=14).contains(&offset) {
-                        return Err(McpError::invalid_params(
-                            "utc_offset_hours must be between -12 and +14",
-                        ));
-                    }
-                    self.utc_offset_hours = offset;
-                }
-                if let Some(fmt24) = args.get("format_24h").and_then(|v| v.as_bool()) {
-                    self.format_24h = fmt24;
-                }
-
-                let tile = self.build_now_tile(self.utc_offset_hours, self.format_24h);
-                let formatted = format!(
-                    "{} {}",
-                    tile.items[0].title,
-                    tile.items[0].badge
-                );
-
-                Ok(McpValue::Map(mcp_map(&[
-                    ("formatted_time", McpValue::Text(formatted)),
-                    ("utc_offset_hours", McpValue::Int(self.utc_offset_hours)),
-                    ("uptime_seconds", McpValue::Int(self.uptime_seconds as i64)),
-                    ("tile", tile.to_mcp_value()),
-                ])))
-            }
-            other => Err(McpError::method_not_found(format!(
-                "unknown tool '{}' on app 'clock'",
-                other
-            ))),
-        }
-    }
-
-    fn read_resource(&self, uri: &str) -> Result<McpResourceContent, McpError> {
-        match uri {
-            "mcp://clock/now" => {
-                let tile = self.build_now_tile(self.utc_offset_hours, self.format_24h);
-                let payload = McpValue::Map(mcp_map(&[
-                    ("formatted_time", McpValue::Text(tile.items[0].title.clone())),
-                    ("badge", McpValue::Text(tile.items[0].badge.clone())),
-                    ("uptime_seconds", McpValue::Int(self.uptime_seconds as i64)),
-                ]));
-                Ok(McpResourceContent::new(uri, "application/json", payload.to_json()))
-            }
-            "mcp://clock/tiles" => {
-                let tile = self.build_now_tile(self.utc_offset_hours, self.format_24h);
-                Ok(McpResourceContent::new(
-                    uri,
-                    "application/json",
-                    tile.to_mcp_value().to_json(),
-                ))
-            }
-            "mcp://clock/skill" => Ok(McpResourceContent::new(
-                uri,
-                "text/markdown",
-                CLOCK_SKILL_MD,
-            )),
-            other => Err(McpError::resource_not_found(format!(
-                "unknown clock resource '{}'",
-                other
-            ))),
-        }
-    }
-
-    fn get_prompt(
-        &self,
-        name: &str,
-        args: &BTreeMap<String, String>,
-    ) -> Result<String, McpError> {
-        match name {
-            "clock.tell_time" | "tell_time" => {
-                let tz = args.get("timezone").map(|s| s.as_str()).unwrap_or("UTC-07:00");
-                Ok(format!(
-                    "Call `clock.now` for timezone `{}` and present the `clock.now` Tile.",
-                    tz
-                ))
-            }
-            other => Err(McpError::method_not_found(format!(
-                "unknown clock prompt '{}'",
-                other
-            ))),
-        }
-    }
-}
-```
-
-### 7.3 End-to-End Turn Flow ("What time is it?")
-
-1. **Skill Discovery**: Welder sees the `clock` skill summary (`"Tell the current system time, monotonic uptime, and formatted timezone offsets..."`) via `skills/list` and reads `/apps/clock/SKILL.md` (`skills/read`).
-2. **Tool Invocation**: Welder invokes `mcp_call_tool` with `app = "clock"`, `tool = "clock.now"`, `args = "{\"utc_offset_hours\":-7,\"format_24h\":true}"` as `McpCaller::Welder`.
-3. **Sandbox Validation**: `McpRegistry` verifies that `McpCaller::Welder` is the caller and that `/apps/clock/clock.mcp` declares `ExposeMcpTools`.
-4. **Tile Synthesis**: `ClockApp::call_tool` returns the current formatted time (`"17:06:45 UTC-07:00"`) along with the `clock.now` `AppTile`. Welder's `AgentUiSynthesizer` converts the `AppTile` into an authorized `SynthesizedUiView` (`ViewKind::McpAppView`) and passes it to Ferrofluid to render.
+Automatic discovery and validation are planned in
+[Roadmap Phase 7](ROADMAP.md#phase-7-headless-mcp-apps-skills-declarative-tiles--tasks-app).

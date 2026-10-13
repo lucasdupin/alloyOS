@@ -284,3 +284,126 @@ fn delayed_cloud_jobs_yield_without_resending_and_release_on_success_or_failure(
         assert!(forge.start_generation(&request).is_ok());
     }
 }
+
+struct StreamingSseHttp {
+    chunks: Vec<String>,
+    cursor: usize,
+    accumulated: String,
+}
+
+impl HttpsClient for StreamingSseHttp {
+    fn post(&mut self, _: &HttpRequest) -> Result<HttpResponse, ForgeError> {
+        panic!("streaming test must use cooperative start_post/poll_post")
+    }
+    fn start_post(&mut self, _: &HttpRequest) -> std::task::Poll<Result<HttpResponse, ForgeError>> {
+        self.cursor = 0;
+        self.accumulated.clear();
+        std::task::Poll::Pending
+    }
+    fn poll_post(&mut self) -> std::task::Poll<Result<HttpResponse, ForgeError>> {
+        if self.cursor < self.chunks.len() {
+            self.accumulated.push_str(&self.chunks[self.cursor]);
+            self.cursor += 1;
+            if self.cursor < self.chunks.len() {
+                return std::task::Poll::Pending;
+            }
+        }
+        std::task::Poll::Ready(Ok(HttpResponse {
+            status: 200,
+            body: self.accumulated.clone(),
+        }))
+    }
+    fn partial_response_body(&self) -> Option<&str> {
+        if self.accumulated.is_empty() {
+            None
+        } else {
+            Some(&self.accumulated)
+        }
+    }
+}
+
+fn sse_chunks(provider: ApiProvider) -> Vec<String> {
+    match provider {
+        ApiProvider::Claude => vec![
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"Hello\"}}\n\n".into(),
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\" metalOS\"}}\n\n".into(),
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"text\":\"!\"},\"usage\":{\"output_tokens\":3}}\n\n".into(),
+        ],
+        ApiProvider::Gemini => vec![
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"thought\":true,\"text\":\"hidden\"},{\"text\":\"Hello\"}]}}]}\n\n".into(),
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\" metalOS\"}]}}]}\n\n".into(),
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"!\"}]}}],\"usageMetadata\":{\"candidatesTokenCount\":3}}\n\n".into(),
+        ],
+        ApiProvider::OpenAi => vec![
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\n".into(),
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\" metalOS\"}\n\n".into(),
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"!\",\"usage\":{\"output_tokens\":3}}\n\ndata: [DONE]\n\n".into(),
+        ],
+    }
+}
+
+#[test]
+fn cloud_sse_streams_deliver_incremental_partial_text_and_gateway_deltas() {
+    use std::task::Poll;
+    for provider in [
+        ApiProvider::Claude,
+        ApiProvider::Gemini,
+        ApiProvider::OpenAi,
+    ] {
+        let mut forge = Forge::new(0);
+        forge
+            .connect_api(
+                provider,
+                provider.default_model(),
+                "fixture-key",
+                Box::new(StreamingSseHttp {
+                    chunks: sse_chunks(provider),
+                    cursor: 0,
+                    accumulated: String::new(),
+                }),
+            )
+            .unwrap();
+        let req = GenerationRequest {
+            model: Some(provider.default_model().into()),
+            prompt: "Stream test".into(),
+            max_tokens: 32,
+        };
+        let job = forge.start_generation(&req).unwrap();
+        assert_eq!(forge.partial_text(job), None);
+
+        assert!(forge.poll_generation(job).is_pending());
+        assert_eq!(forge.partial_text(job), Some("Hello"));
+
+        assert!(forge.poll_generation(job).is_pending());
+        assert_eq!(forge.partial_text(job), Some("Hello metalOS"));
+
+        let Poll::Ready(Ok(done)) = forge.poll_generation(job) else {
+            panic!("expected third poll to finish SSE stream");
+        };
+        assert_eq!(done.text, "Hello metalOS!");
+        assert_eq!(done.generated_tokens, 3);
+
+        // Also verify ModelGateway::chat emits live incremental token deltas via on_token
+        let shared_forge = Rc::new(RefCell::new(forge));
+        let mut gateway = ModelGateway::new();
+        gateway.set_forge(shared_forge);
+        gateway.switch_provider(provider.name()).unwrap();
+
+        let mut deltas = Vec::new();
+        let response = gateway
+            .chat(&[Message::user("Stream via gateway")], &[], &mut |delta| {
+                deltas.push(delta.to_string())
+            })
+            .unwrap();
+        assert_eq!(
+            deltas,
+            vec![
+                "Hello".to_string(),
+                " metalOS".to_string(),
+                "!".to_string()
+            ]
+        );
+        assert_eq!(response.text, "Hello metalOS!");
+        assert_eq!(response.usage.completion_tokens, 3);
+    }
+}

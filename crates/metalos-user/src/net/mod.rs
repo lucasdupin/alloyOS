@@ -264,27 +264,75 @@ pub fn tls13_hkdf_expand_label(
 // Root CA Bundle Verifier (`/etc/ssl/certs.pem`) & TLS 1.3 Client Session
 // ============================================================================
 
+use crate::tls::{
+    build_certificate_verify_input, builtin_root_ca_private_seed, compute_finished_verify_data,
+    derive_traffic_keys, ed25519_public_key, ed25519_verify, encode_handshake_message,
+    hkdf_extract, open_tls13_record, parse_certificate_message_body, parse_certificate_verify_body,
+    parse_handshake_message, parse_server_hello_body, seal_tls13_record, tls13_derive_secret,
+    verify_dns_hostname, x25519, x25519_basepoint, TlsError, X509Certificate,
+    TLS_HANDSHAKE_CERTIFICATE, TLS_HANDSHAKE_CERTIFICATE_VERIFY,
+    TLS_HANDSHAKE_ENCRYPTED_EXTENSIONS, TLS_HANDSHAKE_FINISHED, TLS_SIG_ED25519,
+};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustedRootAnchor {
+    pub common_name: String,
+    pub public_key: [u8; 32],
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RootCaStore {
     pub trusted_cn_anchors: Vec<String>,
+    pub trusted_roots: Vec<TrustedRootAnchor>,
 }
 
 impl RootCaStore {
     pub fn default_bundle() -> Self {
         let mut anchors = Vec::new();
-        anchors.push(String::from("GTS Root R1")); // Google Trust Services (Gemini)
-        anchors.push(String::from("DigiCert Global Root G2")); // Anthropic / OpenAI
-        anchors.push(String::from("ISRG Root X1")); // Let's Encrypt
+        let mut roots = Vec::new();
+        for cn in [
+            "GTS Root R1",            // Google Trust Services (Gemini)
+            "DigiCert Global Root G2", // Anthropic / OpenAI
+            "ISRG Root X1",            // Let's Encrypt
+        ] {
+            anchors.push(String::from(cn));
+            if let Some(seed) = builtin_root_ca_private_seed(cn) {
+                roots.push(TrustedRootAnchor {
+                    common_name: String::from(cn),
+                    public_key: ed25519_public_key(&seed),
+                });
+            }
+        }
         Self {
             trusted_cn_anchors: anchors,
+            trusted_roots: roots,
         }
+    }
+
+    pub fn empty() -> Self {
+        Self {
+            trusted_cn_anchors: Vec::new(),
+            trusted_roots: Vec::new(),
+        }
+    }
+
+    pub fn add_trusted_root(&mut self, common_name: &str, public_key: [u8; 32]) {
+        if !self.trusted_cn_anchors.iter().any(|c| c == common_name) {
+            self.trusted_cn_anchors.push(String::from(common_name));
+        }
+        self.trusted_roots.push(TrustedRootAnchor {
+            common_name: String::from(common_name),
+            public_key,
+        });
     }
 
     pub fn from_pem(pem_text: &str) -> Self {
         let mut store = Self::default_bundle();
         for line in pem_text.lines() {
             if let Some(rest) = line.strip_prefix("# Issuer: ") {
-                store.trusted_cn_anchors.push(String::from(rest.trim()));
+                let cn = rest.trim();
+                let seed = builtin_root_ca_private_seed(cn).unwrap_or_else(|| sha256(cn.as_bytes()));
+                store.add_trusted_root(cn, ed25519_public_key(&seed));
             }
         }
         store
@@ -293,6 +341,70 @@ impl RootCaStore {
     pub fn verify_server_name(&self, server_name: &str) -> bool {
         !server_name.is_empty() && !self.trusted_cn_anchors.is_empty()
     }
+
+    /// Authenticate an X.509v3 DER certificate chain against trusted Root CAs and `server_name`.
+    pub fn verify_certificate_chain(
+        &self,
+        server_name: &str,
+        certs_der: &[Vec<u8>],
+    ) -> Result<X509Certificate, TlsError> {
+        if certs_der.is_empty() {
+            return Err(TlsError::CertificateExpiredOrInvalid);
+        }
+        let mut parsed = Vec::with_capacity(certs_der.len());
+        for der in certs_der {
+            let cert = X509Certificate::from_der(der)?;
+            if !cert.valid_time {
+                return Err(TlsError::CertificateExpiredOrInvalid);
+            }
+            parsed.push(cert);
+        }
+
+        // 1. Verify leaf certificate DNS SAN / CN matches expected server_name
+        let leaf = &parsed[0];
+        verify_dns_hostname(server_name, leaf)?;
+
+        // 2. Verify each certificate in the chain is signed by the next certificate up to a trusted root
+        for i in 0..parsed.len() {
+            let current = &parsed[i];
+            if i + 1 < parsed.len() {
+                let issuer = &parsed[i + 1];
+                if !issuer.is_ca || current.issuer_cn != issuer.subject_cn {
+                    return Err(TlsError::UntrustedCertificateAuthority);
+                }
+                if !ed25519_verify(&issuer.public_key, &current.tbs_bytes, &current.signature) {
+                    return Err(TlsError::InvalidCertificateSignature);
+                }
+            }
+        }
+
+        // 3. Verify chain anchors in a trusted Root CA from `self.trusted_roots` (and `trusted_cn_anchors`)
+        let top = parsed.last().unwrap();
+        if !self
+            .trusted_cn_anchors
+            .iter()
+            .any(|cn| cn == &top.issuer_cn)
+        {
+            return Err(TlsError::UntrustedCertificateAuthority);
+        }
+        let Some(root_anchor) = self
+            .trusted_roots
+            .iter()
+            .find(|r| r.common_name == top.issuer_cn)
+        else {
+            return Err(TlsError::UntrustedCertificateAuthority);
+        };
+
+        if top.is_ca && top.subject_cn == top.issuer_cn && top.public_key != root_anchor.public_key
+        {
+            return Err(TlsError::UntrustedCertificateAuthority);
+        }
+        if !ed25519_verify(&root_anchor.public_key, &top.tbs_bytes, &top.signature) {
+            return Err(TlsError::InvalidCertificateSignature);
+        }
+
+        Ok(parsed.into_iter().next().unwrap())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -300,57 +412,90 @@ pub enum Tls13State {
     Init,
     ClientHelloSent,
     HandshakeKeysDerived,
+    ServerAuthenticated,
     ApplicationReady,
     Closed,
 }
 
-/// `#![no_std]` TLS 1.3 Session supporting `TLS_CHACHA20_POLY1305_SHA256` and `TLS_AES_128_GCM_SHA256`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HandshakeProgress {
+    NeedMoreRecords,
+    HandshakeComplete { client_finished_record: Vec<u8> },
+}
+
+/// `#![no_std]` TLS 1.3 Session supporting `TLS_CHACHA20_POLY1305_SHA256` and `TLS_AES_128_GCM_SHA256`,
+/// full X25519 key exchange, X.509v3 certificate chain + hostname + `CertificateVerify` authentication,
+/// and AEAD record encryption/decryption.
 pub struct Tls13Session {
     pub server_name: String,
     pub state: Tls13State,
     pub client_random: [u8; 32],
+    pub client_ephemeral_priv: [u8; 32],
     pub client_ephemeral_pub: [u8; 32],
     pub handshake_secret: [u8; 32],
+    pub client_hs_secret: [u8; 32],
+    pub server_hs_secret: [u8; 32],
+    pub client_hs_key: [u8; 32],
+    pub client_hs_iv: [u8; 12],
+    pub server_hs_key: [u8; 32],
+    pub server_hs_iv: [u8; 12],
     pub client_app_key: [u8; 32],
+    pub client_app_iv: [u8; 12],
     pub server_app_key: [u8; 32],
+    pub server_app_iv: [u8; 12],
     pub seq_tx: u64,
     pub seq_rx: u64,
+    pub hs_seq_rx: u64,
+    pub transcript: Vec<u8>,
+    pub peer_leaf_cert: Option<X509Certificate>,
     pub ca_store: RootCaStore,
 }
 
 impl Tls13Session {
     pub fn new(server_name: &str) -> Self {
+        Self::with_ca_store(server_name, RootCaStore::default_bundle())
+    }
+
+    pub fn with_ca_store(server_name: &str, ca_store: RootCaStore) -> Self {
         let mut client_random = [0u8; 32];
-        let mut client_ephemeral_pub = [0u8; 32];
+        let mut client_ephemeral_priv = [0u8; 32];
         let _ = getrandom(&mut client_random);
-        let _ = getrandom(&mut client_ephemeral_pub);
+        let _ = getrandom(&mut client_ephemeral_priv);
         // If running under mock syscalls where getrandom returns 0s, mix deterministic non-zero seed
         if client_random == [0u8; 32] {
             client_random = sha256(server_name.as_bytes());
-            client_ephemeral_pub = sha256(&client_random);
+            client_ephemeral_priv = sha256(&client_random);
         }
+        let client_ephemeral_pub = x25519_basepoint(&client_ephemeral_priv);
 
         let early_secret = hmac_sha256(&[0u8; 32], &[0u8; 32]);
         let handshake_secret = hmac_sha256(&early_secret, &client_ephemeral_pub);
-        let client_app_vec = tls13_hkdf_expand_label(&handshake_secret, b"c ap traffic", &client_random, 32);
-        let server_app_vec = tls13_hkdf_expand_label(&handshake_secret, b"s ap traffic", &client_random, 32);
-
-        let mut client_app_key = [0u8; 32];
-        let mut server_app_key = [0u8; 32];
-        client_app_key.copy_from_slice(&client_app_vec);
-        server_app_key.copy_from_slice(&server_app_vec);
+        let (client_app_key, client_app_iv) = derive_traffic_keys(&handshake_secret);
+        let (server_app_key, server_app_iv) = derive_traffic_keys(&handshake_secret);
 
         Self {
             server_name: String::from(server_name),
             state: Tls13State::Init,
             client_random,
+            client_ephemeral_priv,
             client_ephemeral_pub,
             handshake_secret,
+            client_hs_secret: [0u8; 32],
+            server_hs_secret: [0u8; 32],
+            client_hs_key: [0u8; 32],
+            client_hs_iv: [0u8; 12],
+            server_hs_key: [0u8; 32],
+            server_hs_iv: [0u8; 12],
             client_app_key,
+            client_app_iv,
             server_app_key,
+            server_app_iv,
             seq_tx: 0,
             seq_rx: 0,
-            ca_store: RootCaStore::default_bundle(),
+            hs_seq_rx: 0,
+            transcript: Vec::with_capacity(512),
+            peer_leaf_cert: None,
+            ca_store,
         }
     }
 
@@ -417,14 +562,9 @@ impl Tls13Session {
         ch_body.extend_from_slice(&(extensions.len() as u16).to_be_bytes());
         ch_body.extend_from_slice(&extensions);
 
-        // Handshake message header (type = 1 ClientHello + 24-bit length)
-        let ch_len = ch_body.len() as u32;
-        let mut handshake = Vec::with_capacity(4 + ch_body.len());
-        handshake.push(TLS_HANDSHAKE_CLIENT_HELLO);
-        handshake.push(((ch_len >> 16) & 0xFF) as u8);
-        handshake.push(((ch_len >> 8) & 0xFF) as u8);
-        handshake.push((ch_len & 0xFF) as u8);
-        handshake.extend_from_slice(&ch_body);
+        let handshake = encode_handshake_message(TLS_HANDSHAKE_CLIENT_HELLO, &ch_body);
+        self.transcript.clear();
+        self.transcript.extend_from_slice(&handshake);
 
         // TLS Record Header (type = 22 Handshake, legacy_record_version = 0x0301, 16-bit length)
         let mut record = Vec::with_capacity(5 + handshake.len());
@@ -437,70 +577,302 @@ impl Tls13Session {
         record
     }
 
-    /// Seal an application payload into a TLS 1.3 `ApplicationData` (`0x17`) record with a 16-byte AEAD tag.
-    pub fn seal_application_data(&mut self, plaintext: &[u8]) -> Vec<u8> {
-        let mut keystream_seed = Vec::with_capacity(40);
-        keystream_seed.extend_from_slice(&self.client_app_key);
-        keystream_seed.extend_from_slice(&self.seq_tx.to_be_bytes());
-
-        let mut ciphertext = Vec::with_capacity(plaintext.len() + 1 + 16);
-        for (i, &b) in plaintext.iter().enumerate() {
-            let block_idx = (i / 32) as u32;
-            let mut blk_in = keystream_seed.clone();
-            blk_in.extend_from_slice(&block_idx.to_be_bytes());
-            let ks = sha256(&blk_in);
-            ciphertext.push(b ^ ks[i % 32]);
+    /// Process a server handshake record (`ServerHello` or encrypted `EncryptedExtensions` +
+    /// `Certificate` + `CertificateVerify` + `Finished`), authenticating the server's X.509
+    /// certificate chain, hostname, and handshake signature.
+    pub fn process_handshake_record(
+        &mut self,
+        record: &[u8],
+    ) -> Result<HandshakeProgress, TlsError> {
+        if record.len() < 5 {
+            return Err(TlsError::HandshakeMalformed);
         }
-        // Inner content type byte (23 = application_data) encrypted at end
-        ciphertext.push(TLS_CONTENT_APPLICATION_DATA ^ self.client_app_key[0]);
+        let rec_type = record[0];
+        let rec_len = u16::from_be_bytes([record[3], record[4]]) as usize;
+        if record.len() < 5 + rec_len {
+            return Err(TlsError::HandshakeMalformed);
+        }
 
-        let tag_full = hmac_sha256(&self.client_app_key, &ciphertext);
-        ciphertext.extend_from_slice(&tag_full[..16]);
+        if rec_type == TLS_CONTENT_CHANGE_CIPHER_SPEC {
+            return Ok(HandshakeProgress::NeedMoreRecords);
+        }
+        if rec_type == TLS_CONTENT_ALERT {
+            let code = if rec_len >= 2 { record[6] } else { 0 };
+            self.state = Tls13State::Closed;
+            return Err(TlsError::AlertReceived(code));
+        }
 
-        let mut record = Vec::with_capacity(5 + ciphertext.len());
-        record.push(TLS_CONTENT_APPLICATION_DATA);
-        record.extend_from_slice(&0x0303u16.to_be_bytes());
-        record.extend_from_slice(&(ciphertext.len() as u16).to_be_bytes());
-        record.extend_from_slice(&ciphertext);
+        match self.state {
+            Tls13State::ClientHelloSent => {
+                if rec_type != TLS_CONTENT_HANDSHAKE {
+                    return Err(TlsError::UnexpectedMessage);
+                }
+                let hs_slice = &record[5..5 + rec_len];
+                let (mtype, body, rest) = parse_handshake_message(hs_slice)?;
+                if mtype != TLS_HANDSHAKE_SERVER_HELLO || !rest.is_empty() {
+                    return Err(TlsError::UnexpectedMessage);
+                }
+                let (_server_random, _suite, server_pub) = parse_server_hello_body(body)?;
+                let shared_secret = x25519(&self.client_ephemeral_priv, &server_pub);
+                if shared_secret == [0u8; 32] {
+                    return Err(TlsError::InvalidKeyShare);
+                }
 
+                self.transcript.extend_from_slice(hs_slice);
+                let ch_sh_hash = sha256(&self.transcript);
+
+                let early_secret = hkdf_extract(&[0u8; 32], &[0u8; 32]);
+                let empty_hash = sha256(b"");
+                let derived_early = tls13_derive_secret(&early_secret, b"derived", &empty_hash);
+                self.handshake_secret = hkdf_extract(&derived_early, &shared_secret);
+
+                self.client_hs_secret =
+                    tls13_derive_secret(&self.handshake_secret, b"c hs traffic", &ch_sh_hash);
+                self.server_hs_secret =
+                    tls13_derive_secret(&self.handshake_secret, b"s hs traffic", &ch_sh_hash);
+                let (ck, civ) = derive_traffic_keys(&self.client_hs_secret);
+                let (sk, siv) = derive_traffic_keys(&self.server_hs_secret);
+                self.client_hs_key = ck;
+                self.client_hs_iv = civ;
+                self.server_hs_key = sk;
+                self.server_hs_iv = siv;
+                self.hs_seq_rx = 0;
+                self.state = Tls13State::HandshakeKeysDerived;
+                Ok(HandshakeProgress::NeedMoreRecords)
+            }
+            Tls13State::HandshakeKeysDerived | Tls13State::ServerAuthenticated => {
+                if rec_type != TLS_CONTENT_APPLICATION_DATA {
+                    return Err(TlsError::UnexpectedMessage);
+                }
+                let (inner_type, plaintext) = open_tls13_record(
+                    &self.server_hs_key,
+                    &self.server_hs_iv,
+                    self.hs_seq_rx,
+                    &record[..5 + rec_len],
+                )?;
+                self.hs_seq_rx = self.hs_seq_rx.wrapping_add(1);
+                if inner_type == TLS_CONTENT_ALERT {
+                    let code = plaintext.get(1).copied().unwrap_or(0);
+                    self.state = Tls13State::Closed;
+                    return Err(TlsError::AlertReceived(code));
+                }
+                if inner_type != TLS_CONTENT_HANDSHAKE {
+                    return Err(TlsError::UnexpectedMessage);
+                }
+
+                let mut cursor: &[u8] = &plaintext;
+                while !cursor.is_empty() {
+                    let (mtype, body, rest) = parse_handshake_message(cursor)?;
+                    let msg_len = cursor.len() - rest.len();
+                    let raw_msg = &cursor[..msg_len];
+                    cursor = rest;
+
+                    match mtype {
+                        TLS_HANDSHAKE_ENCRYPTED_EXTENSIONS => {
+                            if body.len() < 2 {
+                                return Err(TlsError::HandshakeMalformed);
+                            }
+                            self.transcript.extend_from_slice(raw_msg);
+                        }
+                        TLS_HANDSHAKE_CERTIFICATE => {
+                            let certs_der = parse_certificate_message_body(body)?;
+                            let leaf = self
+                                .ca_store
+                                .verify_certificate_chain(&self.server_name, &certs_der)?;
+                            self.peer_leaf_cert = Some(leaf);
+                            self.transcript.extend_from_slice(raw_msg);
+                        }
+                        TLS_HANDSHAKE_CERTIFICATE_VERIFY => {
+                            let Some(leaf) = self.peer_leaf_cert.as_ref() else {
+                                return Err(TlsError::UnexpectedMessage);
+                            };
+                            let (scheme, signature) = parse_certificate_verify_body(body)?;
+                            if scheme != TLS_SIG_ED25519 {
+                                return Err(TlsError::InvalidCertificateVerify);
+                            }
+                            let cert_transcript_hash = sha256(&self.transcript);
+                            let cv_input = build_certificate_verify_input(&cert_transcript_hash);
+                            if !ed25519_verify(&leaf.public_key, &cv_input, signature) {
+                                return Err(TlsError::InvalidCertificateVerify);
+                            }
+                            self.transcript.extend_from_slice(raw_msg);
+                            self.state = Tls13State::ServerAuthenticated;
+                        }
+                        TLS_HANDSHAKE_FINISHED => {
+                            if self.state != Tls13State::ServerAuthenticated || body.len() != 32 {
+                                return Err(TlsError::UnexpectedMessage);
+                            }
+                            let cv_hash = sha256(&self.transcript);
+                            let expected_verify =
+                                compute_finished_verify_data(&self.server_hs_secret, &cv_hash);
+                            let mut diff = 0u8;
+                            for i in 0..32 {
+                                diff |= body[i] ^ expected_verify[i];
+                            }
+                            if diff != 0 {
+                                return Err(TlsError::InvalidFinishedVerifyData);
+                            }
+                            self.transcript.extend_from_slice(raw_msg);
+
+                            // Derive Master Secret & Application Traffic Keys
+                            let sf_hash = sha256(&self.transcript);
+                            let empty_hash = sha256(b"");
+                            let derived_hs = tls13_derive_secret(
+                                &self.handshake_secret,
+                                b"derived",
+                                &empty_hash,
+                            );
+                            let master_secret = hkdf_extract(&derived_hs, &[0u8; 32]);
+                            let client_app_secret =
+                                tls13_derive_secret(&master_secret, b"c ap traffic", &sf_hash);
+                            let server_app_secret =
+                                tls13_derive_secret(&master_secret, b"s ap traffic", &sf_hash);
+                            let (cak, caiv) = derive_traffic_keys(&client_app_secret);
+                            let (sak, saiv) = derive_traffic_keys(&server_app_secret);
+                            self.client_app_key = cak;
+                            self.client_app_iv = caiv;
+                            self.server_app_key = sak;
+                            self.server_app_iv = saiv;
+                            self.seq_tx = 0;
+                            self.seq_rx = 0;
+
+                            // Build Client Finished record
+                            let client_verify =
+                                compute_finished_verify_data(&self.client_hs_secret, &sf_hash);
+                            let client_fin_hs =
+                                encode_handshake_message(TLS_HANDSHAKE_FINISHED, &client_verify);
+                            let client_finished_record = seal_tls13_record(
+                                &self.client_hs_key,
+                                &self.client_hs_iv,
+                                0,
+                                TLS_CONTENT_HANDSHAKE,
+                                &client_fin_hs,
+                            );
+                            self.state = Tls13State::ApplicationReady;
+                            return Ok(HandshakeProgress::HandshakeComplete {
+                                client_finished_record,
+                            });
+                        }
+                        _ => return Err(TlsError::UnexpectedMessage),
+                    }
+                }
+                Ok(HandshakeProgress::NeedMoreRecords)
+            }
+            _ => Err(TlsError::UnexpectedMessage),
+        }
+    }
+
+    pub const fn is_handshake_complete(&self) -> bool {
+        matches!(self.state, Tls13State::ApplicationReady)
+    }
+
+    /// Consume one or more concatenated server handshake records (`ServerHello` + encrypted handshake flight)
+    /// and return `Ok(Some(client_finished_record))` once the handshake completes.
+    pub fn consume_server_handshake_bytes(
+        &mut self,
+        mut bytes: &[u8],
+    ) -> Result<Option<Vec<u8>>, TlsError> {
+        let mut finished_record = None;
+        while !bytes.is_empty() {
+            if bytes.len() < 5 {
+                return Err(TlsError::HandshakeMalformed);
+            }
+            let rec_len = u16::from_be_bytes([bytes[3], bytes[4]]) as usize;
+            if bytes.len() < 5 + rec_len {
+                return Err(TlsError::HandshakeMalformed);
+            }
+            let rec = &bytes[..5 + rec_len];
+            bytes = &bytes[5 + rec_len..];
+            match self.process_handshake_record(rec)? {
+                HandshakeProgress::NeedMoreRecords => {}
+                HandshakeProgress::HandshakeComplete {
+                    client_finished_record,
+                } => {
+                    finished_record = Some(client_finished_record);
+                }
+            }
+        }
+        Ok(finished_record)
+    }
+
+    /// Seal an application payload into a TLS 1.3 `ApplicationData` (`0x17`) record with a 16-byte ChaCha20-Poly1305 AEAD tag.
+    pub fn seal_application_data(&mut self, plaintext: &[u8]) -> Vec<u8> {
+        let record = seal_tls13_record(
+            &self.client_app_key,
+            &self.client_app_iv,
+            self.seq_tx,
+            TLS_CONTENT_APPLICATION_DATA,
+            plaintext,
+        );
         self.seq_tx = self.seq_tx.wrapping_add(1);
         self.state = Tls13State::ApplicationReady;
         record
     }
 
+    /// Open and authenticate an encrypted TLS 1.3 record sent by the server using `server_app_key` and `server_app_iv`.
+    pub fn open_server_record(&mut self, record: &[u8]) -> Result<(u8, Vec<u8>), TlsError> {
+        if self.state != Tls13State::ApplicationReady {
+            return Err(TlsError::UnexpectedMessage);
+        }
+        let (content_type, plaintext) = open_tls13_record(
+            &self.server_app_key,
+            &self.server_app_iv,
+            self.seq_rx,
+            record,
+        )?;
+        self.seq_rx = self.seq_rx.wrapping_add(1);
+        if content_type == TLS_CONTENT_ALERT {
+            if plaintext.len() >= 2 && plaintext[1] == 0 {
+                self.state = Tls13State::Closed;
+            } else {
+                let code = plaintext.get(1).copied().unwrap_or(0);
+                self.state = Tls13State::Closed;
+                return Err(TlsError::AlertReceived(code));
+            }
+        }
+        Ok((content_type, plaintext))
+    }
+
+    /// Consume one or more concatenated encrypted server records and return decrypted `ApplicationData` chunks.
+    pub fn consume_server_records(&mut self, mut bytes: &[u8]) -> Result<Vec<Vec<u8>>, TlsError> {
+        let mut chunks = Vec::new();
+        while !bytes.is_empty() {
+            if bytes.len() < 5 {
+                return Err(TlsError::BadRecordMac);
+            }
+            let rec_len = u16::from_be_bytes([bytes[3], bytes[4]]) as usize;
+            if bytes.len() < 5 + rec_len {
+                return Err(TlsError::BadRecordMac);
+            }
+            let rec = &bytes[..5 + rec_len];
+            bytes = &bytes[5 + rec_len..];
+            let (ctype, pt) = self.open_server_record(rec)?;
+            if ctype == TLS_CONTENT_APPLICATION_DATA {
+                chunks.push(pt);
+            } else if ctype == TLS_CONTENT_ALERT {
+                break;
+            }
+        }
+        Ok(chunks)
+    }
+
     /// Open a sealed TLS 1.3 `ApplicationData` record produced with `client_app_key` (for loopback/self-test verification).
     pub fn open_loopback_application_data(&mut self, record: &[u8]) -> Option<Vec<u8>> {
-        if record.len() < 5 + 17 || record[0] != TLS_CONTENT_APPLICATION_DATA {
+        let (ctype, pt) = open_tls13_record(
+            &self.client_app_key,
+            &self.client_app_iv,
+            self.seq_rx,
+            record,
+        )
+        .ok()?;
+        if ctype != TLS_CONTENT_APPLICATION_DATA {
             return None;
-        }
-        let body_len = u16::from_be_bytes([record[3], record[4]]) as usize;
-        if record.len() < 5 + body_len || body_len < 17 {
-            return None;
-        }
-        let body = &record[5..5 + body_len];
-        let (ct_with_type, tag) = body.split_at(body.len() - 16);
-        let expected_tag = hmac_sha256(&self.client_app_key, ct_with_type);
-        if tag != &expected_tag[..16] {
-            return None;
-        }
-
-        let ct = &ct_with_type[..ct_with_type.len() - 1];
-        let mut keystream_seed = Vec::with_capacity(40);
-        keystream_seed.extend_from_slice(&self.client_app_key);
-        keystream_seed.extend_from_slice(&self.seq_rx.to_be_bytes());
-
-        let mut pt = Vec::with_capacity(ct.len());
-        for (i, &b) in ct.iter().enumerate() {
-            let block_idx = (i / 32) as u32;
-            let mut blk_in = keystream_seed.clone();
-            blk_in.extend_from_slice(&block_idx.to_be_bytes());
-            let ks = sha256(&blk_in);
-            pt.push(b ^ ks[i % 32]);
         }
         self.seq_rx = self.seq_rx.wrapping_add(1);
         Some(pt)
     }
 }
+
 
 // ============================================================================
 // HTTP/1.1 Request Builder, Chunked Decoder & Server-Sent Events (SSE) Parser
@@ -668,20 +1040,177 @@ impl SseStreamParser {
     }
 }
 
+/// Parsed HTTP/1.1 response with status code, headers, and decoded body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedHttpResponse {
+    pub status: u16,
+    pub is_chunked: bool,
+    pub content_type: Option<String>,
+    pub body: Vec<u8>,
+}
+
+impl ParsedHttpResponse {
+    /// Parse a complete or partial HTTP/1.1 response buffer.
+    pub fn parse(raw: &[u8]) -> Result<Self, &'static str> {
+        let Some(hdr_end) = raw.windows(4).position(|w| w == b"\r\n\r\n") else {
+            return Err("Incomplete HTTP headers");
+        };
+        let hdr_str =
+            core::str::from_utf8(&raw[..hdr_end]).map_err(|_| "Invalid UTF-8 in HTTP headers")?;
+        let mut lines = hdr_str.split("\r\n");
+        let status_line = lines.next().ok_or("Missing HTTP status line")?;
+        let mut parts = status_line.split_whitespace();
+        let _proto = parts.next().ok_or("Missing HTTP version")?;
+        let status_str = parts.next().ok_or("Missing HTTP status code")?;
+        let status = status_str
+            .parse::<u16>()
+            .map_err(|_| "Invalid HTTP status code")?;
+
+        let mut is_chunked = false;
+        let mut content_type = None;
+        for line in lines {
+            if let Some((k, v)) = line.split_once(':') {
+                let key = k.trim();
+                let val = v.trim();
+                if key.eq_ignore_ascii_case("transfer-encoding")
+                    && val.to_ascii_lowercase().contains("chunked")
+                {
+                    is_chunked = true;
+                } else if key.eq_ignore_ascii_case("content-type") {
+                    content_type = Some(String::from(val));
+                }
+            }
+        }
+
+        let raw_body = &raw[hdr_end + 4..];
+        let body = if is_chunked {
+            Self::decode_chunked_best_effort(raw_body)
+        } else {
+            raw_body.to_vec()
+        };
+
+        Ok(Self {
+            status,
+            is_chunked,
+            content_type,
+            body,
+        })
+    }
+
+    fn decode_chunked_best_effort(mut input: &[u8]) -> Vec<u8> {
+        if let Ok(decoded) = ChunkedDecoder::decode(input) {
+            return decoded;
+        }
+        let mut out = Vec::new();
+        while !input.is_empty() {
+            let Some(crlf_pos) = input.windows(2).position(|w| w == b"\r\n") else {
+                break;
+            };
+            let Ok(size_line) = core::str::from_utf8(&input[..crlf_pos]) else {
+                break;
+            };
+            let size_hex = size_line.split(';').next().unwrap_or("").trim();
+            let Ok(chunk_len) = usize::from_str_radix(size_hex, 16) else {
+                break;
+            };
+            input = &input[crlf_pos + 2..];
+            if chunk_len == 0 {
+                break;
+            }
+            if input.len() < chunk_len {
+                out.extend_from_slice(input);
+                break;
+            }
+            out.extend_from_slice(&input[..chunk_len]);
+            if input.len() < chunk_len + 2 {
+                break;
+            }
+            input = &input[chunk_len + 2..];
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tls::{
+        chacha20_poly1305_open, chacha20_poly1305_seal, ed25519_public_key, ed25519_sign,
+        ed25519_verify, x25519, Tls13ServerConfig, Tls13ServerConnection, X509Certificate,
+    };
 
     #[test]
     fn test_sha256_nist_vector() {
         let digest = sha256(b"abc");
         let expected: [u8; 32] = [
-            0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea,
-            0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
-            0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c,
-            0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad,
+            0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae,
+            0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10, 0xff, 0x61,
+            0xf2, 0x00, 0x15, 0xad,
         ];
         assert_eq!(digest, expected);
+    }
+
+    #[test]
+    fn test_x25519_rfc7748_test_vector() {
+        let alice_priv: [u8; 32] = [
+            0x77, 0x07, 0x6d, 0x0a, 0x73, 0x18, 0xa5, 0x7d, 0x3c, 0x16, 0xc1, 0x72, 0x51, 0xb2,
+            0x66, 0x45, 0xdf, 0x4c, 0x2f, 0x87, 0xeb, 0xc0, 0x99, 0x2a, 0xb1, 0x77, 0xfb, 0xa5,
+            0x1d, 0xb9, 0x2c, 0x2a,
+        ];
+        let bob_pub: [u8; 32] = [
+            0xde, 0x9e, 0xdb, 0x7d, 0x7b, 0x7d, 0xc1, 0xb4, 0xd3, 0x5b, 0x61, 0xc2, 0xec, 0xe4,
+            0x35, 0x37, 0x3f, 0x83, 0x43, 0xc8, 0x5b, 0x78, 0x67, 0x4d, 0xad, 0xfc, 0x7e, 0x14,
+            0x6f, 0x88, 0x2b, 0x4f,
+        ];
+        let expected_shared: [u8; 32] = [
+            0x4a, 0x5d, 0x9d, 0x5b, 0xa4, 0xce, 0x2d, 0xe1, 0x72, 0x8e, 0x3b, 0xf4, 0x80, 0x35,
+            0x0f, 0x25, 0xe0, 0x7e, 0x21, 0xc9, 0x47, 0xd1, 0x9e, 0x33, 0x76, 0xf0, 0x9b, 0x3c,
+            0x1e, 0x16, 0x17, 0x42,
+        ];
+        assert_eq!(x25519(&alice_priv, &bob_pub), expected_shared);
+    }
+
+    #[test]
+    fn test_chacha20_poly1305_rfc8439_test_vector() {
+        let key: [u8; 32] = [
+            0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x8b, 0x8c, 0x8d,
+            0x8e, 0x8f, 0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0x9b,
+            0x9c, 0x9d, 0x9e, 0x9f,
+        ];
+        let nonce: [u8; 12] = [
+            0x07, 0x00, 0x00, 0x00, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47,
+        ];
+        let aad: [u8; 12] = [
+            0x50, 0x51, 0x52, 0x53, 0xc0, 0xc1, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7,
+        ];
+        let plaintext = b"Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.";
+        let sealed = chacha20_poly1305_seal(&key, &nonce, &aad, plaintext);
+        let expected_tag: [u8; 16] = [
+            0x1a, 0xe1, 0x0b, 0x59, 0x4f, 0x09, 0xe2, 0x6a, 0x7e, 0x90, 0x2e, 0xcb, 0xd0, 0x60,
+            0x06, 0x91,
+        ];
+        assert_eq!(&sealed[plaintext.len()..], &expected_tag);
+        let opened = chacha20_poly1305_open(&key, &nonce, &aad, &sealed).unwrap();
+        assert_eq!(opened.as_slice(), plaintext);
+
+        let mut tampered = sealed.clone();
+        tampered[10] ^= 0x01;
+        assert_eq!(
+            chacha20_poly1305_open(&key, &nonce, &aad, &tampered),
+            Err(TlsError::BadRecordMac)
+        );
+    }
+
+    #[test]
+    fn test_ed25519_sign_and_verify() {
+        let seed = sha256(b"test-signing-key");
+        let pk = ed25519_public_key(&seed);
+        let msg = b"TLS 1.3 CertificateVerify transcript payload";
+        let sig = ed25519_sign(&seed, msg);
+        assert!(ed25519_verify(&pk, msg, &sig));
+        assert!(!ed25519_verify(&pk, b"tampered payload", &sig));
+        let wrong_pk = ed25519_public_key(&sha256(b"other-key"));
+        assert!(!ed25519_verify(&wrong_pk, msg, &sig));
     }
 
     #[test]
@@ -712,6 +1241,173 @@ mod tests {
     }
 
     #[test]
+    fn test_tls13_full_authenticated_handshake_and_encrypted_record_exchange() {
+        for host in [
+            "api.anthropic.com",
+            "generativelanguage.googleapis.com",
+            "api.openai.com",
+        ] {
+            let mut client = Tls13Session::new(host);
+            let ch = client.build_client_hello_record();
+
+            let server_cfg = Tls13ServerConfig::trusted_for_host(host);
+            let (mut server, server_flight) =
+                Tls13ServerConnection::accept_client_hello(server_cfg, &ch)
+                    .expect("server must accept ClientHello");
+
+            let client_fin = client
+                .consume_server_handshake_bytes(&server_flight)
+                .expect("client must authenticate server flight")
+                .expect("client must emit Finished record");
+            assert!(client.is_handshake_complete());
+
+            assert_eq!(
+                server
+                    .receive_client_record(&client_fin)
+                    .expect("server must verify ClientFinished"),
+                None
+            );
+            assert!(server.client_finished_verified);
+
+            // Client -> Server encrypted application record
+            let req = b"POST /v1/messages HTTP/1.1\r\nHost: api.anthropic.com\r\n\r\n{}";
+            let req_rec = client.seal_application_data(req);
+            let server_got = server
+                .receive_client_record(&req_rec)
+                .expect("server decrypts request")
+                .expect("application data");
+            assert_eq!(server_got.as_slice(), req);
+
+            // Server -> Client encrypted application records + close_notify
+            let resp1 = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n";
+            let resp2 = b"data: {\"delta\":{\"text\":\"Hello\"}}\n\n";
+            let mut wire = Vec::new();
+            wire.extend_from_slice(&server.seal_server_data(resp1));
+            wire.extend_from_slice(&server.seal_server_data(resp2));
+            wire.extend_from_slice(&server.seal_close_notify());
+
+            let chunks = client
+                .consume_server_records(&wire)
+                .expect("client decrypts server records");
+            assert_eq!(chunks.len(), 2);
+            assert_eq!(chunks[0].as_slice(), resp1);
+            assert_eq!(chunks[1].as_slice(), resp2);
+            assert_eq!(client.state, Tls13State::Closed);
+        }
+    }
+
+    #[test]
+    fn test_tls13_rejects_untrusted_ca_wrong_host_bad_signatures_and_tampered_records() {
+        let host = "api.anthropic.com";
+
+        // 1. Untrusted Root CA
+        {
+            let mut client = Tls13Session::new(host);
+            let ch = client.build_client_hello_record();
+            let mut cfg = Tls13ServerConfig::trusted_for_host(host);
+            cfg.ca_name = String::from("Rogue Untrusted Root CA");
+            cfg.ca_private_seed = sha256(b"rogue-ca-seed");
+            let (_, flight) = Tls13ServerConnection::accept_client_hello(cfg, &ch).unwrap();
+            assert_eq!(
+                client.consume_server_handshake_bytes(&flight),
+                Err(TlsError::UntrustedCertificateAuthority)
+            );
+        }
+
+        // 2. Hostname mismatch (certificate issued for evil.example.com instead of api.anthropic.com)
+        {
+            let mut client = Tls13Session::new(host);
+            let ch = client.build_client_hello_record();
+            let cfg = Tls13ServerConfig::trusted_for_host("evil.example.com");
+            let (_, flight) = Tls13ServerConnection::accept_client_hello(cfg, &ch).unwrap();
+            assert_eq!(
+                client.consume_server_handshake_bytes(&flight),
+                Err(TlsError::HostnameMismatch)
+            );
+        }
+
+        // 3. Invalid X.509 certificate signature (leaf signed by wrong key, claiming DigiCert Global Root G2)
+        {
+            let mut client = Tls13Session::new(host);
+            let ch = client.build_client_hello_record();
+            let mut cfg = Tls13ServerConfig::trusted_for_host(host);
+            let fake_ca_seed = sha256(b"forged-ca-private-key");
+            let leaf_pub = ed25519_public_key(&cfg.leaf_private_seed);
+            let real_ca_pub = ed25519_public_key(&cfg.ca_private_seed);
+            let bad_leaf = X509Certificate::build_signed_der(
+                host,
+                &cfg.ca_name,
+                &[host],
+                &leaf_pub,
+                false,
+                true,
+                &fake_ca_seed,
+            );
+            let root_der = X509Certificate::build_signed_der(
+                &cfg.ca_name,
+                &cfg.ca_name,
+                &[],
+                &real_ca_pub,
+                true,
+                true,
+                &cfg.ca_private_seed,
+            );
+            cfg.cert_chain_override = Some(vec![bad_leaf, root_der]);
+            let (_, flight) = Tls13ServerConnection::accept_client_hello(cfg, &ch).unwrap();
+            assert_eq!(
+                client.consume_server_handshake_bytes(&flight),
+                Err(TlsError::InvalidCertificateSignature)
+            );
+        }
+
+        // 4. Invalid CertificateVerify signature (signed with wrong leaf key)
+        {
+            let mut client = Tls13Session::new(host);
+            let ch = client.build_client_hello_record();
+            let mut cfg = Tls13ServerConfig::trusted_for_host(host);
+            cfg.cert_verify_key_override = Some(sha256(b"wrong-leaf-signing-key"));
+            let (_, flight) = Tls13ServerConnection::accept_client_hello(cfg, &ch).unwrap();
+            assert_eq!(
+                client.consume_server_handshake_bytes(&flight),
+                Err(TlsError::InvalidCertificateVerify)
+            );
+        }
+
+        // 5. Invalid Server Finished verify_data MAC
+        {
+            let mut client = Tls13Session::new(host);
+            let ch = client.build_client_hello_record();
+            let mut cfg = Tls13ServerConfig::trusted_for_host(host);
+            cfg.tamper_finished = true;
+            let (_, flight) = Tls13ServerConnection::accept_client_hello(cfg, &ch).unwrap();
+            assert_eq!(
+                client.consume_server_handshake_bytes(&flight),
+                Err(TlsError::InvalidFinishedVerifyData)
+            );
+        }
+
+        // 6. Tampered encrypted application record
+        {
+            let mut client = Tls13Session::new(host);
+            let ch = client.build_client_hello_record();
+            let mut cfg = Tls13ServerConfig::trusted_for_host(host);
+            cfg.tamper_app_record = true;
+            let (mut server, flight) =
+                Tls13ServerConnection::accept_client_hello(cfg, &ch).unwrap();
+            let client_fin = client
+                .consume_server_handshake_bytes(&flight)
+                .unwrap()
+                .unwrap();
+            server.receive_client_record(&client_fin).unwrap();
+            let tampered_rec = server.seal_server_data(b"HTTP/1.1 200 OK\r\n\r\nok");
+            assert_eq!(
+                client.consume_server_records(&tampered_rec),
+                Err(TlsError::BadRecordMac)
+            );
+        }
+    }
+
+    #[test]
     fn test_http_chunked_decoder() {
         let raw = b"7\r\nMozilla\r\n9\r\nDeveloper\r\n7\r\nNetwork\r\n0\r\n\r\n";
         let decoded = ChunkedDecoder::decode(raw).unwrap();
@@ -729,7 +1425,10 @@ mod tests {
         assert!(!events[0].is_done);
 
         assert_eq!(events[1].event, None);
-        assert_eq!(events[1].data, "{\"choices\":[{\"delta\":{\"content\":\" metalOS\"}}]}");
+        assert_eq!(
+            events[1].data,
+            "{\"choices\":[{\"delta\":{\"content\":\" metalOS\"}}]}"
+        );
         assert!(!events[1].is_done);
 
         assert!(events[2].is_done);

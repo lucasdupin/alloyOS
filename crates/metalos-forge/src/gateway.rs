@@ -291,6 +291,29 @@ impl ModelGateway {
         _tools: &[ToolSpec],
         on_token: &mut dyn FnMut(&str),
     ) -> Result<Response, AiError> {
+        if self.pending.is_none() {
+            self.start_chat(messages)?;
+            let mut emitted_len = 0usize;
+            loop {
+                match self.poll_chat() {
+                    Poll::Pending => {
+                        if let Some(partial) = self.partial_reply() {
+                            if partial.len() > emitted_len {
+                                on_token(&partial[emitted_len..]);
+                                emitted_len = partial.len();
+                            }
+                        }
+                    }
+                    Poll::Ready(Ok(response)) => {
+                        if response.text.len() > emitted_len {
+                            on_token(&response.text[emitted_len..]);
+                        }
+                        return Ok(response);
+                    }
+                    Poll::Ready(Err(err)) => return Err(err),
+                }
+            }
+        }
         let mut prompt = String::new();
         for message in messages {
             prompt.push_str(message.role.as_str());

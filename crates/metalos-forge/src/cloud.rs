@@ -68,6 +68,9 @@ pub trait HttpsClient: Send {
     fn poll_post(&mut self) -> Poll<Result<HttpResponse, ForgeError>> {
         Poll::Ready(Err(ForgeError::InvalidRequest))
     }
+    fn partial_response_body(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// Owns an ephemeral API credential, never exposed to Welder or persisted to configuration.
@@ -76,6 +79,7 @@ pub struct ApiTransport {
     key: String,
     client: Box<dyn HttpsClient>,
     pending: Option<CloudModel>,
+    partial: String,
 }
 impl Drop for ApiTransport {
     fn drop(&mut self) {
@@ -101,6 +105,7 @@ impl ApiTransport {
             key: key.to_string(),
             client,
             pending: None,
+            partial: String::new(),
         })
     }
     pub fn request(
@@ -151,6 +156,187 @@ impl ApiTransport {
         }
         Ok(HttpRequest { url, headers, body })
     }
+
+    fn is_sse_payload(body: &str) -> bool {
+        let trimmed = body.trim_start();
+        trimmed.starts_with("event:")
+            || trimmed.starts_with("data:")
+            || trimmed.contains("\ndata:")
+            || trimmed.contains("\r\ndata:")
+    }
+
+    fn append_event_delta(
+        provider: ApiProvider,
+        value: &Value,
+        text: &mut String,
+        tokens: &mut Option<u64>,
+    ) -> Result<(), ForgeError> {
+        if value["type"] == "error" || value["status"] == "failed" || !value["error"].is_null() {
+            return Err(ForgeError::GenerationFailed);
+        }
+        match provider {
+            ApiProvider::Claude => {
+                if let Some(chunk) = value["delta"]["text"].as_str() {
+                    text.push_str(chunk);
+                } else if value["type"] == "content_block_start" {
+                    if let Some(chunk) = value["content_block"]["text"].as_str() {
+                        text.push_str(chunk);
+                    }
+                } else if value["type"] == "message" {
+                    if let Some(blocks) = value["content"].as_array() {
+                        for block in blocks {
+                            if block["type"] == "text" {
+                                if let Some(chunk) = block["text"].as_str() {
+                                    text.push_str(chunk);
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(u) = value["usage"]["output_tokens"]
+                    .as_u64()
+                    .or_else(|| value["message"]["usage"]["output_tokens"].as_u64())
+                {
+                    *tokens = Some(u);
+                }
+            }
+            ApiProvider::Gemini => {
+                if let Some(candidates) = value["candidates"].as_array() {
+                    if let Some(candidate) = candidates.first() {
+                        if let Some(parts) = candidate["content"]["parts"].as_array() {
+                            for part in parts {
+                                if part["thought"] != true {
+                                    if let Some(chunk) = part["text"].as_str() {
+                                        text.push_str(chunk);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(u) = value["usageMetadata"]["candidatesTokenCount"].as_u64() {
+                    *tokens = Some(u);
+                }
+            }
+            ApiProvider::OpenAi => {
+                if value["type"] == "response.output_text.delta" {
+                    if let Some(chunk) = value["delta"].as_str() {
+                        text.push_str(chunk);
+                    }
+                } else if let Some(chunk) = value["delta"]["text"]
+                    .as_str()
+                    .or_else(|| value["delta"]["content"].as_str())
+                {
+                    text.push_str(chunk);
+                } else if let Some(choices) = value["choices"].as_array() {
+                    if let Some(first) = choices.first() {
+                        if let Some(chunk) = first["delta"]["content"].as_str() {
+                            text.push_str(chunk);
+                        }
+                    }
+                } else if let Some(outputs) = value["output"].as_array() {
+                    for output in outputs {
+                        if output["type"] == "message" && output["role"] == "assistant" {
+                            if let Some(blocks) = output["content"].as_array() {
+                                for block in blocks {
+                                    if block["type"] == "output_text" {
+                                        if let Some(chunk) = block["text"].as_str() {
+                                            text.push_str(chunk);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(u) = value["usage"]["output_tokens"]
+                    .as_u64()
+                    .or_else(|| value["response"]["usage"]["output_tokens"].as_u64())
+                {
+                    *tokens = Some(u);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_sse(&self, model: &CloudModel, body: &str) -> Result<Generation, ForgeError> {
+        let mut text = String::new();
+        let mut tokens: Option<u64> = None;
+        let mut saw_data_event = false;
+
+        for raw_line in body.lines() {
+            let line = raw_line.trim();
+            if line.is_empty() || line.starts_with(':') || line.starts_with("event:") {
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("data:") {
+                let data = rest.trim();
+                if data.is_empty() || data == "[DONE]" {
+                    saw_data_event = true;
+                    continue;
+                }
+                saw_data_event = true;
+                let value: Value =
+                    serde_json::from_str(data).map_err(|_| ForgeError::InvalidResponse)?;
+                Self::append_event_delta(self.provider, &value, &mut text, &mut tokens)?;
+            } else {
+                return Err(ForgeError::InvalidResponse);
+            }
+        }
+
+        if !saw_data_event || text.is_empty() {
+            return Err(ForgeError::InvalidResponse);
+        }
+        let count = tokens.unwrap_or_else(|| (text.split_whitespace().count().max(1)) as u64);
+        let generated_tokens = u32::try_from(count).map_err(|_| ForgeError::InvalidResponse)?;
+        Ok(Generation {
+            model: model.id.clone(),
+            text,
+            generated_tokens,
+        })
+    }
+
+    fn refresh_partial(&mut self) {
+        let Some(raw) = self.client.partial_response_body() else {
+            return;
+        };
+        if raw.is_empty() {
+            return;
+        }
+        if Self::is_sse_payload(raw) {
+            let mut acc = String::new();
+            let mut tokens = None;
+            for raw_line in raw.lines() {
+                let line = raw_line.trim();
+                if let Some(rest) = line.strip_prefix("data:") {
+                    let data = rest.trim();
+                    if data.is_empty() || data == "[DONE]" {
+                        continue;
+                    }
+                    if let Ok(value) = serde_json::from_str::<Value>(data) {
+                        let _ = Self::append_event_delta(
+                            self.provider,
+                            &value,
+                            &mut acc,
+                            &mut tokens,
+                        );
+                    }
+                }
+            }
+            if !acc.is_empty() {
+                self.partial = acc;
+            }
+        } else if let Ok(value) = serde_json::from_str::<Value>(raw) {
+            let mut acc = String::new();
+            let mut tokens = None;
+            let _ = Self::append_event_delta(self.provider, &value, &mut acc, &mut tokens);
+            if !acc.is_empty() {
+                self.partial = acc;
+            }
+        }
+    }
+
     fn parse(&self, model: &CloudModel, response: HttpResponse) -> Result<Generation, ForgeError> {
         match response.status {
             200..=299 => {}
@@ -160,6 +346,9 @@ impl ApiTransport {
         }
         if response.body.len() > HTTP_BODY_LIMIT {
             return Err(ForgeError::InvalidResponse);
+        }
+        if Self::is_sse_payload(&response.body) {
+            return self.parse_sse(model, &response.body);
         }
         let value: Value =
             serde_json::from_str(&response.body).map_err(|_| ForgeError::InvalidResponse)?;
@@ -250,11 +439,13 @@ impl CloudTransport for ApiTransport {
         if self.pending.is_some() {
             return Err(ForgeError::Busy);
         }
+        self.partial.clear();
         let outbound = self.request(model, request)?;
         match self.client.start_post(&outbound) {
             Poll::Ready(response) => self.parse(model, response?).map(Some),
             Poll::Pending => {
                 self.pending = Some(model.clone());
+                self.refresh_partial();
                 Ok(None)
             }
         }
@@ -264,11 +455,22 @@ impl CloudTransport for ApiTransport {
             return Poll::Ready(Err(ForgeError::InvalidRequest));
         }
         match self.client.poll_post() {
-            Poll::Pending => Poll::Pending,
+            Poll::Pending => {
+                self.refresh_partial();
+                Poll::Pending
+            }
             Poll::Ready(response) => {
                 let model = self.pending.take().expect("pending cloud model");
+                self.partial.clear();
                 Poll::Ready(response.and_then(|response| self.parse(&model, response)))
             }
+        }
+    }
+    fn partial_text(&self) -> Option<&str> {
+        if self.pending.is_some() && !self.partial.is_empty() {
+            Some(&self.partial)
+        } else {
+            None
         }
     }
 }

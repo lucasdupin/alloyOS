@@ -135,6 +135,17 @@ impl FerrofluidSystemUi {
     pub fn set_transcript(&self, text: &str) {
         self.ui.set_transcript(text.into());
     }
+    pub fn transcript(&self) -> String {
+        String::from(self.ui.get_transcript().as_str())
+    }
+    pub fn update_streaming_reply(&self, base_transcript: &str, partial_reply: &str) {
+        let mut combined =
+            String::with_capacity(base_transcript.len() + 10 + partial_reply.len());
+        combined.push_str(base_transcript);
+        combined.push_str("\n\nWelder: ");
+        combined.push_str(partial_reply);
+        self.ui.set_transcript(combined.into());
+    }
     pub fn set_active_model(&self, text: &str) {
         self.ui.set_active_model(text.into());
     }
@@ -555,8 +566,8 @@ mod tests {
             ui.handle_input(InputEvent {
                 kind,
                 code: 0x110,
-                x: 1080,
-                y: 1880,
+                x: 75,
+                y: 2530,
             });
         }
         assert!(!ui.ui.get_keyboard_visible());
@@ -652,8 +663,27 @@ mod tests {
             "soft keys work after a flick"
         );
         ui.render(Duration::from_millis(2960));
-        ui.set_transcript("A streamed response");
-        assert!(ui.render(Duration::from_millis(20)).is_some());
+        let base = "Welcome to metalOS.\n\nYou: Stream test";
+        ui.set_reply_pending(true);
+        ui.update_streaming_reply(base, "Thinking…");
+        assert!(ui.render(Duration::from_millis(2976)).is_some());
+        assert_eq!(
+            ui.transcript(),
+            "Welcome to metalOS.\n\nYou: Stream test\n\nWelder: Thinking…"
+        );
+        ui.update_streaming_reply(base, "Hello");
+        assert!(ui.render(Duration::from_millis(2992)).is_some());
+        assert_eq!(
+            ui.transcript(),
+            "Welcome to metalOS.\n\nYou: Stream test\n\nWelder: Hello"
+        );
+        ui.update_streaming_reply(base, "Hello metalOS!");
+        ui.set_reply_pending(false);
+        assert!(ui.render(Duration::from_millis(3008)).is_some());
+        assert_eq!(
+            ui.transcript(),
+            "Welcome to metalOS.\n\nYou: Stream test\n\nWelder: Hello metalOS!"
+        );
         // Key releases retain the original character even if Shift changes.
         let mut keys = EvdevKeyboard::default();
         keys.translate(42, true);

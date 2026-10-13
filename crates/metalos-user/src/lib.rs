@@ -11,3 +11,5 @@ pub mod process;
 pub mod fs;
 pub mod net;
 pub mod shell;
+pub mod tls;
+

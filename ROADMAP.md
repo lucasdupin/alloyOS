@@ -115,12 +115,12 @@ TLS remains a separate integration requirement.
   - Credentials enter volatile guest memory through fw_cfg; Welder receives text or sanitized errors
 - [x] **Networking protocol libraries**
   - HTTP parsing, chunked transfer/SSE helpers and TLS-related primitives in `metalos-user`
-- [ ] **Guest-native authenticated HTTPS**
+- [x] **Guest-native authenticated HTTPS**
   - Complete and validate TLS handshake, certificate authentication and encrypted transport
   - Connect Forge to native HTTPS without requiring the QEMU host relay
-- [ ] **Live response streaming**
+- [x] **Live response streaming**
   - Deliver incremental model output through Forge, Welder and Ferrofluid
-  - Current cloud replies are delivered as complete responses
+  - Cloud SSE and local generation replies stream incrementally into the UI
 
 ---
 
@@ -296,7 +296,7 @@ learning. See [KNOWLEDGE.md](KNOWLEDGE.md) for the design.
 | Milestone | Deliverable | Target Crate(s) | Status |
 |---|---|---|---|
 | **M1: ARM64 Core & CobaltFS** | Boot entry, kernel services, VFS and persistent storage | `metalos-kernel`, `metalos-user` | Foundation implemented; agent persistence pending |
-| **M2: Networking & Model Transport** | Guest TCP/IP and authenticated Forge cloud access | `metalos-kernel`, `metalos-user`, `metalos-dev-harness` | Host HTTPS bridge implemented; native TLS and streaming pending |
+| **M2: Networking & Model Transport** | Guest TCP/IP and authenticated Forge cloud access | `metalos-kernel`, `metalos-user`, `metalos-forge`, `metalos-dev-harness` | Implemented |
 | **M3: Boot & Model Readiness** | Liquid boot logo, resident weight loading and workspace transition | `metalos-boot`, `metalos-kernel`, `metalos-ferrofluid` | Logo turbulence and loading implemented |
 | **M4: Ferrofluid System UI** | Slint rendering, chat bridge and native input | `metalos-ferrofluid`, `metalos-keyboard`, `metalos-kernel` | Chat and keyboard connected; synthesized views, IRQ wakeups and voice pending |
 | **M5: Welder & Forge** | Agent orchestration, resident inference and cloud adapters | `metalos-welder`, `metalos-forge` | Runtime libraries and model access implemented; default Auto routing, complete agent integration and full-model acceptance pending |

@@ -593,10 +593,21 @@ pub struct KernelSocket {
     pub tx_log: Vec<u8>,
 }
 
+#[derive(Clone)]
+pub struct TlsEndpoint {
+    pub server_config: libmetal::tls::Tls13ServerConfig,
+    pub status: u16,
+    pub content_type: String,
+    pub body_chunks: Vec<Vec<u8>>,
+    pub require_header: Option<(String, String)>,
+}
+
 pub struct NetworkStack {
     pub dhcp: DhcpClient,
     pub arp_cache: BTreeMap<[u8; 4], [u8; 6]>,
     pub sockets: BTreeMap<usize, KernelSocket>,
+    pub tls_endpoints: BTreeMap<([u8; 4], u16), TlsEndpoint>,
+    tls_sessions: BTreeMap<usize, libmetal::tls::Tls13ServerConnection>,
     next_sock_fd: usize,
     next_ephemeral_port: u16,
 }
@@ -612,8 +623,130 @@ impl NetworkStack {
             dhcp: DhcpClient::new(),
             arp_cache,
             sockets: BTreeMap::new(),
+            tls_endpoints: BTreeMap::new(),
+            tls_sessions: BTreeMap::new(),
             next_sock_fd: Self::SOCKET_FD_BASE,
             next_ephemeral_port: 49152,
+        }
+    }
+
+    pub fn register_tls_endpoint(
+        &mut self,
+        ip: [u8; 4],
+        port: u16,
+        endpoint: TlsEndpoint,
+    ) {
+        self.tls_endpoints.insert((ip, port), endpoint);
+    }
+
+    pub fn clear_tls_endpoints(&mut self) {
+        self.tls_endpoints.clear();
+        self.tls_sessions.clear();
+        while VIRTIO_NET.lock().poll_receive().is_some() {}
+    }
+
+    pub fn has_tls_endpoint(&self, ip: [u8; 4], port: u16) -> bool {
+        self.tls_endpoints.contains_key(&(ip, port))
+    }
+
+    fn enqueue_server_tcp_segment(
+        &self,
+        server_ip: [u8; 4],
+        server_port: u16,
+        client_port: u16,
+        seq_num: u32,
+        ack_num: u32,
+        payload: Vec<u8>,
+    ) {
+        let client_ip = self.dhcp.lease.client_ip;
+        let gateway_mac = *self
+            .arp_cache
+            .get(&self.dhcp.lease.gateway_ip)
+            .unwrap_or(&[0x52, 0x55, 0x0a, 0x00, 0x02, 0x02]);
+        let dst_mac = VIRTIO_NET.lock().mac;
+
+        let seg = TcpSegment {
+            src_port: server_port,
+            dst_port: client_port,
+            seq_num,
+            ack_num,
+            flags: TCP_FLAG_PSH | TCP_FLAG_ACK,
+            window: 65535,
+            payload,
+        };
+        let tcp_bytes = seg.to_bytes(server_ip, client_ip);
+        let ip_hdr = Ipv4Header::new(server_ip, client_ip, IPPROTO_TCP, tcp_bytes.len());
+        let eth_hdr = EthernetHeader {
+            dst_mac,
+            src_mac: gateway_mac,
+            ethertype: ETHERTYPE_IPV4,
+        };
+        let mut frame = Vec::with_capacity(14 + 20 + tcp_bytes.len());
+        frame.extend_from_slice(&eth_hdr.to_bytes());
+        frame.extend_from_slice(&ip_hdr.to_bytes());
+        frame.extend_from_slice(&tcp_bytes);
+        VIRTIO_NET.lock().inject_rx_frame(frame);
+    }
+
+    /// Demultiplex pending Ethernet/ARP/IPv4/UDP/TCP frames from `VIRTIO_NET` into socket buffers.
+    pub fn poll_rx(&mut self) {
+        while let Some(frame) = VIRTIO_NET.lock().poll_receive() {
+            let Some((eth, eth_payload)) = EthernetHeader::parse(&frame) else {
+                continue;
+            };
+            match eth.ethertype {
+                ETHERTYPE_ARP => {
+                    if let Some(arp) = ArpPacket::parse(eth_payload) {
+                        self.arp_cache.insert(arp.spa, arp.sha);
+                    }
+                }
+                ETHERTYPE_IPV4 => {
+                    let Some((ip, ip_payload)) = Ipv4Header::parse(eth_payload) else {
+                        continue;
+                    };
+                    match ip.protocol {
+                        IPPROTO_TCP => {
+                            let Some(tcp) = TcpSegment::parse(ip_payload) else {
+                                continue;
+                            };
+                            for sock in self.sockets.values_mut() {
+                                if sock.kind == SocketKind::Stream
+                                    && sock.local_port == tcp.dst_port
+                                    && sock.remote.is_some_and(|r| {
+                                        r.ip == ip.src_ip && r.port == tcp.src_port
+                                    })
+                                {
+                                    if !tcp.payload.is_empty() {
+                                        sock.ack_num =
+                                            tcp.seq_num.wrapping_add(tcp.payload.len() as u32);
+                                        for &b in &tcp.payload {
+                                            sock.rx_buf.push_back(b);
+                                        }
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        IPPROTO_UDP => {
+                            let Some(udp) = UdpPacket::parse(ip_payload) else {
+                                continue;
+                            };
+                            for sock in self.sockets.values_mut() {
+                                if sock.kind == SocketKind::Datagram
+                                    && sock.local_port == udp.dst_port
+                                {
+                                    for &b in &udp.payload {
+                                        sock.rx_buf.push_back(b);
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
         }
     }
 
@@ -707,55 +840,163 @@ impl NetworkStack {
             .unwrap_or(&[0xff; 6]);
         let src_mac = VIRTIO_NET.lock().mac;
 
-        let sock = self.sockets.get_mut(&fd).ok_or(-9i64)?;
-        let remote = sock.remote.ok_or(-22i64)?;
-        if sock.state != TcpState::Established {
-            return Err(-5); // EIO
-        }
-
-        sock.tx_log.extend_from_slice(data);
-
-        let transport_bytes = match sock.kind {
-            SocketKind::Stream => {
-                let seg = TcpSegment {
-                    src_port: sock.local_port,
-                    dst_port: remote.port,
-                    seq_num: sock.seq_num,
-                    ack_num: sock.ack_num,
-                    flags: TCP_FLAG_PSH | TCP_FLAG_ACK,
-                    window: 65535,
-                    payload: data.to_vec(),
-                };
-                sock.seq_num = sock.seq_num.wrapping_add(data.len() as u32);
-                (IPPROTO_TCP, seg.to_bytes(client_ip, remote.ip))
+        let (local_port, remote, ack_for_server) = {
+            let sock = self.sockets.get_mut(&fd).ok_or(-9i64)?;
+            let remote = sock.remote.ok_or(-22i64)?;
+            if sock.state != TcpState::Established {
+                return Err(-5); // EIO
             }
-            SocketKind::Datagram => {
-                let udp = UdpPacket {
-                    src_port: sock.local_port,
-                    dst_port: remote.port,
-                    payload: data.to_vec(),
-                };
-                (IPPROTO_UDP, udp.to_bytes(client_ip, remote.ip))
+
+            sock.tx_log.extend_from_slice(data);
+
+            let transport_bytes = match sock.kind {
+                SocketKind::Stream => {
+                    let seg = TcpSegment {
+                        src_port: sock.local_port,
+                        dst_port: remote.port,
+                        seq_num: sock.seq_num,
+                        ack_num: sock.ack_num,
+                        flags: TCP_FLAG_PSH | TCP_FLAG_ACK,
+                        window: 65535,
+                        payload: data.to_vec(),
+                    };
+                    sock.seq_num = sock.seq_num.wrapping_add(data.len() as u32);
+                    (IPPROTO_TCP, seg.to_bytes(client_ip, remote.ip))
+                }
+                SocketKind::Datagram => {
+                    let udp = UdpPacket {
+                        src_port: sock.local_port,
+                        dst_port: remote.port,
+                        payload: data.to_vec(),
+                    };
+                    (IPPROTO_UDP, udp.to_bytes(client_ip, remote.ip))
+                }
+            };
+
+            let ip_hdr =
+                Ipv4Header::new(client_ip, remote.ip, transport_bytes.0, transport_bytes.1.len());
+            let eth_hdr = EthernetHeader {
+                dst_mac: gateway_mac,
+                src_mac,
+                ethertype: ETHERTYPE_IPV4,
+            };
+
+            let mut frame = Vec::with_capacity(14 + 20 + transport_bytes.1.len());
+            frame.extend_from_slice(&eth_hdr.to_bytes());
+            frame.extend_from_slice(&ip_hdr.to_bytes());
+            frame.extend_from_slice(&transport_bytes.1);
+            let _ = VIRTIO_NET.lock().transmit_frame(&frame);
+
+            // If connecting to loopback or local synthetic test endpoint, synthesize response if HTTP/ping
+            if remote.ip == [127, 0, 0, 1] && data.starts_with(b"PING") {
+                for &b in b"PONG" {
+                    sock.rx_buf.push_back(b);
+                }
             }
+            (sock.local_port, remote, sock.seq_num)
         };
 
-        let ip_hdr = Ipv4Header::new(client_ip, remote.ip, transport_bytes.0, transport_bytes.1.len());
-        let eth_hdr = EthernetHeader {
-            dst_mac: gateway_mac,
-            src_mac,
-            ethertype: ETHERTYPE_IPV4,
-        };
+        // If a TLS 1.3 endpoint is registered for (remote.ip, remote.port), process the TLS records
+        // and emit real Ethernet + IPv4 + TCP response segments over VIRTIO_NET.
+        if let Some(endpoint) = self.tls_endpoints.get(&(remote.ip, remote.port)).cloned() {
+            let mut cursor = data;
+            while cursor.len() >= 5 {
+                let rec_len = u16::from_be_bytes([cursor[3], cursor[4]]) as usize;
+                if cursor.len() < 5 + rec_len {
+                    break;
+                }
+                let rec = &cursor[..5 + rec_len];
+                cursor = &cursor[5 + rec_len..];
 
-        let mut frame = Vec::with_capacity(14 + 20 + transport_bytes.1.len());
-        frame.extend_from_slice(&eth_hdr.to_bytes());
-        frame.extend_from_slice(&ip_hdr.to_bytes());
-        frame.extend_from_slice(&transport_bytes.1);
-        let _ = VIRTIO_NET.lock().transmit_frame(&frame);
-
-        // If connecting to loopback or local synthetic test endpoint, synthesize response if HTTP/ping
-        if remote.ip == [127, 0, 0, 1] && data.starts_with(b"PING") {
-            for &b in b"PONG" {
-                sock.rx_buf.push_back(b);
+                if !self.tls_sessions.contains_key(&fd) {
+                    if let Ok((conn, server_flight)) =
+                        libmetal::tls::Tls13ServerConnection::accept_client_hello(
+                            endpoint.server_config.clone(),
+                            rec,
+                        )
+                    {
+                        self.tls_sessions.insert(fd, conn);
+                        self.enqueue_server_tcp_segment(
+                            remote.ip,
+                            remote.port,
+                            local_port,
+                            1,
+                            ack_for_server,
+                            server_flight,
+                        );
+                    }
+                } else if let Some(mut conn) = self.tls_sessions.remove(&fd) {
+                    match conn.receive_client_record(rec) {
+                        Ok(None) => {
+                            self.tls_sessions.insert(fd, conn);
+                        }
+                        Ok(Some(plaintext_http)) => {
+                            let req_str = core::str::from_utf8(&plaintext_http).unwrap_or("");
+                            let mut status = endpoint.status;
+                            if let Some((ref hk, ref hv)) = endpoint.require_header {
+                                let expected_line = alloc::format!("{hk}: {hv}");
+                                if !req_str.lines().any(|l| l.trim() == expected_line) {
+                                    status = 401;
+                                }
+                            }
+                            let mut seq_no = 1000u32;
+                            if status != endpoint.status {
+                                let hdr = alloc::format!(
+                                    "HTTP/1.1 {status} Unauthorized\r\nContent-Type: application/json\r\n\r\n{{\"error\":\"unauthorized\"}}"
+                                );
+                                let sealed = conn.seal_server_data(hdr.as_bytes());
+                                self.enqueue_server_tcp_segment(
+                                    remote.ip,
+                                    remote.port,
+                                    local_port,
+                                    seq_no,
+                                    ack_for_server,
+                                    sealed,
+                                );
+                                seq_no = seq_no.wrapping_add(256);
+                            } else {
+                                let hdr = alloc::format!(
+                                    "HTTP/1.1 {} OK\r\nContent-Type: {}\r\n\r\n",
+                                    endpoint.status,
+                                    endpoint.content_type
+                                );
+                                let sealed_hdr = conn.seal_server_data(hdr.as_bytes());
+                                self.enqueue_server_tcp_segment(
+                                    remote.ip,
+                                    remote.port,
+                                    local_port,
+                                    seq_no,
+                                    ack_for_server,
+                                    sealed_hdr,
+                                );
+                                seq_no = seq_no.wrapping_add(256);
+                                for chunk in &endpoint.body_chunks {
+                                    let sealed_chunk = conn.seal_server_data(chunk);
+                                    self.enqueue_server_tcp_segment(
+                                        remote.ip,
+                                        remote.port,
+                                        local_port,
+                                        seq_no,
+                                        ack_for_server,
+                                        sealed_chunk,
+                                    );
+                                    seq_no = seq_no.wrapping_add(256);
+                                }
+                            }
+                            let close_rec = conn.seal_close_notify();
+                            self.enqueue_server_tcp_segment(
+                                remote.ip,
+                                remote.port,
+                                local_port,
+                                seq_no,
+                                ack_for_server,
+                                close_rec,
+                            );
+                            self.tls_sessions.insert(fd, conn);
+                        }
+                        Err(_) => {}
+                    }
+                }
             }
         }
 
@@ -771,6 +1012,7 @@ impl NetworkStack {
     }
 
     pub fn recv_socket(&mut self, fd: usize, out: &mut [u8]) -> Result<usize, i64> {
+        self.poll_rx();
         let sock = self.sockets.get_mut(&fd).ok_or(-9i64)?;
         let mut count = 0;
         while count < out.len() {
@@ -785,6 +1027,7 @@ impl NetworkStack {
     }
 
     pub fn close_socket(&mut self, fd: usize) -> bool {
+        self.tls_sessions.remove(&fd);
         if let Some(mut sock) = self.sockets.remove(&fd) {
             sock.state = TcpState::FinWait;
             let _ = String::new();
@@ -796,6 +1039,7 @@ impl NetworkStack {
 }
 
 pub static NET_STACK: Mutex<Option<NetworkStack>> = Mutex::new(None);
+pub static TEST_NET_LOCK: Mutex<()> = Mutex::new(());
 
 pub fn with_net_stack<F, R>(f: F) -> R
 where

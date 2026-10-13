@@ -88,7 +88,7 @@ pub fn run(
                 if text != partial {
                     partial = text;
                     crate::serial_println!("[welder] Reply text advanced.");
-                    ui.set_transcript(&alloc::format!("{}\n\nWelder: {}", transcript, partial));
+                    ui.update_streaming_reply(&transcript, &partial);
                 }
             }
         }
@@ -115,12 +115,13 @@ pub fn run(
             }
             ui.set_active_model(agent.active_model_id());
             if pending {
-                ui.set_transcript(&alloc::format!("{}\n\nWelder: Thinking…", transcript));
+                ui.update_streaming_reply(&transcript, "Thinking…");
             } else {
                 ui.set_transcript(&transcript);
             }
         }
         let elapsed = Duration::from_nanos(rng::monotonic_time_ns().saturating_sub(start));
+        let _ = crate::fs::automation::tick_kernel_automations(&mut agent, elapsed.as_millis() as u64);
         if let Some(damage) = ui.render(elapsed) {
             if let Some(gpu) = virtio_gpu::VIRTIO_GPU.lock().as_mut() {
                 let size = ui.size();
@@ -134,5 +135,92 @@ pub fn run(
         while rng::monotonic_time_ns() < deadline {
             core::hint::spin_loop();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::drivers::forge::forge_https::GuestHttps;
+    use crate::net::{with_net_stack, DnsResolver, TlsEndpoint, TEST_NET_LOCK};
+    use alloc::{boxed::Box, rc::Rc, vec, vec::Vec};
+    use core::cell::RefCell;
+    use libmetal::tls::Tls13ServerConfig;
+    use metalos_forge::{cloud::ApiProvider, Forge};
+
+    #[test]
+    fn streaming_tls13_cloud_reply_advances_welder_and_transcript_live() {
+        let _net_guard = TEST_NET_LOCK.lock();
+        let host = "api.openai.com";
+        let ip = DnsResolver::resolve_hostname(host);
+        with_net_stack(|net| {
+            net.clear_tls_endpoints();
+            net.register_tls_endpoint(
+                ip,
+                443,
+                TlsEndpoint {
+                    server_config: Tls13ServerConfig::trusted_for_host(host),
+                    status: 200,
+                    content_type: String::from("text/event-stream"),
+                    body_chunks: vec![
+                        b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"Streaming\"}\n\n".to_vec(),
+                        b"data: {\"type\":\"response.output_text.delta\",\"delta\":\" live\"}\n\n".to_vec(),
+                        b"data: {\"type\":\"response.output_text.delta\",\"delta\":\" tokens\",\"usage\":{\"output_tokens\":3}}\n\ndata: [DONE]\n\n".to_vec(),
+                    ],
+                    require_header: Some((
+                        String::from("Authorization"),
+                        String::from("Bearer live-key"),
+                    )),
+                },
+            );
+        });
+
+        let mut forge = Forge::new(0);
+        forge
+            .connect_api(
+                ApiProvider::OpenAi,
+                ApiProvider::OpenAi.default_model(),
+                "live-key",
+                Box::new(GuestHttps::new()),
+            )
+            .unwrap();
+        let shared = Rc::new(RefCell::new(forge));
+        let mut agent = metalos_welder::AgentRuntime::with_forge(shared);
+        agent.cycle_model().unwrap();
+        assert_eq!(agent.active_model_id(), ApiProvider::OpenAi.default_model());
+
+        let base_transcript = String::from("Welcome to metalOS.\n\nYou: test live stream");
+        assert!(agent.start_console_input("test live stream").unwrap().is_none());
+
+        let mut observed_partials = Vec::new();
+        let mut final_reply = None;
+        for _ in 0..16 {
+            match agent.poll_console_reply() {
+                Poll::Pending => {
+                    if let Some(p) = agent.partial_console_reply() {
+                        if observed_partials.last() != Some(&p) {
+                            observed_partials.push(p);
+                        }
+                    }
+                }
+                Poll::Ready(res) => {
+                    final_reply = Some(res.unwrap().response_text);
+                    break;
+                }
+            }
+        }
+        assert_eq!(
+            observed_partials,
+            vec![String::from("Streaming"), String::from("Streaming live")]
+        );
+        assert_eq!(
+            final_reply.as_deref(),
+            Some("Streaming live tokens")
+        );
+        assert_eq!(
+            alloc::format!("{}\n\nWelder: {}", base_transcript, final_reply.unwrap()),
+            "Welcome to metalOS.\n\nYou: test live stream\n\nWelder: Streaming live tokens"
+        );
+        with_net_stack(|net| net.clear_tls_endpoints());
     }
 }

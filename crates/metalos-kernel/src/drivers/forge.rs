@@ -10,6 +10,10 @@ use alloc::{
 use core::{cell::RefCell, task::Poll};
 use metalos_forge::{Forge, DEFAULT_MODEL, MAX_FRAME_BYTES};
 
+#[cfg(not(all(target_arch = "aarch64", target_os = "none")))]
+#[path = "forge_https.rs"]
+pub mod forge_https;
+
 pub const MODEL_ADDRESS: usize = 0x8000_0000;
 pub const MAX_MODEL_BYTES: u64 = 14 * 1024 * 1024 * 1024;
 #[cfg(any(

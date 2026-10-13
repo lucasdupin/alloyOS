@@ -162,6 +162,9 @@ pub trait CloudTransport: Send {
     fn poll_generation(&mut self) -> Poll<Result<Generation, ForgeError>> {
         Poll::Ready(Err(ForgeError::InvalidRequest))
     }
+    fn partial_text(&self) -> Option<&str> {
+        None
+    }
 }
 struct CloudBackend {
     model: CloudModel,
@@ -182,6 +185,9 @@ impl InferenceBackend for CloudBackend {
     }
     fn poll_generation(&mut self) -> Poll<Result<Generation, ForgeError>> {
         self.transport.poll_generation()
+    }
+    fn partial_text(&self) -> Option<&str> {
+        self.transport.partial_text()
     }
 }
 struct Model {

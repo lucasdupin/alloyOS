@@ -7,6 +7,60 @@ pub use libmetal::shell::{
 };
 
 #[cfg(target_os = "none")]
+mod user_alloc {
+    use core::alloc::{GlobalAlloc, Layout};
+    use core::cell::UnsafeCell;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    const HEAP_SIZE: usize = 64 * 1024;
+
+    pub struct BumpAlloc {
+        arena: UnsafeCell<[u8; HEAP_SIZE]>,
+        next: AtomicUsize,
+    }
+
+    unsafe impl Sync for BumpAlloc {}
+
+    impl BumpAlloc {
+        pub const fn new() -> Self {
+            Self {
+                arena: UnsafeCell::new([0u8; HEAP_SIZE]),
+                next: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    unsafe impl GlobalAlloc for BumpAlloc {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            let align = layout.align().max(8);
+            let size = layout.size();
+            let mut cur = self.next.load(Ordering::Relaxed);
+            loop {
+                let aligned = (cur + align - 1) & !(align - 1);
+                let end = match aligned.checked_add(size) {
+                    Some(end) if end <= HEAP_SIZE => end,
+                    _ => return core::ptr::null_mut(),
+                };
+                match self.next.compare_exchange_weak(
+                    cur,
+                    end,
+                    Ordering::SeqCst,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => return unsafe { (self.arena.get() as *mut u8).add(aligned) },
+                    Err(actual) => cur = actual,
+                }
+            }
+        }
+
+        unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
+    }
+
+    #[global_allocator]
+    static ALLOCATOR: BumpAlloc = BumpAlloc::new();
+}
+
+#[cfg(target_os = "none")]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     libmetal::io::eprint("metal-sh: panic occurred\n");

@@ -145,5 +145,10 @@ fn system_ui_screenshots() {
         (ui.chat_scroll_offset() - ui.chat_scroll_maximum()).abs() < 1.0,
         "same-height streamed update must return to the latest content"
     );
+    ui.set_tiles(&[]);
+    ui.set_transcript("Your workspace is ready.");
+    ui.set_model_selection_status("Model unavailable. Please try again.");
+    ui.render(Duration::from_millis(4600));
+    snapshot(&mut suite, "model-error", &ui);
     suite.finish();
 }

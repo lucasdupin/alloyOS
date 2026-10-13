@@ -1,9 +1,9 @@
-import { SoftKeyboard } from "keyboard.slint";
+import { SoftKeyboard, AlloyPalette } from "keyboard.slint";
 import "../../../assets/fonts/Quicksand.ttf";
 
 export component KeyboardPreview inherits Window {
     title: "metalOS · Keyboard";
-    background: #0a0a0c;
+    background: AlloyPalette.obsidian;
     default-font-family: "Quicksand";
     default-font-weight: 500;
     default-font-size: 16px;
@@ -16,9 +16,9 @@ export component KeyboardPreview inherits Window {
         y: parent.height - keyboard.reveal - 100px;
         width: parent.width - 48px;
         height: 60px;
-        background: #15151b;
+        background: AlloyPalette.charcoal;
         border-radius: 16px;
-        Text { text: "Keyboard playground"; color: #ffffff; horizontal-alignment: center; vertical-alignment: center; }
+        Text { text: "Keyboard playground"; color: AlloyPalette.text; horizontal-alignment: center; vertical-alignment: center; }
     }
     keyboard := SoftKeyboard {
         x: 4px;

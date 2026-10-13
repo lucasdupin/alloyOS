@@ -1,0 +1,14 @@
+// Alloy: shared metallic colors for the system UI and soft keyboard.
+export global AlloyPalette {
+    out property <color> obsidian: #0b0d10;
+    out property <color> charcoal: #191c20;
+    out property <color> surface: #24282d;
+    out property <color> border: #464c54;
+    out property <color> text: #eef0f2;
+    out property <color> body: #d1d5da;
+    out property <color> muted: #a5adb7;
+    out property <color> silver: #c6ced8;
+    // Rust foreground is lifted for contrast against matte dark surfaces.
+    out property <color> rust: #db865b;
+    out property <brush> chrome: @linear-gradient(110deg, #a5b1c2 0%, #eef0f2 48%, #b9b5c9 100%);
+}

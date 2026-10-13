@@ -1,6 +1,78 @@
-import { SoftKeyboard } from "@metalos-keyboard/keyboard.slint";
-import { VerticalBox, HorizontalBox, ScrollView, LineEdit, Button } from "std-widgets.slint";
+import { SoftKeyboard, AlloyPalette } from "@metalos-keyboard/keyboard.slint";
+import { VerticalBox, HorizontalBox, ScrollView } from "std-widgets.slint";
 import "../../../assets/fonts/Quicksand.ttf";
+
+// Alloy controls keep focus and selection silver on the embedded renderer.
+component AlloyLineEdit inherits Rectangle {
+    in property <string> placeholder-text;
+    in-out property <string> text;
+    out property <bool> has-focus: editor.has-focus;
+    forward-focus: editor;
+    callback edited();
+    callback accepted();
+    height: 32px;
+    vertical-stretch: 0;
+    horizontal-stretch: 1;
+    background: AlloyPalette.charcoal;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: editor.has-focus ? AlloyPalette.silver : AlloyPalette.border;
+    Text {
+        x: 12px; y: 8px;
+        width: parent.width - 24px; height: parent.height - 16px;
+        text: root.placeholder-text;
+        visible: root.text == "";
+        color: AlloyPalette.muted;
+        vertical-alignment: center;
+    }
+    editor := TextInput {
+        x: 12px; y: 0px;
+        width: parent.width - 24px; height: parent.height;
+        text <=> root.text;
+        color: AlloyPalette.text;
+        selection-background-color: AlloyPalette.silver;
+        selection-foreground-color: AlloyPalette.obsidian;
+        single-line: true;
+        vertical-alignment: center;
+        edited => { root.edited(); }
+        accepted => { root.accepted(); }
+    }
+}
+
+component AlloyButton inherits FocusScope {
+    in property <string> text;
+    callback clicked();
+    height: 36px;
+    vertical-stretch: 0;
+    min-width: label.preferred-width + 24px;
+    key-pressed(event) => {
+        if (root.enabled && (event.text == " " || event.text == Key.Return)) {
+            root.clicked();
+            return accept;
+        }
+        return reject;
+    }
+    Rectangle {
+        background: touch.pressed ? AlloyPalette.silver : touch.has-hover ? AlloyPalette.surface : AlloyPalette.charcoal;
+        border-radius: 6px;
+        border-width: 1px;
+        border-color: root.has-focus ? AlloyPalette.silver : AlloyPalette.border;
+        opacity: root.enabled ? 1 : 0.45;
+        label := Text {
+            text: root.text;
+            color: touch.pressed ? AlloyPalette.obsidian : AlloyPalette.text;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        touch := TouchArea {
+            enabled: root.enabled;
+            mouse-cursor: pointer;
+            accessible-role: button;
+            accessible-label: root.text;
+            clicked => { root.focus(); root.clicked(); }
+        }
+    }
+}
 
 export struct TileItemView {
     id: string, title: string, subtitle: string, badge: string, status: string,
@@ -28,7 +100,7 @@ component ThinkingIndicator inherits Rectangle {
             width: 7px;
             height: 7px;
             border-radius: 4px;
-            background: #bdbdff;
+            background: AlloyPalette.chrome;
             opacity: root.phase == dot ? 1 : 0.3;
             animate opacity { duration: 220ms; }
         }
@@ -40,13 +112,13 @@ component Logotype inherits Text {
     font-family: "Quicksand";
     font-size: 26px;
     font-weight: 700;
-    color: #ffffff;
+    color: AlloyPalette.text;
 }
 
 export component SystemUi inherits Window {
     title: "metalOS · Ferrofluid";
     in property <bool> booting: false;
-    background: root.booting ? #000000 : #0a0a0c;
+    background: root.booting ? #000000 : AlloyPalette.obsidian;
     default-font-family: "Quicksand";
     default-font-weight: 500;
     default-font-size: 16px;
@@ -68,6 +140,7 @@ export component SystemUi inherits Window {
     out property <bool> keyboard-visible: keyboard.shown;
     out property <length> keyboard-reveal: keyboard.reveal;
     if root.booting: Logotype {
+        color: #ffffff;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
     }
@@ -92,7 +165,7 @@ export component SystemUi inherits Window {
                         width: parent.width;
                         height: parent.height;
                         text: root.active-model;
-                        color: #a0a0ae;
+                        color: AlloyPalette.muted;
                         horizontal-alignment: right;
                         vertical-alignment: center;
                         overflow: elide;
@@ -106,10 +179,15 @@ export component SystemUi inherits Window {
                     }
                 }
             }
-            if root.model-selection-status != "": Text {
-                text: root.model-selection-status;
-                color: #a0a0ae;
-                wrap: word-wrap;
+            if root.model-selection-status != "": Rectangle {
+                height: status-label.preferred-height + 16px;
+                status-label := Text {
+                    x: 20px; y: 8px;
+                    width: parent.width - 40px;
+                    text: root.model-selection-status;
+                    color: AlloyPalette.rust;
+                    wrap: word-wrap;
+                }
             }
             chat := Rectangle {
                 vertical-stretch: 1;
@@ -151,36 +229,36 @@ export component SystemUi inherits Window {
                                 spacing: 16px;
                                 transcript-text := Text {
                                     text: root.transcript;
-                                    color: #d2d2dc;
+                                    color: AlloyPalette.body;
                                     wrap: word-wrap;
                                     horizontal-alignment: left;
                                     vertical-alignment: top;
                                 }
                                 for tile in root.tiles: Rectangle {
-                                    background: #20202a;
+                                    background: AlloyPalette.charcoal;
                                     border-radius: 12px;
                                     border-width: 1px;
-                                    border-color: #404052;
+                                    border-color: AlloyPalette.border;
                                     height: tile-content.preferred-height;
                                     tile-content := VerticalBox {
                                         width: parent.width;
                                         height: self.preferred-height;
                                         padding: 16px;
                                         spacing: 10px;
-                                        Text { text: tile.title; color: #f0f0f4; font-size: 20px; font-weight: 700; wrap: word-wrap; }
-                                        if tile.subtitle != "": Text { text: tile.subtitle; color: #a8a8ba; wrap: word-wrap; }
+                                        Text { text: tile.title; color: AlloyPalette.text; font-size: 20px; font-weight: 700; wrap: word-wrap; }
+                                        if tile.subtitle != "": Text { text: tile.subtitle; color: AlloyPalette.muted; wrap: word-wrap; }
                                         for item in tile.items: VerticalBox {
                                             spacing: 4px;
                                             HorizontalBox {
-                                                Text { text: item.title; color: #ffffff; font-size: tile.tile-id == "clock.now" && item.id == "time" ? 26px : 18px; wrap: word-wrap; }
-                                                if item.badge != "": Text { text: item.badge; color: #bdbdff; horizontal-alignment: right; min-width: self.preferred-width; }
+                                                Text { text: item.title; color: AlloyPalette.text; font-size: tile.tile-id == "clock.now" && item.id == "time" ? 26px : 18px; wrap: word-wrap; }
+                                                if item.badge != "": Text { text: item.badge; color: AlloyPalette.silver; horizontal-alignment: right; min-width: self.preferred-width; }
                                             }
-                                            if item.subtitle != "": Text { text: item.subtitle; color: #a8a8ba; wrap: word-wrap; }
-                                            if item.status != "": Text { text: item.status; color: #9292a8; font-size: 13px; wrap: word-wrap; }
+                                            if item.subtitle != "": Text { text: item.subtitle; color: AlloyPalette.muted; wrap: word-wrap; }
+                                            if item.status != "": Text { text: item.status; color: AlloyPalette.muted; font-size: 13px; wrap: word-wrap; }
                                         }
                                         if tile.actions.length > 0: HorizontalBox {
                                             spacing: 8px;
-                                            for action in tile.actions: Button {
+                                            for action in tile.actions: AlloyButton {
                                                 text: action.label;
                                                 enabled: !root.reply-pending;
                                                 clicked => { root.tile-action(tile.tile-id, action.id); }
@@ -196,7 +274,7 @@ export component SystemUi inherits Window {
             }
             HorizontalBox {
                 padding: 20px;
-                input := LineEdit {
+                input := AlloyLineEdit {
                     placeholder-text: "What would you like to do?";
                     text <=> root.draft;
                     edited => { keyboard.reopen(); }

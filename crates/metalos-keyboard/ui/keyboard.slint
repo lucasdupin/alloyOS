@@ -1,3 +1,6 @@
+import { AlloyPalette } from "alloy.slint";
+export { AlloyPalette }
+
 // TouchArea keeps editor focus while a soft key is pressed.
 component SoftKey inherits Rectangle {
     in property <string> label;
@@ -9,7 +12,7 @@ component SoftKey inherits Rectangle {
     height: 44px;
     // Keep the hit target fixed while the label swells.
     border-width: 0px;
-    background: transparent;
+    background: touch.pressed || root.tap-pulse ? AlloyPalette.surface : transparent;
     property <bool> tap-pulse: false;
     property <string> preview-label;
     property <bool> preview-enabled: !root.icon-only && root.label != "Shift" && root.label != "SHIFT" && root.label != "Del" && root.label != "space" && root.label != "Send" && root.label != "123" && root.label != "ABC";
@@ -24,7 +27,7 @@ component SoftKey inherits Rectangle {
     }
     Text {
         text: root.icon-only ? "" : root.label;
-        color: #ffffff;
+        color: AlloyPalette.text;
         font-size: (root.label == "Shift" || root.label == "SHIFT" || root.label == "Del" ? 12px : 17px) * root.press-scale;
         horizontal-alignment: center;
         vertical-alignment: center;
@@ -54,12 +57,12 @@ component SoftKey inherits Rectangle {
         width: 48px;
         height: 52px;
         opacity: root.preview-rise;
-        background: #15151b;
+        background: AlloyPalette.charcoal;
         border-width: 0px;
         border-radius: 18px;
         Text {
             text: root.preview-label;
-            color: #ffffff;
+            color: AlloyPalette.text;
             font-size: 32px;
             horizontal-alignment: center;
             vertical-alignment: center;

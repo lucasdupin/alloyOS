@@ -1,0 +1,62 @@
+[
+  {
+    "name": "memory.remember",
+    "description": "Store a durable user fact, preference, goal, or bookmark into persistent memory",
+    "params": [
+      {
+        "name": "content",
+        "type": "string",
+        "required": true,
+        "description": "Fact or memory content to record"
+      },
+      {
+        "name": "category",
+        "type": "string",
+        "required": false,
+        "description": "Memory category: fact, preference, goal, or bookmark"
+      },
+      {
+        "name": "source",
+        "type": "string",
+        "required": false,
+        "description": "Source context or conversation topic"
+      }
+    ]
+  },
+  {
+    "name": "memory.list",
+    "description": "List all remembered items with category filters",
+    "params": [
+      {
+        "name": "category",
+        "type": "string",
+        "required": false,
+        "description": "Optional category filter (e.g. fact, preference, goal, bookmark)"
+      }
+    ]
+  },
+  {
+    "name": "memory.forget",
+    "description": "Delete a remembered item by its unique ID",
+    "params": [
+      {
+        "name": "id",
+        "type": "string",
+        "required": true,
+        "description": "Unique identifier of the memory item to delete"
+      }
+    ]
+  },
+  {
+    "name": "memory.search",
+    "description": "Search remembered items by keyword",
+    "params": [
+      {
+        "name": "query",
+        "type": "string",
+        "required": true,
+        "description": "Keyword or text phrase to search for"
+      }
+    ]
+  }
+]

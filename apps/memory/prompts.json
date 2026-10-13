@@ -1,0 +1,12 @@
+[
+  {
+    "name": "memory.curate",
+    "description": "Review and curate user profile context and goals",
+    "params": [
+      {
+        "name": "category",
+        "description": "Category of memories to review"
+      }
+    ]
+  }
+]

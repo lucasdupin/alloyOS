@@ -1,0 +1,8 @@
+[
+  {
+    "uri": "mcp://memory/items",
+    "name": "User Memory Items",
+    "mime_type": "application/json",
+    "description": "Snapshot of all persistent user facts, preferences, and goals"
+  }
+]

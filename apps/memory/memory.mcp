@@ -1,0 +1,5 @@
+# alloyOS Headless MCP App Manifest (/apps/memory/memory.mcp)
+app_id = memory
+name = Memory
+version = 1.0.0
+capabilities = ExposeMcpTools, ExposeMcpResources, ExposeMcpPrompts, ExposeSkills, ExposeTiles

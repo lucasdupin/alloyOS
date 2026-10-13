@@ -1,4 +1,4 @@
-//! Portable scalar Gemma2 executor, for full-precision F32/F16 GGUF weights.
+//! Portable Gemma2 executor for F32/F16 and Q4_0 GGUF weights.
 //! Reference graph: https://github.com/ggml-org/llama.cpp/blob/master/src/models/gemma2.cpp
 use crate::{
     gguf::{Gguf, LoadError, TensorView},
@@ -18,16 +18,19 @@ use core::{
     pin::Pin,
     task::Poll,
 };
+const PREFILL_BATCH_TOKENS: usize = 32;
+
 enum Step {
     Work,
     Text(String),
 }
 type Job =
-    Pin<Box<dyn Coroutine<(), Yield = Step, Return = Result<Generation, ForgeError>> + Send>>;
+    Pin<Box<dyn Coroutine<(), Yield = Step, Return = Result<(Generation, CachedPrefix), ForgeError>> + Send>>;
 pub struct Gemma2 {
     model: Arc<ModelCore>,
     job: Option<Job>,
     partial: String,
+    cached: Option<CachedPrefix>,
 
 }
 struct ModelCore {
@@ -51,6 +54,10 @@ struct ModelCore {
 struct Cache {
     keys: Vec<Vec<f32>>,
     values: Vec<Vec<f32>>,
+}
+struct CachedPrefix {
+    tokens: Vec<usize>,
+    layers: Vec<Cache>,
 }
 impl ModelCore {
     pub fn load(id: &str, weights: &'static [u8]) -> Result<Self, LoadError> {
@@ -160,7 +167,7 @@ impl ModelCore {
     fn rotary(&self, x: &mut [f32], position: usize) {
         rotate_neox(x, self.head_dim, position, self.rope);
     }
-    fn prefill<'a>(&'a self, tokens: &'a [usize], cache: &'a mut [Cache])
+    fn prefill<'a>(&'a self, tokens: &'a [usize], cache: &'a mut [Cache], offset: usize)
         -> impl Coroutine<(), Yield = (), Return = Vec<f32>> + Send + 'a {
         #[coroutine] static move || {
             // Reuse each weight row across the prompt, instead of rereading the
@@ -169,18 +176,25 @@ impl ModelCore {
                 ($tensor:expr, $inputs:expr) => {{
                     let tensor = $tensor;
                     let inputs = $inputs;
+                    let quantized: Vec<_> = inputs.iter().map(|input| tensor.quantize_input(input)).collect();
                     let mut result = vec![vec![0.0; tensor.shape[1]]; inputs.len()];
                     for row in 0..tensor.shape[1] {
                         for (item, input) in inputs.iter().enumerate() {
-                            let mut sum = 0.0;
-                            for start in (0..input.len()).step_by(2048) {
-                                sum += tensor.dot_range(row, input, start, (start + 2048).min(input.len()));
-                            }
+                            let sum = if let Some(quantized) = &quantized[item] {
+                                tensor.dot_quantized(row, quantized)
+                            } else {
+                                let mut sum = 0.0;
+                                for start in (0..input.len()).step_by(2048) {
+                                    sum += tensor.dot_range(row, input, start, (start + 2048).min(input.len()));
+                                }
+                                sum
+                            };
                             result[item][row] = sum;
                         }
                         // The OS timer preempts computation independently of the UI.
-                        // Keep a progress boundary per row, not per prompt/chunk pair.
-                        yield ();
+                        // Amortize coroutine resumes and worker reply locks. Timer
+                        // preemption still keeps input/rendering responsive.
+                        if (row + 1) % 32 == 0 { yield (); }
                     }
                     result
                 }}
@@ -198,13 +212,14 @@ impl ModelCore {
                 let mut keys = batch!(self.tensor(&format!("{prefix}attn_k.weight")), &norm);
                 let values = batch!(self.tensor(&format!("{prefix}attn_v.weight")), &norm);
                 for (pos, (query, key)) in queries.iter_mut().zip(&mut keys).enumerate() {
-                    self.rotary(query, pos); self.rotary(key, pos);
+                    self.rotary(query, offset + pos); self.rotary(key, offset + pos);
                     yield ();
                 }
                 cache.keys.extend(keys);
                 cache.values.extend(values);
                 let mut attended = vec![vec![0.0; self.heads * self.head_dim]; tokens.len()];
-                for (pos, query) in queries.iter().enumerate() {
+                for (item, query) in queries.iter().enumerate() {
+                    let pos = offset + item;
                     let start = if layer % 2 == 0 { (pos + 1).saturating_sub(self.window) } else { 0 };
                     for head in 0..self.heads {
                         let kv = head / (self.heads / self.kv_heads);
@@ -217,7 +232,7 @@ impl ModelCore {
                         }
                         softmax(&mut scores);
                         for (p, score) in (start..=pos).zip(scores) {
-                            for i in 0..self.head_dim { attended[pos][head*self.head_dim+i] += score * cache.values[p][kv*self.head_dim+i]; }
+                            for i in 0..self.head_dim { attended[item][head*self.head_dim+i] += score * cache.values[p][kv*self.head_dim+i]; }
                             if (p - start + 1) % 8 == 0 { yield (); }
                         }
                     }
@@ -266,15 +281,21 @@ impl ModelCore {
                 ($tensor:expr, $input:expr) => {{
                     let tensor = $tensor;
                     let input = $input;
+                    let quantized = tensor.quantize_input(input);
                     let mut result = Vec::with_capacity(tensor.shape[1]);
                     for row in 0..tensor.shape[1] {
-                        let mut sum = 0.0;
-                        for start in (0..input.len()).step_by(2048) {
-                            let end = (start + 2048).min(input.len());
-                            sum += tensor.dot_range(row, input, start, end);
-                        }
+                        let sum = if let Some(quantized) = &quantized {
+                            tensor.dot_quantized(row, quantized)
+                        } else {
+                            let mut sum = 0.0;
+                            for start in (0..input.len()).step_by(2048) {
+                                let end = (start + 2048).min(input.len());
+                                sum += tensor.dot_range(row, input, start, end);
+                            }
+                            sum
+                        };
                         result.push(sum);
-                        yield ();
+                        if (row + 1) % 32 == 0 { yield (); }
                     }
                     result
                 }};
@@ -393,10 +414,11 @@ impl Gemma2 {
             model: Arc::new(ModelCore::load(id, weights)?),
             job: None,
             partial: String::new(),
+            cached: None,
 
         })
     }
-    fn make_job(&self, r: &GenerationRequest) -> Result<Job, ForgeError> {
+    fn make_job(&mut self, r: &GenerationRequest) -> Result<Job, ForgeError> {
         r.validate()?;
         let prompt = self
             .model
@@ -414,32 +436,42 @@ impl Gemma2 {
             .and_then(|n| n.checked_mul(prompt.len() + r.max_tokens as usize))
             .and_then(|n| n.checked_mul(8))
             .ok_or(ForgeError::MemoryBudgetExceeded)?;
-        let workspace = prompt.len().checked_mul(self.model.dim * 5 + self.model.ff * 3 + self.model.heads * self.model.head_dim)
+        let workspace = prompt.len().min(PREFILL_BATCH_TOKENS).checked_mul(self.model.dim * 5 + self.model.ff * 3 + self.model.heads * self.model.head_dim)
             .and_then(|n| n.checked_mul(4)).ok_or(ForgeError::MemoryBudgetExceeded)?;
         if cache_bytes.saturating_add(workspace) > 128 * 1024 * 1024 {
             return Err(ForgeError::MemoryBudgetExceeded);
         }
         let model = self.model.clone();
         let max_tokens = r.max_tokens;
+        let mut cached = self.cached.take().unwrap_or_else(|| CachedPrefix {
+            tokens: Vec::new(),
+            layers: (0..model.layers).map(|_| Cache { keys: Vec::new(), values: Vec::new() }).collect(),
+        });
+        // Reuse only identical causal input tokens. Recompute at least the last
+        // prompt token to recover logits, including for a repeated request.
+        let reused = cached.tokens.iter().zip(&prompt).take_while(|(a, b)| a == b)
+            .count().min(prompt.len().saturating_sub(1));
+        for layer in &mut cached.layers {
+            layer.keys.truncate(reused);
+            layer.values.truncate(reused);
+        }
         Ok(Box::pin(
             #[coroutine]
             static move || {
-                let mut cache: Vec<Cache> = (0..model.layers)
-                    .map(|_| Cache {
-                        keys: Vec::new(),
-                        values: Vec::new(),
-                    })
-                    .collect();
-                let mut logits = {
-                let mut prefill = Box::pin(model.prefill(&prompt, &mut cache));
-                loop {
-                    match prefill.as_mut().resume(()) {
-                        CoroutineState::Yielded(()) => yield Step::Work,
-                        CoroutineState::Complete(logits) => break logits,
-                    }
+                let mut cache = cached.layers;
+                // Bound temporary projection matrices independently of prompt
+                // length. Cache positions remain absolute across causal chunks.
+                let mut logits = Vec::new();
+                for (chunk_index, tokens) in prompt[reused..].chunks(PREFILL_BATCH_TOKENS).enumerate() {
+                    let mut prefill = Box::pin(model.prefill(tokens, &mut cache, reused + chunk_index * PREFILL_BATCH_TOKENS));
+                    logits = loop {
+                        match prefill.as_mut().resume(()) {
+                            CoroutineState::Yielded(()) => yield Step::Work,
+                            CoroutineState::Complete(logits) => break logits,
+                        }
+                    };
                 }
-            };
-            let mut output = Vec::new();
+                let mut output = Vec::new();
                 for i in 0..max_tokens {
                     let mut best: Option<(usize, f32)> = None;
                     for (chunk_id, chunk) in logits.chunks(1024).enumerate() {
@@ -472,11 +504,15 @@ impl Gemma2 {
                         };
                     }
                 }
-                Ok(Generation {
+                for layer in &mut cache {
+                    layer.keys.truncate(prompt.len());
+                    layer.values.truncate(prompt.len());
+                }
+                Ok((Generation {
                     model: model.id.clone(),
                     text: model.tokenizer.decode(&output),
                     generated_tokens: output.len() as u32,
-                })
+                }, CachedPrefix { tokens: prompt, layers: cache }))
             },
         ))
     }
@@ -516,7 +552,10 @@ impl InferenceBackend for Gemma2 {
                 CoroutineState::Yielded(Step::Work) => {}
                 CoroutineState::Complete(result) => {
                     self.job = None;
-                    return Poll::Ready(result);
+                    return Poll::Ready(result.map(|(generation, cached)| {
+                        self.cached = Some(cached);
+                        generation
+                    }));
                 }
             }
         }

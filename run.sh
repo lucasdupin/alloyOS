@@ -53,6 +53,11 @@ HELP
 done
 
 model_image="$root/.local/models/gemma-2-2b-it/model.img"
+quantized_model_image="$root/.local/models/gemma-2-2b-it/q4_0.img"
+if [[ -f "$quantized_model_image" ]]; then
+    model_image="$quantized_model_image"
+    echo "[run] Using local Q4_0 Gemma weights."
+fi
 if [[ ! -f "$model_image" ]]; then
     echo "[run] Preparing local Gemma weights..."
     python3 "$root/scripts/download_gemma.py" ${auth_args[@]+"${auth_args[@]}"}

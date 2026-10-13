@@ -75,7 +75,7 @@ Gemini, or OpenAI API credentials, Gemma access, and launch. Pasted keys are
 hidden; optional saved keys live in ignored `.secrets/` files with mode 600.
 Forge uses configured keys for Claude, Gemini, and OpenAI through the QEMU
 HTTPS bridge. In chat, select `/model claude`, `/model gemini`, or `/model openai`;
-`/model local` returns to Gemma. Gemma remains the default. Requests go to the
+`/model local` returns to Gemma. Gemini is the default; saved model selections are preserved. Requests go to the
 selected provider and may incur API charges. The launcher requires `curl` for
 certificate-verified HTTPS.
 

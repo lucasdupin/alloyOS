@@ -132,7 +132,8 @@ class SetupTests(unittest.TestCase):
             self.assertEqual(setup.main(), 0)
             self.assertIn('through verified HTTPS', output.getvalue())
             self.assertIn('/model openai', output.getvalue())
-            self.assertIn('Gemma remains the default', output.getvalue())
+            self.assertIn('Gemini is the default', output.getvalue())
+            self.assertIn('/model local for Gemma', output.getvalue())
             self.assertIn('ChatGPT subscription does not include API billing', output.getvalue())
 
 

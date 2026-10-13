@@ -19,6 +19,9 @@ struct Reply {
     partial: String,
 }
 static COMMANDS: IrqMutex<VecDeque<Command>> = IrqMutex::new(VecDeque::new());
+// First text ms, total generation ms, generated token count. No prompt/text data.
+static TIMING: IrqMutex<[u64; 3]> = IrqMutex::new([0; 3]);
+pub fn timing() -> [u64; 3] { *TIMING.lock() }
 struct Proxy {
     id: String,
     resident: u64,
@@ -129,12 +132,20 @@ pub extern "C" fn run() -> ! {
                     reply.lock().done = Some(Err(ForgeError::BackendUnavailable));
                     continue;
                 };
+                let began = super::rng::monotonic_time_ns();
+                *TIMING.lock() = [0; 3];
+                let mut first_text = None;
                 let result = match backend.start_generation(&request) {
                     Ok(Some(result)) => Ok(result),
                     Err(error) => Err(error),
                     Ok(None) => loop {
                         let result = backend.poll_generation();
                         if let Some(partial) = backend.partial_text() {
+                            if !partial.is_empty() && first_text.is_none() {
+                                let now = super::rng::monotonic_time_ns();
+                                first_text = Some(now);
+                                TIMING.lock()[0] = now.saturating_sub(began) / 1_000_000;
+                            }
                             let mut state = reply.lock();
                             if state.partial != partial {
                                 state.partial = partial.to_string();
@@ -145,6 +156,12 @@ pub extern "C" fn run() -> ! {
                         }
                     },
                 };
+                if let Ok(generation) = &result {
+                    let now = super::rng::monotonic_time_ns();
+                    let mut timing = TIMING.lock();
+                    timing[1] = now.saturating_sub(began) / 1_000_000;
+                    timing[2] = generation.generated_tokens as u64;
+                }
                 reply.lock().done = Some(result);
             }
             None => {

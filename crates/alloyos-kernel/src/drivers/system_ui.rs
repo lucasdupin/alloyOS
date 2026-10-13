@@ -103,7 +103,11 @@ pub fn run(
             if let Some(text) = agent.partial_console_reply() {
                 if text != partial {
                     partial = text;
-                    crate::serial_println!("[welder] Reply text advanced.");
+                    // UART status frames can span UI ticks. Keep debug text
+                    // out of the middle of an in-flight structured response.
+                    if !super::forge::rpc_output_pending() {
+                        crate::serial_println!("[welder] Reply text advanced.");
+                    }
                     ui.update_streaming_reply(&transcript, &partial);
                 }
             }
@@ -157,7 +161,7 @@ mod tests {
     use crate::net::{with_net_stack, DnsResolver, TlsEndpoint, TEST_NET_LOCK};
     use alloc::{boxed::Box, rc::Rc, vec, vec::Vec};
     use core::cell::RefCell;
-    use libmetal::tls::Tls13ServerConfig;
+    use liballoy::tls::Tls13ServerConfig;
     use alloyos_forge::{cloud::ApiProvider, Forge};
 
     #[test]

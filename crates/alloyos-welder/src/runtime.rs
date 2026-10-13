@@ -417,8 +417,8 @@ mod tests {
     #[test]
     fn runtime_hot_swapping_and_etc_ai_conf_persistence() {
         let mut runtime = AgentRuntime::new();
-        assert_eq!(runtime.active_provider_name(), "forge");
-        assert_eq!(runtime.active_model_id(), "gemma-2-2b-it");
+        assert_eq!(runtime.active_provider_name(), "gemini");
+        assert_eq!(runtime.active_model_id(), "gemini-3.8-flash");
 
         // Switch to Claude via slash command
         let mut streamed = String::new();
@@ -589,8 +589,12 @@ mod tests {
         assert!(sched_view.tile.is_some());
     }
     #[test]
-    fn default_local_inference_never_silently_uses_cloud() {
+    fn cloud_is_default_and_explicit_local_never_silently_uses_cloud() {
         let mut ai = AgentRuntime::new();
+        assert_eq!(ai.active_provider_name(), "gemini");
+        assert_eq!(ai.active_model_id(), "gemini-3.8-flash");
+        assert!(ai.serialize_config().contains("provider=gemini"));
+        ai.switch_provider("local").unwrap();
         assert_eq!(ai.active_provider_name(), "forge");
         assert_eq!(ai.active_model_id(), "gemma-2-2b-it");
         let mut streamed = false;

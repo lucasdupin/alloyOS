@@ -287,3 +287,15 @@ fn local_chat_starts_without_computing_and_yields_through_prefill_and_streaming(
         "text stayed hidden until the entire reply completed"
     );
 }
+
+#[test]
+fn cached_prefix_matches_fresh_generation_for_repeat_extension_and_divergence() {
+    use alloyos_forge::InferenceBackend;
+    let weights = Box::leak(fixture(2.).into_boxed_slice());
+    let mut cached = Gemma2::load("fixture", weights).unwrap();
+    for prompt in ["a".to_string(), "a".into(), "aa".into(), "ab".into(), "b".into(), "a".into(), "a".repeat(95), "a".repeat(95), "a".repeat(130), "b".repeat(97)] {
+        let request = GenerationRequest { model: None, prompt: prompt.into(), max_tokens: 3 };
+        let mut fresh = Gemma2::load("fixture", weights).unwrap();
+        assert_eq!(cached.generate(&request).unwrap(), fresh.generate(&request).unwrap());
+    }
+}

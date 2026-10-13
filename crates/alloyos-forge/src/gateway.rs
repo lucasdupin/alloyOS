@@ -68,7 +68,7 @@ impl Default for ModelGateway {
 impl ModelGateway {
     pub fn new() -> Self {
         Self {
-            active: ActiveProvider::Forge,
+            active: ActiveProvider::Gemini,
             pending: None,
             forge: Rc::new(RefCell::new(Forge::new(0))),
             forge_model: DEFAULT_MODEL.to_string(),
@@ -438,6 +438,7 @@ mod tests {
             Message::user("Follow-up"),
         ];
         let mut tokens = String::new();
+        gateway.switch_provider("local").unwrap();
         // An available cloud transport must not be used implicitly for a failed local model.
         assert!(matches!(
             gateway.chat(&messages, &[], &mut |t| tokens.push_str(t)),

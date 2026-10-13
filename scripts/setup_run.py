@@ -107,7 +107,7 @@ def main():
     print('Cargo, QEMU, and curl are available.')
     print('\nStep 2 of 4 — Optional cloud API access')
     print('Forge supports Claude, Gemini, and OpenAI through verified HTTPS.')
-    print('Gemma remains the default. Use /model claude, /model gemini, or /model openai in chat.')
+    print('Gemini is the default. Use /model local for Gemma, or /model claude or /model openai in chat.')
     configured = []
     for title, name, _, _ in PROVIDERS.values():
         path = ROOT / '.secrets' / name

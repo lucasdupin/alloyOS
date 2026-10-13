@@ -122,7 +122,7 @@ fn integration_full_ai_os_stack_e2e() {
         Err(FerrofluidError::UiCreationForbiddenForApp),
     );
 
-    // 3. Phase 7: Headless MCP Apps expose tools & resources, validated against UI/Shell capabilities
+    // 3. Phase 7: Headless MCP Apps expose tools, resources, SKILLs & Tiles; validated against UI/Shell/Scheduler/CrossApp rules
     let bad_manifest = AppManifest::new(
         "bad_ui_app",
         "Bad UI App",
@@ -131,24 +131,42 @@ fn integration_full_ai_os_stack_e2e() {
     );
     assert!(validate_app_manifest(&bad_manifest).is_err());
 
-    let mut mcp = McpRegistry::new();
-    register_builtin_apps(&mut mcp).expect("builtin MCP apps must pass sandbox check");
-    assert_eq!(mcp.app_count(), 3);
+    // Only `tasks` may request ScriptSchedulerAccess
+    let bad_sched_manifest = AppManifest::new(
+        "unauthorized_sched_app",
+        "Unauthorized Scheduler App",
+        "0.1.0",
+        vec![
+            AppCapability::ExposeMcpTools,
+            AppCapability::ScriptSchedulerAccess,
+        ],
+    );
+    assert!(validate_app_manifest(&bad_sched_manifest).is_err());
 
-    // Call `notes.create` via MCP
+    let mut mcp = McpRegistry::new();
+    register_builtin_apps(&mut mcp).expect("builtin Tasks MCP app must pass sandbox check");
+    assert_eq!(mcp.app_count(), 2); // Tasks and Clock are both registered.
+    assert_eq!(mcp.list_skills().len(), 2);
+    assert_eq!(mcp.list_tiles().len(), 2);
+
+    // Call `tasks.create` via MCP (as Welder)
     let mut args = std::collections::BTreeMap::new();
     args.insert(
-        "title".to_string(),
-        McpValue::Text("Architecture".to_string()),
+        "id".to_string(),
+        McpValue::Text("nightly-audit".to_string()),
     );
     args.insert(
-        "body".to_string(),
-        McpValue::Text("MCP-only apps + V8 scheduled scripts".to_string()),
+        "path".to_string(),
+        McpValue::Text("/scripts/heartbeat.js".to_string()),
+    );
+    args.insert(
+        "trigger".to_string(),
+        McpValue::Text("every:60s".to_string()),
     );
     let mcp_res = mcp
-        .call_tool("notes.create", &args)
-        .expect("MCP notes.create should succeed");
-    assert!(mcp_res.to_json().contains("Architecture"));
+        .call_tool("tasks.create", &args)
+        .expect("MCP tasks.create should succeed");
+    assert!(mcp_res.to_json().contains("nightly-audit"));
 
     // 4. Phase 6: Model writes local JS script & schedules it on both FS events and Cron time
     let mut js_host = VirtualHostEnv::new();
@@ -227,18 +245,22 @@ fn integration_full_ai_os_stack_e2e() {
         .unwrap();
     assert_eq!(ai.active_provider_name(), "claude");
 
-    // Agent synthesizes UI view and renders it to Ferrofluid using its exclusive token
+    // Agent synthesizes UI view with declarative AppTile and renders it to Ferrofluid using its exclusive token
+    let tile = mcp.render_tile("tasks.board").ok();
     let view = ai
         .ui_synthesizer
-        .synthesize_from_mcp_output(
+        .synthesize_from_mcp_output_with_tile(
             &UiCallerOrigin::AiAgent,
-            "notes",
-            "notes.create",
+            "tasks",
+            "tasks.create",
             &mcp_res.to_json(),
+            tile,
         )
         .expect("Agent is allowed to synthesize UI");
-    assert_eq!(view.title, "Architecture");
-    assert_eq!(view.source_app.as_deref(), Some("notes"));
+    assert_eq!(view.title, "Tasks");
+    assert_eq!(view.source_app.as_deref(), Some("tasks"));
+    assert!(view.tile.is_some());
+
 
     // The agent retains authorization independently of any rendering toolkit.
     gate.authorize(&agent_token.principal(), Some(&agent_token))

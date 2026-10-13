@@ -329,6 +329,45 @@ impl AgentRuntime {
         })
     }
 
+    /// Latest agent-owned descriptor for each tile, replacing stale refresh results.
+    pub fn synthesized_tiles(&self) -> Vec<metalos_mcp::AppTile> {
+        let mut tiles: Vec<metalos_mcp::AppTile> = Vec::new();
+        for view in self.synthesized_views() {
+            if let Some(tile) = &view.tile {
+                if let Some(existing) = tiles.iter_mut().find(|t| t.tile_id == tile.tile_id) {
+                    *existing = tile.clone();
+                } else {
+                    tiles.push(tile.clone());
+                }
+            }
+        }
+        tiles
+    }
+
+    /// Execute only actions currently exposed by an agent-synthesized tile.
+    /// The native tool registry keeps MCP orchestration under Welder ownership.
+    pub fn execute_tile_action(
+        &mut self,
+        action: &metalos_mcp::TileAction,
+    ) -> Result<ToolExecutionOutput, AiError> {
+        let tiles = self.synthesized_tiles();
+        let tile = tiles.iter().find(|tile| tile.actions.contains(action))
+            .ok_or_else(|| AiError::PolicyViolation("tile action is not currently exposed".into()))?;
+        let app = tile.folder()
+            .ok_or_else(|| AiError::InvalidToolArguments("tile has no app namespace".into()))?;
+        let args = metalos_mcp::McpValue::Map(action.default_args.clone()).to_json();
+        let arguments = format!(
+            "{{\"app\":\"{}\",\"tool\":\"{}\",\"args\":\"{}\"}}",
+            metalos_forge::provider::json_escape(app),
+            metalos_forge::provider::json_escape(&action.tool_name),
+            metalos_forge::provider::json_escape(&args),
+        );
+        let call = metalos_forge::provider::ToolCall::new(
+            "tile_action", "mcp_call_tool", arguments,
+        );
+        self.tool_registry.execute_tool(&call, &mut self.ui_synthesizer)
+    }
+
     /// Returns all UI views synthesized by the AI agent for Ferrofluid (`ferrofluidd`).
     pub fn synthesized_views(&self) -> &[SynthesizedUiView] {
         self.ui_synthesizer.views()
@@ -340,6 +379,41 @@ mod tests {
     use super::*;
     use crate::{ProviderToolCall as ToolCall, ToolSpec, UiCallerOrigin, ViewKind};
     use metalos_forge::provider::TokenUsage;
+    #[test]
+    fn clock_tile_refresh_uses_live_host_uptime() {
+        let mut runtime = AgentRuntime::new();
+        runtime.tick_scheduler(45_296_000, None);
+        let call = ToolCall::new("clock", "mcp_call_tool",
+            "{\"app\":\"clock\",\"tool\":\"clock.now\",\"args\":\"{}\"}");
+        runtime.tool_registry.execute_tool(&call, &mut runtime.ui_synthesizer).unwrap();
+        let tile = runtime.synthesized_tiles().remove(0);
+        assert_eq!(tile.tile_id, "clock.now");
+        assert_eq!(tile.items[0].title, "12:34:56");
+        runtime.tick_scheduler(45_297_000, None);
+        let refreshed = runtime.execute_tile_action(&tile.actions[0]).unwrap();
+        assert!(refreshed.output_json.contains("45297000"));
+        assert_eq!(runtime.synthesized_tiles()[0].items[0].title, "12:34:57");
+        assert_eq!(runtime.synthesized_tiles().len(), 1);
+    }
+
+    #[test]
+    fn tile_refresh_routes_through_welder_and_replaces_latest_descriptor() {
+        let mut runtime = AgentRuntime::new();
+        let call = ToolCall::new("initial", "mcp_call_tool",
+            "{\"app\":\"tasks\",\"tool\":\"tasks.list\",\"args\":\"{}\"}");
+        runtime.tool_registry.execute_tool(&call, &mut runtime.ui_synthesizer).unwrap();
+        let initial = runtime.synthesized_tiles();
+        assert_eq!(initial.len(), 1);
+        let action = initial[0].actions.iter().find(|a| a.tool_name == "tasks.list").unwrap().clone();
+        let output = runtime.execute_tile_action(&action).unwrap();
+        assert_eq!(output.tool_name, "mcp_call_tool");
+        assert_eq!(runtime.synthesized_tiles().len(), 1);
+        assert_eq!(output.synthesized_view.unwrap().tile.unwrap(), runtime.synthesized_tiles()[0]);
+        let mut forged = action;
+        forged.tool_name = "tasks.delete".into();
+        assert!(matches!(runtime.execute_tile_action(&forged), Err(AiError::PolicyViolation(_))));
+    }
+
     #[test]
     fn runtime_hot_swapping_and_etc_ai_conf_persistence() {
         let mut runtime = AgentRuntime::new();
@@ -451,14 +525,14 @@ mod tests {
         );
         assert!(matches!(direct_attempt, Err(AiError::PolicyViolation(_))));
 
-        // AI Agent invokes MCP tool and synthesizes ViewKind::McpAppView
+        // AI Agent invokes Tasks MCP tool and synthesizes ViewKind::McpAppView with declarative AppTile
         let turn = runtime
             .apply_response(Response::new(
-                "Querying cluster",
+                "Listing scheduled tasks via Tasks app",
                 vec![ToolCall::new(
                     "mcp-1",
                     "mcp_call_tool",
-                    "{\"app\":\"telemetry.mcp\",\"tool\":\"cluster_health\",\"args\":\"{}\"}",
+                    "{\"app\":\"tasks\",\"tool\":\"tasks.list\",\"args\":\"{}\"}",
                 )],
                 "fixture",
                 TokenUsage::new(0, 0),
@@ -470,8 +544,11 @@ mod tests {
             .as_ref()
             .expect("MCP tool call should synthesize a UI view");
         assert_eq!(mcp_view.kind, ViewKind::McpAppView);
-        assert_eq!(mcp_view.source_app.as_deref(), Some("telemetry.mcp"));
-        assert_eq!(mcp_view.title, "Cluster Telemetry");
+        assert_eq!(mcp_view.source_app.as_deref(), Some("tasks"));
+        assert_eq!(mcp_view.title, "Tasks");
+        assert!(mcp_view.tile.is_some());
+        assert_eq!(mcp_view.tile.as_ref().unwrap().tile_id, "tasks.board");
+
         assert!(!mcp_view.metrics.is_empty());
 
         // AI Agent invokes sys_status and synthesizes ViewKind::MetricDashboard
@@ -489,7 +566,7 @@ mod tests {
             .expect("sys_status should synthesize MetricDashboard");
         assert_eq!(sys_view.kind, ViewKind::MetricDashboard);
 
-        // AI Agent schedules a JS script and synthesizes ViewKind::ScriptScheduleList
+        // AI Agent schedules a JS script (routed through TasksApp) and synthesizes ViewKind::ScriptScheduleList
         let sched_turn = runtime
             .apply_response(Response::new(
                 "Scheduling",
@@ -508,6 +585,8 @@ mod tests {
             .expect("script_schedule should synthesize ScriptScheduleList");
         assert_eq!(sched_view.kind, ViewKind::ScriptScheduleList);
         assert_eq!(sched_view.schedules.len(), 1);
+        assert_eq!(sched_view.source_app.as_deref(), Some("tasks"));
+        assert!(sched_view.tile.is_some());
     }
     #[test]
     fn default_local_inference_never_silently_uses_cloud() {
@@ -724,5 +803,85 @@ mod tests {
             rebooted.tool_registry.vfs_read("/var/ticks.txt").as_deref(),
             Some("11")
         );
+    }
+
+    #[test]
+    fn tasks_app_crud_tiles_and_cross_app_isolation() {
+        let mut runtime = AgentRuntime::new();
+        let mut ui = AgentUiSynthesizer::new();
+
+        // 1. Discover apps, tools, SKILLs, and Tiles via mcp_list_tools
+        let list_out = runtime
+            .tool_registry
+            .execute_tool(&ToolCall::new("l1", "mcp_list_tools", "{}"), &mut ui)
+            .expect("mcp_list_tools must succeed");
+        assert!(list_out.output_json.contains(r#""headless_mcp_apps":["clock","tasks"]"#));
+        assert!(list_out.output_json.contains(r#""tasks.list""#));
+        assert!(list_out.output_json.contains(r#""tasks.create""#));
+        assert!(list_out.output_json.contains(r#""tasks.edit""#));
+        assert!(list_out.output_json.contains(r#""tasks.delete""#));
+        assert!(list_out.output_json.contains(r#""/apps/tasks/SKILL.md""#));
+        assert!(list_out.output_json.contains(r#""tasks.board""#));
+
+        // 2. Create a scheduled task through Tasks app via Welder
+        let create_task = runtime
+            .tool_registry
+            .execute_tool(
+                &ToolCall::new(
+                    "t1",
+                    "mcp_call_tool",
+                    r#"{"app":"tasks","tool":"tasks.create","id":"daily-check","path":"/scripts/heartbeat.js","trigger":"every:60s"}"#,
+                ),
+                &mut ui,
+            )
+            .expect("tasks.create must succeed");
+        assert!(create_task.output_json.contains(r#""status":"created""#));
+        assert!(create_task.output_json.contains(r#""id":"daily-check""#));
+        let tile = create_task
+            .synthesized_view
+            .as_ref()
+            .and_then(|v| v.tile.as_ref())
+            .expect("tasks.create must synthesize view with tasks.board AppTile");
+        assert_eq!(tile.tile_id, "tasks.board");
+        assert_eq!(tile.items.len(), 1);
+        assert_eq!(tile.items[0].id, "daily-check");
+        assert_eq!(tile.items[0].badge, "interval:60000");
+
+
+
+        // 3. Edit the scheduled task through Tasks app via Welder
+        let edit_task = runtime
+            .tool_registry
+            .execute_tool(
+                &ToolCall::new(
+                    "t2",
+                    "mcp_call_tool",
+                    r#"{"app":"tasks","tool":"tasks.edit","id":"daily-check","trigger":"cron:*/5 * * * *"}"#,
+                ),
+                &mut ui,
+            )
+            .expect("tasks.edit must succeed");
+        assert!(edit_task.output_json.contains(r#""status":"edited""#));
+        assert!(edit_task.output_json.contains(r#""cron:*/5 * * * *""#));
+
+        assert!(runtime
+            .tool_registry
+            .vfs_read("/etc/schedules.conf")
+            .unwrap()
+            .contains("cron:*/5 * * * *"));
+
+        // 4. Reject any cross-app invocation (another app trying to call Tasks)
+        let cross_app_err = runtime
+            .tool_registry
+            .execute_tool(
+                &ToolCall::new(
+                    "t3",
+                    "mcp_call_tool",
+                    r#"{"caller_app":"other_app","app":"tasks","tool":"tasks.list"}"#,
+                ),
+                &mut ui,
+            )
+            .expect_err("cross-app invocation must be rejected");
+        assert!(matches!(cross_app_err, AiError::PolicyViolation(_)));
     }
 }

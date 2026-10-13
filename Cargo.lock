@@ -2291,6 +2291,7 @@ version = "0.1.0"
 dependencies = [
  "libm",
  "metalos-keyboard",
+ "metalos-mcp",
  "metalos-proto",
  "png",
  "slint",
@@ -2345,6 +2346,7 @@ dependencies = [
 name = "metalos-mcp"
 version = "0.1.0"
 dependencies = [
+ "metalos-js",
  "metalos-proto",
 ]
 
@@ -2364,6 +2366,8 @@ name = "metalos-welder"
 version = "0.1.0"
 dependencies = [
  "metalos-forge",
+ "metalos-js",
+ "metalos-mcp",
  "metalos-proto",
  "serde",
  "serde_json",

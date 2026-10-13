@@ -2,8 +2,9 @@ use std::collections::BTreeMap;
 
 use metalos_mcp::{
     mcp_map, methods, register_builtin_apps, validate_app_manifest, AppCapability, AppManifest,
-    McpError, McpRegistry, McpRequest, McpResponse, McpSandboxError, McpValue, NotesVaultApp,
-    RuntimeCapabilityGuard, SysPulseApp, TaskBoardApp, ERR_METHOD_NOT_FOUND, ERR_RESOURCE_NOT_FOUND,
+    McpCaller, McpError, McpRegistry, McpRequest, McpResponse, McpSandboxError, McpValue,
+    RuntimeCapabilityGuard, TasksApp, ERR_METHOD_NOT_FOUND, ERR_RESOURCE_NOT_FOUND,
+    ERR_SANDBOX_VIOLATION,
 };
 
 #[test]
@@ -67,6 +68,35 @@ capabilities = ExposeMcpPrompts, ShellExecution
             capability: AppCapability::ShellExecution,
         })
     );
+
+    let bad_scheduler_cfg = "\
+app_id = fake_tasks
+name = Fake Tasks
+version = 0.1.0
+capabilities = ExposeMcpTools, ScriptSchedulerAccess
+";
+    let manifest = AppManifest::parse(bad_scheduler_cfg).expect("parse config");
+    assert_eq!(
+        validate_app_manifest(&manifest),
+        Err(McpSandboxError::SchedulerAccessForbidden {
+            app_id: "fake_tasks".to_string(),
+        })
+    );
+
+    let bad_cross_app_cfg = "\
+app_id = orchestrator_hack
+name = Orchestrator Hack
+version = 0.1.0
+capabilities = ExposeMcpTools, CrossAppAccess
+";
+    let manifest = AppManifest::parse(bad_cross_app_cfg).expect("parse config");
+    assert_eq!(
+        validate_app_manifest(&manifest),
+        Err(McpSandboxError::CrossAppAccessForbidden {
+            caller_app_id: "orchestrator_hack".to_string(),
+            target_app_id: "*".to_string(),
+        })
+    );
 }
 
 #[test]
@@ -90,7 +120,7 @@ fn sandbox_rejects_empty_mcp_surface_and_path_traversal() {
         "1.0.0",
         vec![
             AppCapability::ExposeMcpTools,
-            AppCapability::ScopedStorage("/var/notes/../secret".to_string()),
+            AppCapability::ScopedStorage("/var/data/../secret".to_string()),
         ],
     );
     assert!(matches!(
@@ -100,11 +130,12 @@ fn sandbox_rejects_empty_mcp_surface_and_path_traversal() {
 }
 
 #[test]
-fn registry_routes_all_three_apps_and_handles_errors_cleanly() {
+fn registry_routes_tasks_app_skills_tiles_and_enforces_isolation() {
     let mut registry = McpRegistry::new();
     register_builtin_apps(&mut registry).expect("register_builtin_apps");
+    assert_eq!(registry.app_count(), 2);
 
-    // Verify resources/list returns all 4 resources across notes, tasks, syspulse
+    // Verify resources/list returns the 3 Tasks resources (schedules, tiles, skill)
     let req = McpRequest::new(1, methods::RESOURCES_LIST, BTreeMap::new());
     let resp = registry.handle_request(&req);
     assert!(resp.is_ok());
@@ -120,12 +151,23 @@ fn registry_routes_all_three_apps_and_handles_errors_cleanly() {
         .to_vec();
     assert_eq!(resources.len(), 4);
 
+    // Verify skills/list and tiles/list
+    let skills: Vec<_> = registry.list_skills().into_iter().filter(|skill| skill.app_id == "tasks").collect();
+    assert_eq!(skills.len(), 1);
+    assert_eq!(skills[0].app_id, "tasks");
+    assert_eq!(skills[0].path, "/apps/tasks/SKILL.md");
+
+    let tiles: Vec<_> = registry.list_tiles().into_iter().filter(|tile| tile.folder() == Some("tasks")).collect();
+    assert_eq!(tiles.len(), 1);
+    assert_eq!(tiles[0].tile_id, "tasks.board");
+    assert_eq!(tiles[0].folder(), Some("tasks"));
+
     // Unknown tool returns ERR_METHOD_NOT_FOUND
     let bad_tool_req = McpRequest::new(
         2,
         methods::TOOLS_CALL,
         mcp_map(&[
-            ("name", McpValue::Text("notes.nonexistent".to_string())),
+            ("name", McpValue::Text("tasks.nonexistent".to_string())),
             ("arguments", McpValue::Map(BTreeMap::new())),
         ]),
     );
@@ -139,7 +181,7 @@ fn registry_routes_all_three_apps_and_handles_errors_cleanly() {
     let bad_res_req = McpRequest::new(
         3,
         methods::RESOURCES_READ,
-        mcp_map(&[("uri", McpValue::Text("mcp://notes/unknown".to_string()))]),
+        mcp_map(&[("uri", McpValue::Text("mcp://tasks/unknown".to_string()))]),
     );
     let bad_res_resp = registry.handle_request(&bad_res_req);
     assert_eq!(
@@ -147,27 +189,59 @@ fn registry_routes_all_three_apps_and_handles_errors_cleanly() {
         Some(ERR_RESOURCE_NOT_FOUND)
     );
 
-    // Verify RuntimeCapabilityGuard is accessible for all 3 apps
-    for app_id in ["notes", "tasks", "syspulse"] {
-        let guard: &RuntimeCapabilityGuard = registry.guard_for(app_id).expect("guard present");
-        assert!(guard
-            .enforce_capability(&AppCapability::CreateWindow)
-            .is_err());
-        assert!(guard
-            .enforce_capability(&AppCapability::DirectFramebuffer)
-            .is_err());
-        assert!(guard
-            .enforce_capability(&AppCapability::RawInputCapture)
-            .is_err());
-        assert!(guard
-            .enforce_capability(&AppCapability::ShellExecution)
-            .is_err());
-    }
+    // Verify RuntimeCapabilityGuard for Tasks app
+    let guard: &RuntimeCapabilityGuard = registry.guard_for("tasks").expect("guard present");
+    assert!(guard
+        .enforce_capability(&AppCapability::ScriptSchedulerAccess)
+        .is_ok());
+    assert!(guard
+        .enforce_capability(&AppCapability::CreateWindow)
+        .is_err());
+    assert!(guard
+        .enforce_capability(&AppCapability::DirectFramebuffer)
+        .is_err());
+    assert!(guard
+        .enforce_capability(&AppCapability::RawInputCapture)
+        .is_err());
+    assert!(guard
+        .enforce_capability(&AppCapability::ShellExecution)
+        .is_err());
+    assert!(guard
+        .enforce_capability(&AppCapability::CrossAppAccess)
+        .is_err());
 
-    // Verify direct instantiation of NotesVaultApp, TaskBoardApp, SysPulseApp
-    let _n = NotesVaultApp::default();
-    let _t = TaskBoardApp::default();
-    let _s = SysPulseApp::default();
+    // Verify that another app cannot access Tasks resources or tools
+    let cross_res = registry.read_resource_as(
+        &McpCaller::App("other_app".to_string()),
+        "mcp://tasks/schedules",
+    );
+    assert_eq!(
+        cross_res.expect_err("cross-app resource read must fail").code,
+        ERR_SANDBOX_VIOLATION
+    );
+
+    let _t = TasksApp::default();
     let _err = McpError::internal_error("check");
     let _ = McpResponse::from_json(&bad_res_resp.to_json()).unwrap();
+}
+
+#[test]
+fn javascript_entrypoint_roundtrips_and_stays_in_its_package() {
+    let base = "name = Clock\nversion = 1.0.0\ncapabilities = ExposeMcpTools\n";
+    let manifest = AppManifest::parse_in_folder("clock", &format!("{base}entrypoint = /apps/clock/main.js\n")).unwrap();
+    assert_eq!(manifest.entrypoint.as_deref(), Some("/apps/clock/main.js"));
+    validate_app_manifest(&manifest).unwrap();
+    assert_eq!(AppManifest::parse(&manifest.to_mcp_config()).unwrap(), manifest);
+    for path in ["/apps/other/main.js", "/apps/clock/../other/main.js", "/apps/clock//main.js", "/apps/clock/./main.js", "/var/clock/main.js", "/apps/clock/main.txt"] {
+        let bad = AppManifest::parse_in_folder("clock", &format!("{base}entrypoint = {path}\n")).unwrap();
+        assert!(validate_app_manifest(&bad).is_err(), "accepted {path}");
+    }
+    assert!(AppManifest::parse_in_folder("clock", &format!("{base}entrypoint = /apps/clock/main.js\nentrypoint = /apps/clock/other.js\n")).is_err());
+}
+
+#[test]
+fn bundled_tasks_entrypoint_exists_and_parses() {
+    let manifest = AppManifest::parse(metalos_mcp::TASKS_MANIFEST_MCP).unwrap();
+    assert_eq!(manifest.entrypoint.as_deref(), Some(metalos_mcp::TASKS_MAIN_PATH));
+    metalos_js::parse_program(metalos_mcp::TASKS_MAIN_JS).unwrap();
 }

@@ -116,6 +116,28 @@ pub mod tests {
         assert_eq!(inode.kind, InodeKind::File);
     }
 
+    #[test]
+    fn tasks_package_contains_its_declared_entrypoint_and_preserves_updates() {
+        let vfs = Vfs::new();
+        for (path, expected) in [
+            (metalos_mcp::TASKS_MANIFEST_PATH, metalos_mcp::TASKS_MANIFEST_MCP),
+            (metalos_mcp::TASKS_SKILL_PATH, metalos_mcp::TASKS_SKILL_MD),
+            (metalos_mcp::TASKS_MAIN_PATH, metalos_mcp::TASKS_MAIN_JS),
+        ] {
+            let inode = vfs.lookup(path).unwrap();
+            assert_eq!(inode.kind, InodeKind::File);
+            let mut bytes = vec![0; expected.len()];
+            assert_eq!(vfs.root_fs.read(inode.ino, 0, &mut bytes).unwrap(), bytes.len());
+            assert_eq!(bytes, expected.as_bytes());
+        }
+        let inode = vfs.lookup(metalos_mcp::TASKS_MAIN_PATH).unwrap();
+        vfs.root_fs.write(inode.ino, 0, b"// updated").unwrap();
+        let rebooted = Vfs::with_root(vfs.root_fs.clone(), "RamFS");
+        let mut bytes = [0; 10];
+        rebooted.root_fs.read(inode.ino, 0, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"// updated");
+    }
+
     // ── CobaltFS tests ────────────────────────────────────────────────────────
 
     use alloc::sync::Arc;

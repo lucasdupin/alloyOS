@@ -175,10 +175,12 @@ impl ModelCore {
                             let mut sum = 0.0;
                             for start in (0..input.len()).step_by(2048) {
                                 sum += tensor.dot_range(row, input, start, (start + 2048).min(input.len()));
-                                yield ();
                             }
                             result[item][row] = sum;
                         }
+                        // The OS timer preempts computation independently of the UI.
+                        // Keep a progress boundary per row, not per prompt/chunk pair.
+                        yield ();
                     }
                     result
                 }}
@@ -270,9 +272,9 @@ impl ModelCore {
                         for start in (0..input.len()).step_by(2048) {
                             let end = (start + 2048).min(input.len());
                             sum += tensor.dot_range(row, input, start, end);
-                            yield ();
                         }
                         result.push(sum);
+                        yield ();
                     }
                     result
                 }};

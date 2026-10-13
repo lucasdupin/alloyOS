@@ -1,127 +1,277 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::format;
+use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
+use core::cell::RefCell;
+
+use metalos_js::{parse_program, ScheduleTrigger, ScriptCapabilities, ScriptScheduler};
 
 use crate::protocol::{
-    mcp_map, McpError, McpParamSpec, McpPrompt, McpResource, McpResourceContent, McpTool, McpValue,
+    mcp_map, AppSkill, AppTile, McpError, McpParamSpec, McpPrompt, McpResource,
+    McpResourceContent, McpTool, McpValue, TileAction, TileItem,
 };
 use crate::registry::{McpApp, McpRegistry};
-use crate::sandbox::{AppCapability, AppManifest, McpSandboxError};
+use crate::sandbox::{
+    AppCapability, AppManifest, McpSandboxError, RuntimeCapabilityGuard, TASKS_APP_ID,
+};
 
-/// `/apps/notes.mcp` manifest definition for `NotesVaultApp`.
-pub const NOTES_MANIFEST_MCP: &str = "\
-# metalOS Headless MCP App Manifest (/apps/notes.mcp)
-app_id = notes
-name = Notes Vault
-version = 1.0.0
-capabilities = ExposeMcpTools, ExposeMcpResources, ExposeMcpPrompts, ScopedStorage(/var/notes)
-";
+/// `/apps/tasks/tasks.mcp` manifest definition for `TasksApp`.
+pub const TASKS_MANIFEST_MCP: &str = include_str!("../../../apps/tasks/tasks.mcp");
+pub const TASKS_MAIN_JS: &str = include_str!("../../../apps/tasks/main.js");
+pub const TASKS_MAIN_PATH: &str = "/apps/tasks/main.js";
 
-/// `/apps/tasks.mcp` manifest definition for `TaskBoardApp`.
-pub const TASKS_MANIFEST_MCP: &str = "\
-# metalOS Headless MCP App Manifest (/apps/tasks.mcp)
-app_id = tasks
-name = Task Board
-version = 1.0.0
-capabilities = ExposeMcpTools, ExposeMcpResources, ExposeMcpPrompts, ScopedStorage(/var/tasks)
-";
+/// `/apps/tasks/SKILL.md` skill text file for `TasksApp`.
+pub const TASKS_SKILL_MD: &str = include_str!("../../../apps/tasks/SKILL.md");
 
-/// `/apps/syspulse.mcp` manifest definition for `SysPulseApp`.
-pub const SYSPULSE_MANIFEST_MCP: &str = "\
-# metalOS Headless MCP App Manifest (/apps/syspulse.mcp)
-app_id = syspulse
-name = SysPulse Telemetry
-version = 1.0.0
-capabilities = ExposeMcpTools, ExposeMcpResources, ExposeMcpPrompts, ScopedStorage(/var/syspulse)
-";
+/// Canonical VFS path for the `Tasks` app manifest.
+pub const TASKS_MANIFEST_PATH: &str = "/apps/tasks/tasks.mcp";
 
-/// Register all 3 built-in headless developer MCP apps into an `McpRegistry`.
+/// Canonical VFS path for the `Tasks` app skill text file.
+pub const TASKS_SKILL_PATH: &str = "/apps/tasks/SKILL.md";
+
+/// Register the canonical `Tasks` app into an `McpRegistry` with a new `ScriptScheduler`.
 pub fn register_builtin_apps(registry: &mut McpRegistry) -> Result<(), McpSandboxError> {
-    registry.register_app(Box::new(NotesVaultApp::new()))?;
-    registry.register_app(Box::new(TaskBoardApp::new()))?;
-    registry.register_app(Box::new(SysPulseApp::new()))?;
+    registry.register_app(Box::new(TasksApp::new()))?;
+    registry.register_app(Box::new(ClockApp::new()))?;
     Ok(())
 }
 
-// ============================================================================
-// 1. NotesVaultApp (app_id: "notes")
-// ============================================================================
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NoteEntry {
-    pub id: u64,
-    pub title: String,
-    pub body: String,
-    pub tags: Vec<String>,
+/// Register the canonical `Tasks` app into an `McpRegistry` bound to a shared `ScriptScheduler`.
+pub fn register_builtin_apps_with_scheduler(
+    registry: &mut McpRegistry,
+    scheduler: Rc<RefCell<ScriptScheduler>>,
+) -> Result<(), McpSandboxError> {
+    registry.register_app(Box::new(TasksApp::with_scheduler(scheduler)))?;
+    registry.register_app(Box::new(ClockApp::new()))?;
+    Ok(())
 }
 
-impl NoteEntry {
+/// Representation of a scheduled task managed by `TasksApp` and backed by `ScriptScheduler`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScheduledTask {
+    pub id: String,
+    pub title: String,
+    pub script_path: String,
+    pub trigger: String,
+    pub enabled: bool,
+    pub status: String,
+    pub source: Option<String>,
+}
+
+impl ScheduledTask {
     pub fn to_mcp_value(&self) -> McpValue {
         McpValue::Map(mcp_map(&[
-            ("id", McpValue::Int(self.id as i64)),
+            ("id", McpValue::Text(self.id.clone())),
             ("title", McpValue::Text(self.title.clone())),
-            ("body", McpValue::Text(self.body.clone())),
+            ("script_path", McpValue::Text(self.script_path.clone())),
+            ("trigger", McpValue::Text(self.trigger.clone())),
+            ("enabled", McpValue::Bool(self.enabled)),
+            ("status", McpValue::Text(self.status.clone())),
             (
-                "tags",
-                McpValue::Array(
-                    self.tags
-                        .iter()
-                        .map(|t| McpValue::Text(t.clone()))
-                        .collect(),
-                ),
+                "source",
+                match &self.source {
+                    Some(src) => McpValue::Text(src.clone()),
+                    None => McpValue::Null,
+                },
             ),
         ]))
     }
+
+    pub fn to_tile_item(&self) -> TileItem {
+        TileItem::new(
+            self.id.clone(),
+            self.title.clone(),
+            self.script_path.clone(),
+            self.trigger.clone(),
+            self.status.clone(),
+        )
+    }
 }
 
-/// Headless note-taking and knowledge base MCP application (`app_id: "notes"`).
+#[derive(Debug, Clone)]
+struct TaskMetadata {
+    title: String,
+    enabled: bool,
+    paused_entry: Option<(String, ScheduleTrigger)>,
+}
+
+/// Canonical `Tasks` application (`app_id: "tasks"`).
 ///
-/// Exposes zero UI of its own; the AI agent queries and mutates notes via MCP tools
-/// (`notes.create`, `notes.search`, `notes.delete`) and resources (`mcp://notes/all`,
-/// `mcp://notes/recent`) and renders visual cards on its exclusive canvas.
-pub struct NotesVaultApp {
+/// `TasksApp` is the **only** application in metalOS permitted to hold
+/// `AppCapability::ScriptSchedulerAccess` and manage `ScriptScheduler` (`/etc/schedules.conf`
+/// and `/scripts/*.js`). Welder routes all scheduled-task listing, creation, editing, and
+/// deletion through `TasksApp`.
+///
+/// Exposes:
+/// - **MCP Tools**: `tasks.list`, `tasks.create`, `tasks.edit`, `tasks.delete`
+/// - **MCP Resources**: `mcp://tasks/schedules`, `mcp://tasks/tiles`, `mcp://tasks/skill`
+/// - **MCP Prompts**: `tasks.manage`
+/// - **SKILL**: `/apps/tasks/SKILL.md`
+/// - **Tiles**: `tasks.board` (embeddable in chat stream or pinnable to the Dashboard)
+pub struct TasksApp {
     manifest: AppManifest,
-    notes: Vec<NoteEntry>,
-    next_id: u64,
+    guard: RuntimeCapabilityGuard,
+    scheduler: Rc<RefCell<ScriptScheduler>>,
+    metadata: BTreeMap<String, TaskMetadata>,
+    next_seq: u64,
 }
 
-impl Default for NotesVaultApp {
+impl Default for TasksApp {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl NotesVaultApp {
+impl TasksApp {
     pub fn new() -> Self {
-        let manifest = AppManifest::parse(NOTES_MANIFEST_MCP).unwrap_or_else(|_| {
-            AppManifest::new(
-                "notes",
-                "Notes Vault",
-                "1.0.0",
-                vec![
-                    AppCapability::ExposeMcpTools,
-                    AppCapability::ExposeMcpResources,
-                    AppCapability::ExposeMcpPrompts,
-                    AppCapability::ScopedStorage("/var/notes".to_string()),
-                ],
-            )
-        });
+        Self::with_scheduler(Rc::new(RefCell::new(ScriptScheduler::new())))
+    }
+
+    pub fn with_scheduler(scheduler: Rc<RefCell<ScriptScheduler>>) -> Self {
+        let manifest = AppManifest::parse(TASKS_MANIFEST_MCP)
+            .expect("valid built-in Tasks manifest");
+        let guard = RuntimeCapabilityGuard::new(manifest.clone())
+            .expect("TasksApp manifest must satisfy sandbox rules");
         Self {
             manifest,
-            notes: Vec::new(),
-            next_id: 1,
+            guard,
+            scheduler,
+            metadata: BTreeMap::new(),
+            next_seq: 1,
         }
     }
 
-    pub fn notes(&self) -> &[NoteEntry] {
-        &self.notes
+    /// Returns a reference to the shared `ScriptScheduler` exclusively managed by `TasksApp`.
+    pub fn scheduler(&self) -> &Rc<RefCell<ScriptScheduler>> {
+        &self.scheduler
+    }
+
+    fn default_title_for(id: &str, script_path: &str) -> String {
+        let stem = script_path
+            .rsplit('/')
+            .next()
+            .unwrap_or(id)
+            .trim_end_matches(".js")
+            .replace('_', " ")
+            .replace('-', " ");
+        if stem.is_empty() {
+            id.to_string()
+        } else {
+            stem
+        }
+    }
+
+    fn normalize_script_path(raw: &str) -> String {
+        let trimmed = raw.trim();
+        if trimmed.starts_with('/') {
+            ScriptCapabilities::normalize_path(trimmed)
+        } else {
+            ScriptCapabilities::normalize_path(&format!("/scripts/{}", trimmed))
+        }
+    }
+
+    /// Collects all scheduled tasks from the live `ScriptScheduler` plus any paused tasks.
+    pub fn scheduled_tasks(&self, include_disabled: bool) -> Vec<ScheduledTask> {
+        let sched = self.scheduler.borrow();
+        let mut out = Vec::new();
+        let mut seen_ids = Vec::new();
+
+        for entry in sched.schedules() {
+            seen_ids.push(entry.id.clone());
+            let title = self
+                .metadata
+                .get(&entry.id)
+                .map(|m| m.title.clone())
+                .unwrap_or_else(|| Self::default_title_for(&entry.id, &entry.script_path));
+            let status = if entry.once_fired {
+                "completed".to_string()
+            } else {
+                "active".to_string()
+            };
+            let source = sched.store().get_script(&entry.script_path).map(String::from);
+            out.push(ScheduledTask {
+                id: entry.id.clone(),
+                title,
+                script_path: entry.script_path.clone(),
+                trigger: entry.trigger.serialize(),
+                enabled: true,
+                status,
+                source,
+            });
+        }
+
+        if include_disabled {
+            for (id, meta) in &self.metadata {
+                if !meta.enabled && !seen_ids.contains(id) {
+                    if let Some((ref script_path, ref trigger)) = meta.paused_entry {
+                        let source = sched.store().get_script(script_path).map(String::from);
+                        out.push(ScheduledTask {
+                            id: id.clone(),
+                            title: meta.title.clone(),
+                            script_path: script_path.clone(),
+                            trigger: trigger.serialize(),
+                            enabled: false,
+                            status: "paused".to_string(),
+                            source,
+                        });
+                    }
+                }
+            }
+        }
+
+        out
+    }
+
+    /// Builds the live declarative `tasks.board` `AppTile` for chat-stream embedding or Dashboard pinning.
+    pub fn build_board_tile(&self) -> AppTile {
+        let tasks = self.scheduled_tasks(true);
+        let active_count = tasks.iter().filter(|t| t.enabled).count();
+        let paused_count = tasks.len().saturating_sub(active_count);
+        let subtitle = if paused_count > 0 {
+            format!("{} active · {} paused", active_count, paused_count)
+        } else {
+            format!("{} active scheduled task(s)", active_count)
+        };
+
+        let items = tasks.iter().map(|t| t.to_tile_item()).collect();
+        let actions = vec![
+            TileAction::new(
+                "create_task",
+                "New Task",
+                "tasks.create",
+                mcp_map(&[("trigger", McpValue::Text("every:60s".to_string()))]),
+            ),
+            TileAction::new("edit_task", "Edit Task", "tasks.edit", BTreeMap::new()),
+            TileAction::new("refresh_tasks", "Refresh", "tasks.list", BTreeMap::new()),
+        ];
+
+        AppTile {
+            tile_id: "tasks.board".to_string(),
+            title: "Tasks".to_string(),
+            subtitle,
+            refresh_resource_uri: Some("mcp://tasks/schedules".to_string()),
+            items,
+            actions,
+        }
+    }
+
+    fn enforce_scheduler_access(&self) -> Result<(), McpError> {
+        self.guard
+            .enforce_capability(&AppCapability::ScriptSchedulerAccess)
+            .map_err(|e| e.to_mcp_error())?;
+        self.guard
+            .enforce_capability(&AppCapability::ScopedStorage(
+                "/etc/schedules.conf".to_string(),
+            ))
+            .map_err(|e| e.to_mcp_error())?;
+        Ok(())
     }
 }
 
-impl McpApp for NotesVaultApp {
+impl McpApp for TasksApp {
     fn manifest(&self) -> &AppManifest {
         &self.manifest
     }
@@ -129,37 +279,72 @@ impl McpApp for NotesVaultApp {
     fn tools(&self) -> Vec<McpTool> {
         vec![
             McpTool::new(
-                "notes.create",
-                "Create a new note in the headless Notes Vault knowledge base",
+                "tasks.list",
+                "List all scheduled tasks in ScriptScheduler (/etc/schedules.conf and /scripts/*.js)",
+                vec![McpParamSpec::new(
+                    "include_disabled",
+                    "boolean",
+                    false,
+                    "Whether to include paused/disabled scheduled tasks (default true)",
+                )],
+            ),
+            McpTool::new(
+                "tasks.create",
+                "Create a new scheduled task in ScriptScheduler",
                 vec![
-                    McpParamSpec::new("title", "string", true, "Title of the note"),
-                    McpParamSpec::new("body", "string", true, "Markdown body of the note"),
+                    McpParamSpec::new("title", "string", false, "Human-readable task title"),
                     McpParamSpec::new(
-                        "tag",
+                        "script_path",
+                        "string",
+                        true,
+                        "Path to the JavaScript file under /scripts/*.js",
+                    ),
+                    McpParamSpec::new(
+                        "trigger",
+                        "string",
+                        true,
+                        "Schedule trigger (e.g. 'every:60s', 'cron:*/5 * * * *', 'once:10s', 'boot', 'fs:create:/inbox/*')",
+                    ),
+                    McpParamSpec::new("id", "string", false, "Optional custom schedule ID"),
+                    McpParamSpec::new(
+                        "source",
                         "string",
                         false,
-                        "Optional primary tag for categorizing the note",
+                        "Optional JavaScript ES module source code to register for script_path",
+                    ),
+                    McpParamSpec::new(
+                        "enabled",
+                        "boolean",
+                        false,
+                        "Whether the task is immediately active in ScriptScheduler (default true)",
                     ),
                 ],
             ),
             McpTool::new(
-                "notes.search",
-                "Search notes by substring match across title, body, and tags",
-                vec![McpParamSpec::new(
-                    "query",
-                    "string",
-                    true,
-                    "Case-insensitive search query",
-                )],
+                "tasks.edit",
+                "Edit an existing scheduled task's title, trigger, script_path, JS source, or enabled state",
+                vec![
+                    McpParamSpec::new("id", "string", true, "Scheduled task ID to edit"),
+                    McpParamSpec::new("title", "string", false, "Updated human-readable title"),
+                    McpParamSpec::new("trigger", "string", false, "Updated schedule trigger"),
+                    McpParamSpec::new("script_path", "string", false, "Updated /scripts/*.js path"),
+                    McpParamSpec::new("source", "string", false, "Updated JavaScript source code"),
+                    McpParamSpec::new(
+                        "enabled",
+                        "boolean",
+                        false,
+                        "Pause (false) or resume (true) the scheduled task",
+                    ),
+                ],
             ),
             McpTool::new(
-                "notes.delete",
-                "Delete a note by its numeric ID",
+                "tasks.delete",
+                "Delete an existing scheduled task from ScriptScheduler by ID",
                 vec![McpParamSpec::new(
                     "id",
-                    "integer",
+                    "string",
                     true,
-                    "Unique note identifier to delete",
+                    "Scheduled task ID to delete",
                 )],
             ),
         ]
@@ -168,26 +353,46 @@ impl McpApp for NotesVaultApp {
     fn resources(&self) -> Vec<McpResource> {
         vec![
             McpResource::new(
-                "mcp://notes/all",
-                "All Notes",
+                "mcp://tasks/schedules",
+                "Scheduled Tasks",
                 "application/json",
-                "Complete JSON array of all notes stored in Notes Vault",
+                "Live snapshot of all scheduled tasks in ScriptScheduler and /etc/schedules.conf",
             ),
             McpResource::new(
-                "mcp://notes/recent",
-                "Recent Notes",
+                "mcp://tasks/tiles",
+                "Tasks Declarative Tiles",
                 "application/json",
-                "Most recently created notes in Notes Vault",
+                "Renderer-agnostic Tile descriptors for chat stream embedding and Dashboard pinning",
+            ),
+            McpResource::new(
+                "mcp://tasks/skill",
+                "Tasks App SKILL.md",
+                "text/markdown",
+                "Task instructions and MCP/Tile usage guide (/apps/tasks/SKILL.md)",
             ),
         ]
     }
 
     fn prompts(&self) -> Vec<McpPrompt> {
         vec![McpPrompt::new(
-            "notes.summarize",
-            "Generate an agent synthesis prompt over stored notes for a topic",
-            vec!["topic".to_string()],
+            "tasks.manage",
+            "Guide Welder to list, create, or edit scheduled tasks in ScriptScheduler",
+            vec!["goal".to_string()],
         )]
+    }
+
+    fn skills(&self) -> Vec<AppSkill> {
+        vec![AppSkill::new(
+            TASKS_APP_ID,
+            "Tasks",
+            TASKS_SKILL_PATH,
+            "List, create, edit, and delete scheduled tasks backed by metalOS ScriptScheduler, and present interactive Tasks Tiles in the chat stream or on the Dashboard.",
+            TASKS_SKILL_MD,
+        )]
+    }
+
+    fn tiles(&self) -> Vec<AppTile> {
+        vec![self.build_board_tile()]
     }
 
     fn call_tool(
@@ -195,357 +400,330 @@ impl McpApp for NotesVaultApp {
         tool_name: &str,
         args: &BTreeMap<String, McpValue>,
     ) -> Result<McpValue, McpError> {
-        let short = tool_name.strip_prefix("notes.").unwrap_or(tool_name);
+        self.enforce_scheduler_access()?;
+        let short = tool_name.strip_prefix("tasks.").unwrap_or(tool_name);
+
         match short {
+            "list" => {
+                let include_disabled = args
+                    .get("include_disabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                let tasks = self.scheduled_tasks(include_disabled);
+                let items: Vec<McpValue> = tasks.iter().map(|t| t.to_mcp_value()).collect();
+                let schedules_conf = self.scheduler.borrow().serialize_schedules_conf();
+                let tile = self.build_board_tile();
+
+                Ok(McpValue::Map(mcp_map(&[
+                    ("status", McpValue::Text("ok".to_string())),
+                    ("title", McpValue::Text("Scheduled Tasks".to_string())),
+                    (
+                        "summary",
+                        McpValue::Text(format!("{} scheduled task(s)", items.len())),
+                    ),
+                    ("count", McpValue::Int(items.len() as i64)),
+                    ("tasks", McpValue::Array(items)),
+                    ("schedules_conf", McpValue::Text(schedules_conf)),
+                    ("tile", tile.to_mcp_value()),
+                ])))
+            }
             "create" => {
+                let raw_path = args
+                    .get("script_path")
+                    .or_else(|| args.get("path"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        McpError::invalid_params("missing required string 'script_path'")
+                    })?;
+                let script_path = Self::normalize_script_path(raw_path);
+                self.guard
+                    .enforce_capability(&AppCapability::ScopedStorage(script_path.clone()))
+                    .map_err(|e| e.to_mcp_error())?;
+
+                let trigger_str = args
+                    .get("trigger")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| McpError::invalid_params("missing required string 'trigger'"))?;
+                let parsed_trigger = ScheduleTrigger::deserialize(trigger_str).map_err(|e| {
+                    McpError::invalid_params(format!("invalid trigger '{}': {}", trigger_str, e))
+                })?;
+
+                let source_opt = args
+                    .get("source")
+                    .or_else(|| args.get("code"))
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+
+                if let Some(ref src) = source_opt {
+                    parse_program(src).map_err(|e| {
+                        McpError::invalid_params(format!(
+                            "JavaScript syntax error in '{}': {}",
+                            script_path, e
+                        ))
+                    })?;
+                }
+
+                let id = match args.get("id").and_then(|v| v.as_str()) {
+                    Some(custom_id) if !custom_id.trim().is_empty() => {
+                        custom_id.trim().to_string()
+                    }
+                    _ => {
+                        let seq = self.next_seq;
+                        self.next_seq = self.next_seq.saturating_add(1);
+                        let stem = script_path
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or("job")
+                            .trim_end_matches(".js");
+                        format!("sched-{}-{}", seq, stem)
+                    }
+                };
+
                 let title = args
                     .get("title")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| McpError::invalid_params("missing required string 'title'"))?;
-                let body = args
-                    .get("body")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| McpError::invalid_params("missing required string 'body'"))?;
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_else(|| Self::default_title_for(&id, &script_path));
 
-                let mut tags = Vec::new();
-                if let Some(tag) = args.get("tag").and_then(|v| v.as_str()) {
-                    if !tag.is_empty() {
-                        tags.push(tag.to_string());
+                let enabled = args
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+
+                {
+                    let mut sched = self.scheduler.borrow_mut();
+                    if let Some(ref src) = source_opt {
+                        sched.register_script_source(&script_path, src);
+                    }
+                    if enabled {
+                        sched.schedule_script(&id, &script_path, parsed_trigger.clone());
+                    } else {
+                        sched.unregister_script(&id);
                     }
                 }
-                if let Some(arr) = args.get("tags").and_then(|v| v.as_array()) {
-                    for item in arr {
-                        if let Some(t) = item.as_str() {
-                            tags.push(t.to_string());
-                        }
-                    }
-                }
 
-                let id = self.next_id;
-                self.next_id += 1;
-                let entry = NoteEntry {
-                    id,
-                    title: title.to_string(),
-                    body: body.to_string(),
-                    tags,
+                self.metadata.insert(
+                    id.clone(),
+                    TaskMetadata {
+                        title: title.clone(),
+                        enabled,
+                        paused_entry: if enabled {
+                            None
+                        } else {
+                            Some((script_path.clone(), parsed_trigger.clone()))
+                        },
+                    },
+                );
+
+                let stored_source = self
+                    .scheduler
+                    .borrow()
+                    .store()
+                    .get_script(&script_path)
+                    .map(String::from);
+                let task = ScheduledTask {
+                    id: id.clone(),
+                    title: title.clone(),
+                    script_path: script_path.clone(),
+                    trigger: parsed_trigger.serialize(),
+                    enabled,
+                    status: if enabled {
+                        "active".to_string()
+                    } else {
+                        "paused".to_string()
+                    },
+                    source: stored_source,
                 };
-                let value = entry.to_mcp_value();
-                self.notes.push(entry);
+                let schedules_conf = self.scheduler.borrow().serialize_schedules_conf();
+                let tile = self.build_board_tile();
 
                 Ok(McpValue::Map(mcp_map(&[
                     ("status", McpValue::Text("created".to_string())),
-                    ("id", McpValue::Int(id as i64)),
-                    ("note", value),
+                    ("id", McpValue::Text(id)),
+                    ("title", McpValue::Text(title)),
+                    (
+                        "summary",
+                        McpValue::Text(format!(
+                            "Scheduled {} ({})",
+                            script_path,
+                            parsed_trigger.serialize()
+                        )),
+                    ),
+                    ("task", task.to_mcp_value()),
+                    ("schedules_conf", McpValue::Text(schedules_conf)),
+                    ("tile", tile.to_mcp_value()),
                 ])))
             }
-            "search" => {
-                let query = args
-                    .get("query")
+            "edit" => {
+                let id = args
+                    .get("id")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| McpError::invalid_params("missing required string 'query'"))?;
-                let q_lower = query.to_ascii_lowercase();
+                    .ok_or_else(|| McpError::invalid_params("missing required string 'id'"))?
+                    .trim()
+                    .to_string();
 
-                let matches: Vec<McpValue> = self
-                    .notes
+                // Locate current task in active ScriptScheduler or paused metadata
+                let existing_active = self
+                    .scheduler
+                    .borrow()
+                    .schedules()
                     .iter()
-                    .filter(|n| {
-                        n.title.to_ascii_lowercase().contains(&q_lower)
-                            || n.body.to_ascii_lowercase().contains(&q_lower)
-                            || n.tags
-                                .iter()
-                                .any(|t| t.to_ascii_lowercase().contains(&q_lower))
-                    })
-                    .map(|n| n.to_mcp_value())
-                    .collect();
+                    .find(|s| s.id == id)
+                    .cloned();
+                let existing_meta = self.metadata.get(&id).cloned();
 
-                let count = matches.len() as i64;
+                let (mut script_path, mut parsed_trigger, mut enabled) =
+                    if let Some(active) = existing_active {
+                        (active.script_path, active.trigger, true)
+                    } else if let Some(ref meta) = existing_meta {
+                        if let Some((ref p, ref t)) = meta.paused_entry {
+                            (p.clone(), t.clone(), meta.enabled)
+                        } else {
+                            return Err(McpError::invalid_params(format!(
+                                "scheduled task '{}' not found",
+                                id
+                            )));
+                        }
+                    } else {
+                        return Err(McpError::invalid_params(format!(
+                            "scheduled task '{}' not found",
+                            id
+                        )));
+                    };
+
+                if let Some(new_path) = args
+                    .get("script_path")
+                    .or_else(|| args.get("path"))
+                    .and_then(|v| v.as_str())
+                {
+                    let norm = Self::normalize_script_path(new_path);
+                    self.guard
+                        .enforce_capability(&AppCapability::ScopedStorage(norm.clone()))
+                        .map_err(|e| e.to_mcp_error())?;
+                    script_path = norm;
+                }
+
+                if let Some(new_trigger) = args.get("trigger").and_then(|v| v.as_str()) {
+                    parsed_trigger = ScheduleTrigger::deserialize(new_trigger).map_err(|e| {
+                        McpError::invalid_params(format!(
+                            "invalid trigger '{}': {}",
+                            new_trigger, e
+                        ))
+                    })?;
+                }
+
+                if let Some(new_enabled) = args.get("enabled").and_then(|v| v.as_bool()) {
+                    enabled = new_enabled;
+                }
+
+                let source_opt = args
+                    .get("source")
+                    .or_else(|| args.get("code"))
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+
+                if let Some(ref src) = source_opt {
+                    parse_program(src).map_err(|e| {
+                        McpError::invalid_params(format!(
+                            "JavaScript syntax error in '{}': {}",
+                            script_path, e
+                        ))
+                    })?;
+                }
+
+                let title = args
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| s.trim().to_string())
+                    .or_else(|| existing_meta.map(|m| m.title))
+                    .unwrap_or_else(|| Self::default_title_for(&id, &script_path));
+
+                {
+                    let mut sched = self.scheduler.borrow_mut();
+                    if let Some(ref src) = source_opt {
+                        sched.register_script_source(&script_path, src);
+                    }
+                    if enabled {
+                        sched.schedule_script(&id, &script_path, parsed_trigger.clone());
+                    } else {
+                        sched.unregister_script(&id);
+                    }
+                }
+
+                self.metadata.insert(
+                    id.clone(),
+                    TaskMetadata {
+                        title: title.clone(),
+                        enabled,
+                        paused_entry: if enabled {
+                            None
+                        } else {
+                            Some((script_path.clone(), parsed_trigger.clone()))
+                        },
+                    },
+                );
+
+                let stored_source = self
+                    .scheduler
+                    .borrow()
+                    .store()
+                    .get_script(&script_path)
+                    .map(String::from);
+                let task = ScheduledTask {
+                    id: id.clone(),
+                    title: title.clone(),
+                    script_path: script_path.clone(),
+                    trigger: parsed_trigger.serialize(),
+                    enabled,
+                    status: if enabled {
+                        "active".to_string()
+                    } else {
+                        "paused".to_string()
+                    },
+                    source: stored_source,
+                };
+                let schedules_conf = self.scheduler.borrow().serialize_schedules_conf();
+                let tile = self.build_board_tile();
+
                 Ok(McpValue::Map(mcp_map(&[
-                    ("count", McpValue::Int(count)),
-                    ("matches", McpValue::Array(matches)),
+                    ("status", McpValue::Text("edited".to_string())),
+                    ("id", McpValue::Text(id)),
+                    ("title", McpValue::Text(title)),
+                    (
+                        "summary",
+                        McpValue::Text(format!(
+                            "Updated {} ({})",
+                            script_path,
+                            parsed_trigger.serialize()
+                        )),
+                    ),
+                    ("task", task.to_mcp_value()),
+                    ("schedules_conf", McpValue::Text(schedules_conf)),
+                    ("tile", tile.to_mcp_value()),
                 ])))
             }
             "delete" => {
                 let id = args
                     .get("id")
-                    .and_then(|v| v.as_i64())
-                    .and_then(|v| u64::try_from(v).ok())
-                    .ok_or_else(|| McpError::invalid_params("missing required integer 'id'"))?;
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| McpError::invalid_params("missing required string 'id'"))?
+                    .trim()
+                    .to_string();
 
-                let before = self.notes.len();
-                self.notes.retain(|n| n.id != id);
-                let deleted = self.notes.len() < before;
+                let removed_active = self.scheduler.borrow_mut().unregister_script(&id);
+                let removed_meta = self.metadata.remove(&id).is_some();
+                let deleted = removed_active || removed_meta;
+                let schedules_conf = self.scheduler.borrow().serialize_schedules_conf();
+                let tile = self.build_board_tile();
 
                 Ok(McpValue::Map(mcp_map(&[
+                    ("status", McpValue::Text("deleted".to_string())),
                     ("deleted", McpValue::Bool(deleted)),
-                    ("id", McpValue::Int(id as i64)),
-                    ("remaining", McpValue::Int(self.notes.len() as i64)),
-                ])))
-            }
-            other => Err(McpError::method_not_found(format!(
-                "unknown tool 'notes.{}'",
-                other
-            ))),
-        }
-    }
-
-    fn read_resource(&self, uri: &str) -> Result<McpResourceContent, McpError> {
-        match uri {
-            "mcp://notes/all" => {
-                let list: Vec<McpValue> = self.notes.iter().map(|n| n.to_mcp_value()).collect();
-                let payload = McpValue::Map(mcp_map(&[
-                    ("total", McpValue::Int(self.notes.len() as i64)),
-                    ("notes", McpValue::Array(list)),
-                ]));
-                Ok(McpResourceContent::new(
-                    uri,
-                    "application/json",
-                    payload.to_json(),
-                ))
-            }
-            "mcp://notes/recent" => {
-                let recent: Vec<McpValue> = self
-                    .notes
-                    .iter()
-                    .rev()
-                    .take(5)
-                    .map(|n| n.to_mcp_value())
-                    .collect();
-                let payload = McpValue::Map(mcp_map(&[
-                    ("count", McpValue::Int(recent.len() as i64)),
-                    ("notes", McpValue::Array(recent)),
-                ]));
-                Ok(McpResourceContent::new(
-                    uri,
-                    "application/json",
-                    payload.to_json(),
-                ))
-            }
-            _ => Err(McpError::resource_not_found(format!(
-                "NotesVaultApp has no resource at '{}'",
-                uri
-            ))),
-        }
-    }
-
-    fn get_prompt(
-        &self,
-        name: &str,
-        args: &BTreeMap<String, String>,
-    ) -> Result<String, McpError> {
-        let short = name.strip_prefix("notes.").unwrap_or(name);
-        match short {
-            "summarize" => {
-                let topic = args
-                    .get("topic")
-                    .map(|s| s.as_str())
-                    .unwrap_or("all topics");
-                Ok(format!(
-                    "Synthesize a visual summary card for topic '{}' across {} stored notes in Notes Vault.",
-                    topic,
-                    self.notes.len()
-                ))
-            }
-            _ => Err(McpError::method_not_found(format!(
-                "unknown prompt '{}' in NotesVaultApp",
-                name
-            ))),
-        }
-    }
-}
-
-// ============================================================================
-// 2. TaskBoardApp (app_id: "tasks")
-// ============================================================================
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TaskItem {
-    pub id: u64,
-    pub title: String,
-    pub priority: String,
-    pub completed: bool,
-}
-
-impl TaskItem {
-    pub fn to_mcp_value(&self) -> McpValue {
-        McpValue::Map(mcp_map(&[
-            ("id", McpValue::Int(self.id as i64)),
-            ("title", McpValue::Text(self.title.clone())),
-            ("priority", McpValue::Text(self.priority.clone())),
-            ("completed", McpValue::Bool(self.completed)),
-        ]))
-    }
-}
-
-/// Headless project/task tracker MCP application (`app_id: "tasks"`).
-///
-/// Exposes `tasks.add`, `tasks.complete`, `tasks.list`, and resource `mcp://tasks/summary`.
-pub struct TaskBoardApp {
-    manifest: AppManifest,
-    tasks: Vec<TaskItem>,
-    next_id: u64,
-}
-
-impl Default for TaskBoardApp {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl TaskBoardApp {
-    pub fn new() -> Self {
-        let manifest = AppManifest::parse(TASKS_MANIFEST_MCP).unwrap_or_else(|_| {
-            AppManifest::new(
-                "tasks",
-                "Task Board",
-                "1.0.0",
-                vec![
-                    AppCapability::ExposeMcpTools,
-                    AppCapability::ExposeMcpResources,
-                    AppCapability::ExposeMcpPrompts,
-                    AppCapability::ScopedStorage("/var/tasks".to_string()),
-                ],
-            )
-        });
-        Self {
-            manifest,
-            tasks: Vec::new(),
-            next_id: 1,
-        }
-    }
-
-    pub fn tasks(&self) -> &[TaskItem] {
-        &self.tasks
-    }
-}
-
-impl McpApp for TaskBoardApp {
-    fn manifest(&self) -> &AppManifest {
-        &self.manifest
-    }
-
-    fn tools(&self) -> Vec<McpTool> {
-        vec![
-            McpTool::new(
-                "tasks.add",
-                "Add a new task to the headless Task Board",
-                vec![
-                    McpParamSpec::new("title", "string", true, "Task description"),
-                    McpParamSpec::new(
-                        "priority",
-                        "string",
-                        false,
-                        "Priority level (low, normal, high, critical)",
-                    ),
-                ],
-            ),
-            McpTool::new(
-                "tasks.complete",
-                "Mark an existing task as completed by ID",
-                vec![McpParamSpec::new("id", "integer", true, "Task ID")],
-            ),
-            McpTool::new(
-                "tasks.list",
-                "List tasks, optionally filtering by completion state",
-                vec![McpParamSpec::new(
-                    "include_completed",
-                    "boolean",
-                    false,
-                    "Whether to include completed tasks (default true)",
-                )],
-            ),
-        ]
-    }
-
-    fn resources(&self) -> Vec<McpResource> {
-        vec![McpResource::new(
-            "mcp://tasks/summary",
-            "Task Board Summary",
-            "application/json",
-            "Aggregated task counts (total, pending, completed) and full task list",
-        )]
-    }
-
-    fn prompts(&self) -> Vec<McpPrompt> {
-        vec![McpPrompt::new(
-            "tasks.prioritize",
-            "Generate an agent triage prompt for pending tasks",
-            vec!["focus".to_string()],
-        )]
-    }
-
-    fn call_tool(
-        &mut self,
-        tool_name: &str,
-        args: &BTreeMap<String, McpValue>,
-    ) -> Result<McpValue, McpError> {
-        let short = tool_name.strip_prefix("tasks.").unwrap_or(tool_name);
-        match short {
-            "add" => {
-                let title = args
-                    .get("title")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| McpError::invalid_params("missing required string 'title'"))?;
-                let priority = args
-                    .get("priority")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("normal");
-
-                let id = self.next_id;
-                self.next_id += 1;
-                let item = TaskItem {
-                    id,
-                    title: title.to_string(),
-                    priority: priority.to_string(),
-                    completed: false,
-                };
-                let val = item.to_mcp_value();
-                self.tasks.push(item);
-
-                Ok(McpValue::Map(mcp_map(&[
-                    ("status", McpValue::Text("added".to_string())),
-                    ("id", McpValue::Int(id as i64)),
-                    ("task", val),
-                ])))
-            }
-            "complete" => {
-                let id = args
-                    .get("id")
-                    .and_then(|v| v.as_i64())
-                    .and_then(|v| u64::try_from(v).ok())
-                    .ok_or_else(|| McpError::invalid_params("missing required integer 'id'"))?;
-
-                let task = self
-                    .tasks
-                    .iter_mut()
-                    .find(|t| t.id == id)
-                    .ok_or_else(|| {
-                        McpError::invalid_params(format!("task with id {} not found", id))
-                    })?;
-                task.completed = true;
-                let val = task.to_mcp_value();
-
-                Ok(McpValue::Map(mcp_map(&[
-                    ("status", McpValue::Text("completed".to_string())),
-                    ("id", McpValue::Int(id as i64)),
-                    ("task", val),
-                ])))
-            }
-            "list" => {
-                let include_completed = args
-                    .get("include_completed")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(true);
-
-                let items: Vec<McpValue> = self
-                    .tasks
-                    .iter()
-                    .filter(|t| include_completed || !t.completed)
-                    .map(|t| t.to_mcp_value())
-                    .collect();
-
-                Ok(McpValue::Map(mcp_map(&[
-                    ("count", McpValue::Int(items.len() as i64)),
-                    ("tasks", McpValue::Array(items)),
+                    ("id", McpValue::Text(id)),
+                    ("schedules_conf", McpValue::Text(schedules_conf)),
+                    ("tile", tile.to_mcp_value()),
                 ])))
             }
             other => Err(McpError::method_not_found(format!(
@@ -557,26 +735,46 @@ impl McpApp for TaskBoardApp {
 
     fn read_resource(&self, uri: &str) -> Result<McpResourceContent, McpError> {
         match uri {
-            "mcp://tasks/summary" => {
-                let total = self.tasks.len() as i64;
-                let completed = self.tasks.iter().filter(|t| t.completed).count() as i64;
-                let pending = total - completed;
-                let items: Vec<McpValue> = self.tasks.iter().map(|t| t.to_mcp_value()).collect();
+            "mcp://tasks/schedules" => {
+                self.enforce_scheduler_access()?;
+                let tasks = self.scheduled_tasks(true);
+                let active = tasks.iter().filter(|t| t.enabled).count() as i64;
+                let paused = (tasks.len() as i64) - active;
+                let items: Vec<McpValue> = tasks.iter().map(|t| t.to_mcp_value()).collect();
+                let schedules_conf = self.scheduler.borrow().serialize_schedules_conf();
 
-                let summary = McpValue::Map(mcp_map(&[
-                    ("total", McpValue::Int(total)),
-                    ("pending", McpValue::Int(pending)),
-                    ("completed", McpValue::Int(completed)),
+                let payload = McpValue::Map(mcp_map(&[
+                    ("total", McpValue::Int(tasks.len() as i64)),
+                    ("active", McpValue::Int(active)),
+                    ("paused", McpValue::Int(paused)),
                     ("tasks", McpValue::Array(items)),
+                    ("schedules_conf", McpValue::Text(schedules_conf)),
                 ]));
                 Ok(McpResourceContent::new(
                     uri,
                     "application/json",
-                    summary.to_json(),
+                    payload.to_json(),
                 ))
             }
+            "mcp://tasks/tiles" => {
+                let tile = self.build_board_tile();
+                let payload = McpValue::Map(mcp_map(&[(
+                    "tiles",
+                    McpValue::Array(vec![tile.to_mcp_value()]),
+                )]));
+                Ok(McpResourceContent::new(
+                    uri,
+                    "application/json",
+                    payload.to_json(),
+                ))
+            }
+            "mcp://tasks/skill" => Ok(McpResourceContent::new(
+                uri,
+                "text/markdown",
+                TASKS_SKILL_MD.to_string(),
+            )),
             _ => Err(McpError::resource_not_found(format!(
-                "TaskBoardApp has no resource at '{}'",
+                "TasksApp has no resource at '{}'",
                 uri
             ))),
         }
@@ -589,240 +787,80 @@ impl McpApp for TaskBoardApp {
     ) -> Result<String, McpError> {
         let short = name.strip_prefix("tasks.").unwrap_or(name);
         match short {
-            "prioritize" => {
-                let focus = args
-                    .get("focus")
+            "manage" => {
+                let goal = args
+                    .get("goal")
                     .map(|s| s.as_str())
-                    .unwrap_or("general execution");
-                let pending = self.tasks.iter().filter(|t| !t.completed).count();
+                    .unwrap_or("inspect or update scheduled tasks");
+                let count = self.scheduled_tasks(true).len();
                 Ok(format!(
-                    "Prioritize {} pending tasks on the agent canvas with focus '{}'.",
-                    pending, focus
+                    "Use the Tasks app (tasks.list, tasks.create, tasks.edit, tasks.delete) to {} across {} scheduled task(s), and embed the 'tasks.board' Tile in the conversation stream.",
+                    goal, count
                 ))
             }
             _ => Err(McpError::method_not_found(format!(
-                "unknown prompt '{}' in TaskBoardApp",
+                "unknown prompt '{}' in TasksApp",
                 name
             ))),
         }
     }
 }
 
-// ============================================================================
-// 3. SysPulseApp (app_id: "syspulse")
-// ============================================================================
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TelemetrySample {
-    pub metric: String,
-    pub value: i64,
-    pub unit: String,
+/// Clock reports host uptime until a real wall-clock source is available.
+#[derive(Debug, Clone)]
+pub struct ClockApp {
+    manifest: AppManifest,
+    uptime_ms: u64,
 }
-
-impl TelemetrySample {
-    pub fn to_mcp_value(&self) -> McpValue {
+impl Default for ClockApp {
+    fn default() -> Self { Self::new() }
+}
+impl ClockApp {
+    pub fn new() -> Self {
+        Self { manifest: AppManifest::parse(include_str!("../../../apps/clock/clock.mcp"))
+            .expect("valid built-in Clock manifest"), uptime_ms: 0 }
+    }
+    fn time_value(&self) -> McpValue {
         McpValue::Map(mcp_map(&[
-            ("metric", McpValue::Text(self.metric.clone())),
-            ("value", McpValue::Int(self.value)),
-            ("unit", McpValue::Text(self.unit.clone())),
+            ("uptime_ms", McpValue::Int(self.uptime_ms.min(i64::MAX as u64) as i64)),
+            ("wall_clock_available", McpValue::Bool(false)),
         ]))
     }
 }
-
-/// Headless hardware & sensor telemetry MCP application (`app_id: "syspulse"`).
-///
-/// Exposes `syspulse.snapshot`, `syspulse.record_metric`, and resource `mcp://syspulse/metrics`.
-pub struct SysPulseApp {
-    manifest: AppManifest,
-    samples: Vec<TelemetrySample>,
-}
-
-impl Default for SysPulseApp {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl SysPulseApp {
-    pub fn new() -> Self {
-        let manifest = AppManifest::parse(SYSPULSE_MANIFEST_MCP).unwrap_or_else(|_| {
-            AppManifest::new(
-                "syspulse",
-                "SysPulse Telemetry",
-                "1.0.0",
-                vec![
-                    AppCapability::ExposeMcpTools,
-                    AppCapability::ExposeMcpResources,
-                    AppCapability::ExposeMcpPrompts,
-                    AppCapability::ScopedStorage("/var/syspulse".to_string()),
-                ],
-            )
-        });
-
-        let samples = vec![
-            TelemetrySample {
-                metric: "cpu_load_pct".to_string(),
-                value: 14,
-                unit: "%".to_string(),
-            },
-            TelemetrySample {
-                metric: "mem_used_mib".to_string(),
-                value: 96,
-                unit: "MiB".to_string(),
-            },
-            TelemetrySample {
-                metric: "gpu_frame_us".to_string(),
-                value: 2400,
-                unit: "us".to_string(),
-            },
-        ];
-
-        Self { manifest, samples }
-    }
-
-    pub fn samples(&self) -> &[TelemetrySample] {
-        &self.samples
-    }
-}
-
-impl McpApp for SysPulseApp {
-    fn manifest(&self) -> &AppManifest {
-        &self.manifest
-    }
-
+impl McpApp for ClockApp {
+    fn manifest(&self) -> &AppManifest { &self.manifest }
+    fn update_uptime(&mut self, uptime_ms: u64) { self.uptime_ms = uptime_ms; }
     fn tools(&self) -> Vec<McpTool> {
-        vec![
-            McpTool::new(
-                "syspulse.snapshot",
-                "Capture a live snapshot of hardware and kernel telemetry metrics",
-                vec![],
-            ),
-            McpTool::new(
-                "syspulse.record_metric",
-                "Record or update a named hardware/sensor telemetry metric",
-                vec![
-                    McpParamSpec::new("metric", "string", true, "Metric identifier"),
-                    McpParamSpec::new("value", "integer", true, "Numeric sensor value"),
-                    McpParamSpec::new("unit", "string", false, "Measurement unit (e.g. %, MiB, us)"),
-                ],
-            ),
-        ]
+        vec![McpTool::new("clock.now", "Read system uptime; wall clock is unavailable", vec![])]
     }
-
     fn resources(&self) -> Vec<McpResource> {
-        vec![McpResource::new(
-            "mcp://syspulse/metrics",
-            "Hardware & Sensor Telemetry Metrics",
-            "application/json",
-            "Live stream snapshot of recorded hardware and kernel metrics",
-        )]
+        vec![McpResource::new("mcp://clock/now", "Clock", "application/json", "Current system uptime")]
     }
-
-    fn prompts(&self) -> Vec<McpPrompt> {
-        vec![McpPrompt::new(
-            "syspulse.diagnose",
-            "Generate an agent diagnostic prompt for hardware telemetry",
-            vec!["subsystem".to_string()],
-        )]
+    fn prompts(&self) -> Vec<McpPrompt> { vec![] }
+    fn skills(&self) -> Vec<AppSkill> {
+        vec![AppSkill::new("clock", "clock", "/apps/clock/SKILL.md", "Show system uptime",
+            include_str!("../../../apps/clock/SKILL.md"))]
     }
-
-    fn call_tool(
-        &mut self,
-        tool_name: &str,
-        args: &BTreeMap<String, McpValue>,
-    ) -> Result<McpValue, McpError> {
-        let short = tool_name.strip_prefix("syspulse.").unwrap_or(tool_name);
-        match short {
-            "snapshot" => {
-                let list: Vec<McpValue> = self.samples.iter().map(|s| s.to_mcp_value()).collect();
-                Ok(McpValue::Map(mcp_map(&[
-                    ("status", McpValue::Text("ok".to_string())),
-                    ("metric_count", McpValue::Int(self.samples.len() as i64)),
-                    ("metrics", McpValue::Array(list)),
-                ])))
-            }
-            "record_metric" => {
-                let metric = args
-                    .get("metric")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| McpError::invalid_params("missing required string 'metric'"))?;
-                let value = args
-                    .get("value")
-                    .and_then(|v| v.as_i64())
-                    .ok_or_else(|| McpError::invalid_params("missing required integer 'value'"))?;
-                let unit = args
-                    .get("unit")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("count");
-
-                if let Some(existing) = self.samples.iter_mut().find(|s| s.metric == metric) {
-                    existing.value = value;
-                    existing.unit = unit.to_string();
-                } else {
-                    self.samples.push(TelemetrySample {
-                        metric: metric.to_string(),
-                        value,
-                        unit: unit.to_string(),
-                    });
-                }
-
-                Ok(McpValue::Map(mcp_map(&[
-                    ("status", McpValue::Text("recorded".to_string())),
-                    ("metric", McpValue::Text(metric.to_string())),
-                    ("value", McpValue::Int(value)),
-                    ("unit", McpValue::Text(unit.to_string())),
-                ])))
-            }
-            other => Err(McpError::method_not_found(format!(
-                "unknown tool 'syspulse.{}'",
-                other
-            ))),
-        }
+    fn tiles(&self) -> Vec<AppTile> {
+        let seconds = self.uptime_ms / 1000;
+        vec![AppTile {
+            tile_id: "clock.now".into(), title: "Clock".into(),
+            subtitle: "System uptime · wall clock unavailable".into(),
+            refresh_resource_uri: Some("mcp://clock/now".into()),
+            items: vec![TileItem::new("uptime", format!("{:02}:{:02}:{:02}", seconds / 3600,
+                seconds / 60 % 60, seconds % 60), "Since boot", "Uptime", "live")],
+            actions: vec![TileAction::new("refresh", "Refresh Clock", "clock.now", BTreeMap::new())],
+        }]
     }
-
+    fn call_tool(&mut self, tool_name: &str, _args: &BTreeMap<String, McpValue>) -> Result<McpValue, McpError> {
+        if tool_name == "clock.now" { Ok(self.time_value()) }
+        else { Err(McpError::resource_not_found("unknown Clock tool")) }
+    }
     fn read_resource(&self, uri: &str) -> Result<McpResourceContent, McpError> {
-        match uri {
-            "mcp://syspulse/metrics" => {
-                let list: Vec<McpValue> = self.samples.iter().map(|s| s.to_mcp_value()).collect();
-                let payload = McpValue::Map(mcp_map(&[
-                    ("count", McpValue::Int(self.samples.len() as i64)),
-                    ("metrics", McpValue::Array(list)),
-                ]));
-                Ok(McpResourceContent::new(
-                    uri,
-                    "application/json",
-                    payload.to_json(),
-                ))
-            }
-            _ => Err(McpError::resource_not_found(format!(
-                "SysPulseApp has no resource at '{}'",
-                uri
-            ))),
-        }
+        if uri == "mcp://clock/now" { Ok(McpResourceContent::new(uri, "application/json", self.time_value().to_json())) }
+        else { Err(McpError::resource_not_found("unknown Clock resource")) }
     }
-
-    fn get_prompt(
-        &self,
-        name: &str,
-        args: &BTreeMap<String, String>,
-    ) -> Result<String, McpError> {
-        let short = name.strip_prefix("syspulse.").unwrap_or(name);
-        match short {
-            "diagnose" => {
-                let subsystem = args
-                    .get("subsystem")
-                    .map(|s| s.as_str())
-                    .unwrap_or("system");
-                Ok(format!(
-                    "Analyze {} telemetry metrics for subsystem '{}' and render a health gauge widget.",
-                    self.samples.len(),
-                    subsystem
-                ))
-            }
-            _ => Err(McpError::method_not_found(format!(
-                "unknown prompt '{}' in SysPulseApp",
-                name
-            ))),
-        }
+    fn get_prompt(&self, _name: &str, _args: &BTreeMap<String, String>) -> Result<String, McpError> {
+        Err(McpError::resource_not_found("Clock has no prompts"))
     }
 }

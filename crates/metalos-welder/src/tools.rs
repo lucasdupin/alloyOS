@@ -19,6 +19,10 @@ use metalos_js::{
     OsEvent, ScheduleTrigger, ScriptCapabilities, ScriptExecutionReport, ScriptScheduler,
     SystemStatus, SCHEDULES_CONF_PATH,
 };
+use metalos_mcp::{
+    register_builtin_apps_with_scheduler, McpCaller, McpRegistry, TASKS_APP_ID, TASKS_MANIFEST_MCP,
+    TASKS_MAIN_JS, TASKS_MAIN_PATH, TASKS_SKILL_MD, TASKS_SKILL_PATH,
+};
 
 pub use metalos_forge::policy::{
     is_forbidden_shell_tool, validate_console_input_no_shell, SHELL_FREE_POLICY_MESSAGE,
@@ -94,14 +98,20 @@ pub struct ToolExecutionOutput {
 ///
 /// The AI agent has zero access to `sh` or POSIX shell execution; all OS interaction goes through
 /// strongly-typed tools for CobaltFS, system telemetry, local JavaScript automation, headless MCP
-/// apps, and Ferrofluid UI synthesis.
+/// apps (centralized by Welder), and Ferrofluid UI synthesis.
+///
+/// Architectural invariants:
+/// 1. `Tasks` (`app_id = "tasks"`) is the **only** app that can access `ScriptScheduler`.
+/// 2. Welder goes through `Tasks` (`McpCaller::Welder`) to list, create, edit, or delete schedules.
+/// 3. No app can access another app; only Welder centralizes app access and orchestration.
 #[derive(Clone)]
 pub struct NativeToolRegistry {
     tools: Vec<ToolSpec>,
     vfs_files: BTreeMap<String, String>,
     vfs_backend: Option<Rc<RefCell<dyn ToolVfsBackend>>>,
     js_schedules: Vec<(String, String)>,
-    scheduler: ScriptScheduler,
+    scheduler: Rc<RefCell<ScriptScheduler>>,
+    mcp_registry: Rc<RefCell<McpRegistry>>,
     default_capabilities: ScriptCapabilities,
     sys_status: SystemStatus,
     http_routes: BTreeMap<String, String>,
@@ -109,7 +119,6 @@ pub struct NativeToolRegistry {
     logs: Vec<String>,
     execution_reports: Vec<ScriptExecutionReport>,
     forge: Option<Rc<RefCell<Forge>>>,
-    mcp_apps: BTreeMap<String, String>,
 }
 
 impl core::fmt::Debug for NativeToolRegistry {
@@ -119,6 +128,7 @@ impl core::fmt::Debug for NativeToolRegistry {
             .field("vfs_files_count", &self.vfs_files.len())
             .field("has_vfs_backend", &self.vfs_backend.is_some())
             .field("js_schedules", &self.js_schedules)
+            .field("mcp_app_count", &self.mcp_registry.borrow().app_count())
             .field("sys_status", &self.sys_status)
             .finish()
     }
@@ -144,19 +154,21 @@ impl NativeToolRegistry {
         let heartbeat_src =
             "export function main() { return MetalOS.sys.status(); }\n".to_string();
         vfs_files.insert("/scripts/heartbeat.js".to_string(), heartbeat_src.clone());
-
-        let mut scheduler = ScriptScheduler::new();
-        scheduler.register_script_source("/scripts/heartbeat.js", &heartbeat_src);
-
-        let mut mcp_apps = BTreeMap::new();
-        mcp_apps.insert(
-            "telemetry.mcp".to_string(),
-            "{\"title\":\"Cluster Telemetry\",\"summary\":\"All 8 M4 cores nominal\",\"cpu_usage\":\"14\",\"memory_mb\":\"512\",\"rows\":[[\"core0\",\"active\"],[\"core1\",\"active\"]]}".to_string(),
+        vfs_files.insert(
+            "/apps/tasks/tasks.mcp".to_string(),
+            TASKS_MANIFEST_MCP.to_string(),
         );
-        mcp_apps.insert(
-            "notes.mcp".to_string(),
-            "{\"title\":\"Cobalt Notes\",\"summary\":\"2 indexed workspace notes\",\"value\":\"2\",\"label\":\"Notes\",\"unit\":\"docs\"}".to_string(),
-        );
+        vfs_files.insert(TASKS_SKILL_PATH.to_string(), TASKS_SKILL_MD.to_string());
+        vfs_files.insert(TASKS_MAIN_PATH.to_string(), TASKS_MAIN_JS.to_string());
+
+        let mut raw_scheduler = ScriptScheduler::new();
+        raw_scheduler.register_script_source("/scripts/heartbeat.js", &heartbeat_src);
+        let scheduler = Rc::new(RefCell::new(raw_scheduler));
+
+        let mut mcp_reg = McpRegistry::new();
+        register_builtin_apps_with_scheduler(&mut mcp_reg, scheduler.clone())
+            .expect("TasksApp registration must succeed");
+        let mcp_registry = Rc::new(RefCell::new(mcp_reg));
 
         let tools = Self::default_tool_specs();
         Self {
@@ -165,6 +177,7 @@ impl NativeToolRegistry {
             vfs_backend: None,
             js_schedules: Vec::new(),
             scheduler,
+            mcp_registry,
             default_capabilities: ScriptCapabilities::default_automation(),
             sys_status: SystemStatus {
                 uptime_ms: 1_000,
@@ -177,7 +190,6 @@ impl NativeToolRegistry {
             logs: Vec::new(),
             execution_reports: Vec::new(),
             forge: None,
-            mcp_apps,
         }
     }
 
@@ -209,6 +221,9 @@ impl NativeToolRegistry {
                     "/scripts/heartbeat.js",
                     "export function main() { return MetalOS.sys.status(); }\n",
                 ),
+                ("/apps/tasks/tasks.mcp", TASKS_MANIFEST_MCP),
+                (TASKS_SKILL_PATH, TASKS_SKILL_MD),
+                (TASKS_MAIN_PATH, TASKS_MAIN_JS),
             ] {
                 if let Some(existing) = b.read_file(default_path) {
                     self.vfs_files.insert(default_path.to_string(), existing);
@@ -241,7 +256,9 @@ impl NativeToolRegistry {
     /// Assigns capability constraints for a specific script path (e.g. `/scripts/untrusted.js`).
     pub fn set_script_capabilities(&mut self, script_path: &str, capabilities: ScriptCapabilities) {
         let norm = ScriptCapabilities::normalize_path(script_path);
-        self.scheduler.set_script_capabilities(&norm, capabilities);
+        self.scheduler
+            .borrow_mut()
+            .set_script_capabilities(&norm, capabilities);
     }
 
     /// Updates the live `SystemStatus` snapshot returned by `sys_status` and `MetalOS.sys.status()`.
@@ -259,14 +276,24 @@ impl NativeToolRegistry {
         self.http_routes.insert(url.to_string(), body.to_string());
     }
 
-    /// Returns a shared reference to the embedded `ScriptScheduler`.
-    pub fn scheduler(&self) -> &ScriptScheduler {
-        &self.scheduler
+    /// Returns a shared borrow of the embedded `ScriptScheduler` (exclusively managed by `TasksApp`).
+    pub fn scheduler(&self) -> core::cell::Ref<'_, ScriptScheduler> {
+        self.scheduler.borrow()
     }
 
-    /// Returns a mutable reference to the embedded `ScriptScheduler`.
-    pub fn scheduler_mut(&mut self) -> &mut ScriptScheduler {
-        &mut self.scheduler
+    /// Returns a mutable borrow of the embedded `ScriptScheduler`.
+    pub fn scheduler_mut(&mut self) -> core::cell::RefMut<'_, ScriptScheduler> {
+        self.scheduler.borrow_mut()
+    }
+
+    /// Returns a shared borrow of the centralized `McpRegistry`.
+    pub fn mcp_registry(&self) -> core::cell::Ref<'_, McpRegistry> {
+        self.mcp_registry.borrow()
+    }
+
+    /// Returns a mutable borrow of the centralized `McpRegistry`.
+    pub fn mcp_registry_mut(&mut self) -> core::cell::RefMut<'_, McpRegistry> {
+        self.mcp_registry.borrow_mut()
     }
 
     /// Returns all UI notifications emitted by scripts via `MetalOS.ui.notify(...)`.
@@ -308,7 +335,9 @@ impl NativeToolRegistry {
             };
             if norm.ends_with(".js") {
                 if let Some(src) = self.read_vfs_string(&norm) {
-                    self.scheduler.register_script_source(&norm, &src);
+                    self.scheduler
+                        .borrow_mut()
+                        .register_script_source(&norm, &src);
                 }
             }
         }
@@ -316,29 +345,34 @@ impl NativeToolRegistry {
         // Clear existing schedules before reloading from /etc/schedules.conf
         let existing_ids: Vec<String> = self
             .scheduler
+            .borrow()
             .schedules()
             .iter()
             .map(|s| s.id.clone())
             .collect();
         for id in existing_ids {
-            self.scheduler.unregister_script(&id);
+            self.scheduler.borrow_mut().unregister_script(&id);
         }
 
         let Some(conf) = self.read_vfs_string(SCHEDULES_CONF_PATH) else {
             self.sync_schedule_list();
             return Ok(0);
         };
-        let count = self.scheduler.load_schedules_conf_str(&conf)?;
+        let count = self.scheduler.borrow_mut().load_schedules_conf_str(&conf)?;
         let scheduled_paths: Vec<String> = self
             .scheduler
+            .borrow()
             .schedules()
             .iter()
             .map(|s| s.script_path.clone())
             .collect();
         for path in scheduled_paths {
-            if self.scheduler.store().get_script(&path).is_none() {
+            let missing = self.scheduler.borrow().store().get_script(&path).is_none();
+            if missing {
                 if let Some(src) = self.read_vfs_string(&path) {
-                    self.scheduler.register_script_source(&path, &src);
+                    self.scheduler
+                        .borrow_mut()
+                        .register_script_source(&path, &src);
                 }
             }
         }
@@ -349,11 +383,37 @@ impl NativeToolRegistry {
     fn sync_schedule_list(&mut self) {
         self.js_schedules = self
             .scheduler
+            .borrow()
             .schedules()
             .iter()
             .map(|s| (s.script_path.clone(), s.trigger.serialize()))
             .collect();
     }
+
+    fn sync_scheduler_to_vfs(&mut self) -> Result<(), String> {
+        let (conf, scripts): (String, Vec<(String, String)>) = {
+            let sched = self.scheduler.borrow();
+            let conf = sched.serialize_schedules_conf();
+            let scripts = sched
+                .schedules()
+                .iter()
+                .filter_map(|s| {
+                    sched
+                        .store()
+                        .get_script(&s.script_path)
+                        .map(|src| (s.script_path.clone(), src.to_string()))
+                })
+                .collect();
+            (conf, scripts)
+        };
+        self.write_vfs_raw(SCHEDULES_CONF_PATH, &conf)?;
+        for (path, src) in scripts {
+            self.write_vfs_raw(&path, &src)?;
+        }
+        self.sync_schedule_list();
+        Ok(())
+    }
+
 
     fn default_tool_specs() -> Vec<ToolSpec> {
         vec![
@@ -524,7 +584,9 @@ impl NativeToolRegistry {
         };
         self.vfs_files.insert(norm.clone(), content.to_string());
         if norm.ends_with(".js") {
-            self.scheduler.register_script_source(&norm, content);
+            if let Ok(mut sched) = self.scheduler.try_borrow_mut() {
+                sched.register_script_source(&norm, content);
+            }
         }
         Ok(existed)
     }
@@ -538,7 +600,9 @@ impl NativeToolRegistry {
         };
         let removed_mem = self.vfs_files.remove(&norm).is_some();
         if norm.ends_with(".js") {
-            self.scheduler.store_mut().remove_script(&norm);
+            if let Ok(mut sched) = self.scheduler.try_borrow_mut() {
+                sched.store_mut().remove_script(&norm);
+            }
         }
         Ok(removed_backend || removed_mem)
     }
@@ -647,6 +711,7 @@ impl NativeToolRegistry {
         calendar: Option<CalendarTime>,
     ) -> Vec<ScriptExecutionReport> {
         self.sys_status.uptime_ms = now_ms;
+        self.mcp_registry.borrow_mut().update_uptime(now_ms);
         let (mut all_reports, emitted) =
             self.run_scheduler_step(|sched, host| sched.tick_time(now_ms, calendar, host));
         self.execution_reports.extend(all_reports.clone());
@@ -693,16 +758,33 @@ impl NativeToolRegistry {
     where
         F: FnOnce(&mut ScriptScheduler, &mut dyn MetalOsHost) -> R,
     {
-        let mut scheduler = core::mem::take(&mut self.scheduler);
+        let scheduler_rc = self.scheduler.clone();
         let mut emitted = Vec::new();
         let out = {
+            let mut scheduler = scheduler_rc.borrow_mut();
             let mut host = RegistryHostAdapter {
                 registry: self,
                 emitted_events: &mut emitted,
             };
             f(&mut scheduler, &mut host)
         };
-        self.scheduler = scheduler;
+        for ev in &emitted {
+            match ev {
+                OsEvent::FsCreated { path } | OsEvent::FsModified { path }
+                    if path.ends_with(".js") =>
+                {
+                    if let Some(src) = self.vfs_files.get(path).cloned() {
+                        self.scheduler
+                            .borrow_mut()
+                            .register_script_source(path, &src);
+                    }
+                }
+                OsEvent::FsDeleted { path } if path.ends_with(".js") => {
+                    self.scheduler.borrow_mut().store_mut().remove_script(path);
+                }
+                _ => {}
+            }
+        }
         (out, emitted)
     }
 
@@ -751,7 +833,9 @@ impl NativeToolRegistry {
         }
 
         if has_custom {
-            self.scheduler.set_script_capabilities(norm_path, caps);
+            self.scheduler
+                .borrow_mut()
+                .set_script_capabilities(norm_path, caps);
         }
     }
 
@@ -882,7 +966,9 @@ impl NativeToolRegistry {
                 let existed = self
                     .write_vfs_raw(&path, &source)
                     .map_err(AiError::InvalidToolArguments)?;
-                self.scheduler.register_script_source(&path, &source);
+                self.scheduler
+                    .borrow_mut()
+                    .register_script_source(&path, &source);
 
                 let ev = if existed {
                     OsEvent::FsModified { path: path.clone() }
@@ -907,9 +993,12 @@ impl NativeToolRegistry {
                 let path = ScriptCapabilities::normalize_path(&raw_path);
 
                 // Ensure script is synced from VFS into ScriptScheduler if present on disk
-                if self.scheduler.store().get_script(&path).is_none() {
+                let missing = self.scheduler.borrow().store().get_script(&path).is_none();
+                if missing {
                     if let Some(src) = self.read_vfs_string(&path) {
-                        self.scheduler.register_script_source(&path, &src);
+                        self.scheduler
+                            .borrow_mut()
+                            .register_script_source(&path, &src);
                     }
                 }
 
@@ -955,6 +1044,8 @@ impl NativeToolRegistry {
                 }
             }
             "script_schedule" => {
+                // Architectural invariant: Welder MUST route scheduled task operations through
+                // the canonical `Tasks` app (`tasks.create`) via `McpRegistry`.
                 let raw_path = extract_json_string_field(&call.arguments_json, "path")
                     .ok_or_else(|| AiError::InvalidToolArguments("missing 'path'".to_string()))?;
                 let path = ScriptCapabilities::normalize_path(&raw_path);
@@ -962,35 +1053,41 @@ impl NativeToolRegistry {
                     .ok_or_else(|| {
                         AiError::InvalidToolArguments("missing 'trigger'".to_string())
                     })?;
-                let parsed_trigger = ScheduleTrigger::deserialize(&trigger_str)
+                // Validate trigger syntax upfront
+                let _ = ScheduleTrigger::deserialize(&trigger_str)
                     .map_err(AiError::InvalidToolArguments)?;
 
-                if self.scheduler.store().get_script(&path).is_none() {
+                let missing = self.scheduler.borrow().store().get_script(&path).is_none();
+                if missing {
                     if let Some(src) = self.read_vfs_string(&path) {
-                        self.scheduler.register_script_source(&path, &src);
+                        self.scheduler
+                            .borrow_mut()
+                            .register_script_source(&path, &src);
                     }
                 }
 
-                let schedule_id = extract_json_string_field(&call.arguments_json, "id")
-                    .unwrap_or_else(|| {
-                        let idx = self.scheduler.schedules().len() + 1;
-                        let stem = path
-                            .rsplit('/')
-                            .next()
-                            .unwrap_or("job")
-                            .trim_end_matches(".js");
-                        format!("sched-{}-{}", idx, stem)
-                    });
+                let mut tasks_args = BTreeMap::new();
+                if let Some(id) = extract_json_string_field(&call.arguments_json, "id") {
+                    tasks_args.insert("id".to_string(), metalos_mcp::McpValue::Text(id));
+                }
+                tasks_args.insert("path".to_string(), metalos_mcp::McpValue::Text(path));
+                tasks_args.insert(
+                    "trigger".to_string(),
+                    metalos_mcp::McpValue::Text(trigger_str),
+                );
 
-                self.scheduler
-                    .schedule_script(&schedule_id, &path, parsed_trigger);
-                let conf = self.scheduler.serialize_schedules_conf();
-                self.write_vfs_raw(SCHEDULES_CONF_PATH, &conf)
+                let mcp_result = self
+                    .mcp_registry
+                    .borrow_mut()
+                    .call_tool_as(&McpCaller::Welder, "tasks.create", &tasks_args)
+                    .map_err(|e| AiError::InvalidToolArguments(e.message))?;
+
+                self.sync_scheduler_to_vfs()
                     .map_err(AiError::InvalidToolArguments)?;
-                self.sync_schedule_list();
 
                 let entries = self
                     .scheduler
+                    .borrow()
                     .schedules()
                     .iter()
                     .map(|s| {
@@ -1001,78 +1098,156 @@ impl NativeToolRegistry {
                         )
                     })
                     .collect();
-                let view = ui_synth.synthesize_schedule_list("Scheduled JS Automations", entries);
+                let tile = self.mcp_registry.borrow().render_tile("tasks.board").ok();
+                let view = ui_synth.synthesize_schedule_list_with_tile(
+                    "Scheduled JS Automations",
+                    entries,
+                    tile,
+                );
                 Ok(ToolExecutionOutput {
                     tool_name: call.name.clone(),
-                    output_json: format!(
-                        "{{\"ok\":true,\"id\":\"{}\",\"script_path\":\"{}\",\"trigger\":\"{}\"}}",
-                        json_escape(&schedule_id),
-                        json_escape(&path),
-                        json_escape(&trigger_str)
-                    ),
+                    output_json: mcp_result.to_json(),
                     synthesized_view: Some(view),
                 })
             }
             "mcp_list_tools" => {
-                let apps: Vec<String> = self
-                    .mcp_apps
-                    .keys()
-                    .map(|k| format!("\"{}\"", json_escape(k)))
+                let reg = self.mcp_registry.borrow();
+                let apps: Vec<String> = reg.manifests().iter()
+                    .map(|manifest| format!("\"{}\"", json_escape(&manifest.app_id))).collect();
+                let tools: Vec<String> = reg
+                    .list_tools()
+                    .iter()
+                    .map(|t| t.to_mcp_value().to_json())
+                    .collect();
+                let skills: Vec<String> = reg
+                    .list_skills()
+                    .iter()
+                    .map(|s| s.to_mcp_value().to_json())
+                    .collect();
+                let tiles: Vec<String> = reg
+                    .list_tiles()
+                    .iter()
+                    .map(|t| t.to_mcp_value().to_json())
                     .collect();
                 Ok(ToolExecutionOutput {
                     tool_name: call.name.clone(),
                     output_json: format!(
-                        "{{\"ok\":true,\"headless_mcp_apps\":[{}],\"ui_policy\":\"agent_exclusive\"}}",
-                        apps.join(",")
+                        "{{\"ok\":true,\"headless_mcp_apps\":[{}],\"orchestrator\":\"welder\",\"ui_policy\":\"agent_exclusive\",\"tools\":[{}],\"skills\":[{}],\"tiles\":[{}]}}",
+                        apps.join(","),
+                        tools.join(","),
+                        skills.join(","),
+                        tiles.join(",")
                     ),
                     synthesized_view: None,
                 })
             }
             "mcp_call_tool" => {
-                let app = extract_json_string_field(&call.arguments_json, "app")
-                    .unwrap_or_else(|| "telemetry.mcp".to_string());
-                let tool = extract_json_string_field(&call.arguments_json, "tool")
-                    .unwrap_or_else(|| "inspect".to_string());
-                let payload = self
-                    .mcp_apps
-                    .get(&app)
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        format!(
-                            "{{\"title\":\"{}\",\"summary\":\"Executed MCP tool {}\",\"value\":\"ok\"}}",
-                            json_escape(&app),
-                            json_escape(&tool)
-                        )
-                    });
-                let view = ui_synth.synthesize_from_mcp_output(
+                let raw_app = extract_json_string_field(&call.arguments_json, "app")
+                    .unwrap_or_else(|| TASKS_APP_ID.to_string());
+                let app_id = raw_app.trim_end_matches(".mcp").to_string();
+                let raw_tool = extract_json_string_field(&call.arguments_json, "tool")
+                    .unwrap_or_else(|| "tasks.list".to_string());
+
+                // Enforce Welder-centralized orchestration: if a caller_app is supplied, verify via McpCaller::App
+                let caller = if let Some(caller_app) =
+                    extract_json_string_field(&call.arguments_json, "caller_app")
+                {
+                    McpCaller::App(caller_app)
+                } else {
+                    McpCaller::Welder
+                };
+
+                let full_tool_name = if raw_tool.contains('.') {
+                    raw_tool.clone()
+                } else {
+                    format!("{}.{}", app_id, raw_tool)
+                };
+
+                let raw_args_str = extract_json_string_field(&call.arguments_json, "args")
+                    .unwrap_or_else(|| call.arguments_json.clone());
+                let args_map = metalos_mcp::McpValue::from_json(&raw_args_str)
+                    .ok()
+                    .and_then(|v| v.as_map().cloned())
+                    .unwrap_or_default();
+
+                let mcp_result = self
+                    .mcp_registry
+                    .borrow_mut()
+                    .call_tool_as(&caller, &full_tool_name, &args_map)
+                    .map_err(|e| {
+                        if e.code == metalos_mcp::ERR_SANDBOX_VIOLATION {
+                            AiError::PolicyViolation(e.message)
+                        } else {
+                            AiError::InvalidToolArguments(e.message)
+                        }
+                    })?;
+
+                if full_tool_name.starts_with("tasks.") && full_tool_name != "tasks.list" {
+                    let _ = self.sync_scheduler_to_vfs();
+                }
+
+                let tile = {
+                    let registry = self.mcp_registry.borrow();
+                    registry.list_tiles().into_iter()
+                        .find(|tile| tile.folder() == Some(app_id.as_str()))
+                        .and_then(|tile| registry.render_tile(&tile.tile_id).ok())
+                };
+
+                let content_json = mcp_result.to_json();
+                let view = ui_synth.synthesize_from_mcp_output_with_tile(
                     &UiCallerOrigin::AiAgent,
-                    &app,
-                    &tool,
-                    &payload,
+                    &app_id,
+                    &full_tool_name,
+                    &content_json,
+                    tile,
                 )?;
                 Ok(ToolExecutionOutput {
                     tool_name: call.name.clone(),
-                    output_json: payload,
+                    output_json: content_json,
                     synthesized_view: Some(view),
                 })
             }
             "mcp_read_resource" => {
-                let app = extract_json_string_field(&call.arguments_json, "app")
-                    .unwrap_or_else(|| "notes.mcp".to_string());
+                let raw_app = extract_json_string_field(&call.arguments_json, "app")
+                    .unwrap_or_else(|| TASKS_APP_ID.to_string());
+                let app_id = raw_app.trim_end_matches(".mcp").to_string();
                 let uri = extract_json_string_field(&call.arguments_json, "uri")
-                    .unwrap_or_else(|| "mcp://notes/index".to_string());
-                let payload = self.mcp_apps.get(&app).cloned().unwrap_or_else(|| {
-                    format!(
-                        "{{\"title\":\"{}\",\"summary\":\"Resource {}\"}}",
-                        json_escape(&app),
-                        json_escape(&uri)
-                    )
-                });
-                let view = ui_synth.synthesize_from_mcp_output(
+                    .unwrap_or_else(|| "mcp://tasks/schedules".to_string());
+
+                let caller = if let Some(caller_app) =
+                    extract_json_string_field(&call.arguments_json, "caller_app")
+                {
+                    McpCaller::App(caller_app)
+                } else {
+                    McpCaller::Welder
+                };
+
+                let resource_content = self
+                    .mcp_registry
+                    .borrow()
+                    .read_resource_as(&caller, &uri)
+                    .map_err(|e| {
+                        if e.code == metalos_mcp::ERR_SANDBOX_VIOLATION {
+                            AiError::PolicyViolation(e.message)
+                        } else {
+                            AiError::InvalidToolArguments(e.message)
+                        }
+                    })?;
+
+                let tile = {
+                    let registry = self.mcp_registry.borrow();
+                    registry.list_tiles().into_iter()
+                        .find(|tile| tile.folder() == Some(app_id.as_str()))
+                        .and_then(|tile| registry.render_tile(&tile.tile_id).ok())
+                };
+
+                let payload = resource_content.text;
+                let view = ui_synth.synthesize_from_mcp_output_with_tile(
                     &UiCallerOrigin::AiAgent,
-                    &app,
+                    &app_id,
                     &uri,
                     &payload,
+                    tile,
                 )?;
                 Ok(ToolExecutionOutput {
                     tool_name: call.name.clone(),

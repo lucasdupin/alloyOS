@@ -18,7 +18,12 @@ cargo test -p metalos-keyboard -p metalos-ferrofluid --features metalos-keyboard
 ```
 
 System UI covers boot, the workspace, a rising/open keyboard, a pressed-key
-preview, and dismissal. The independent keyboard scene covers rise, rest,
+preview, dismissal, a semantic Clock app tile with its Refresh action, the animated
+thinking indicator, and the bottom of a streamed reply. The clock descriptor comes
+from the actual built-in MCP Clock app with a fixed uptime tick. Streaming appends 36 chunks and
+asserts that the viewport follows the bottom after each update. Indicator redraws
+at a fixed timestamp must remain identical and advancing time must animate the
+dots. The independent keyboard scene covers rise, rest,
 press, release, symbols, and scroll dismissal. Baselines live in each crate's
 `tests/screenshots/` folder as RGB PNGs. Tests compare every pixel exactly.
 All cases in a suite are checked before the suite reports its failures.

@@ -32,6 +32,7 @@ pub fn run(
     let mut transcript =
         String::from("Welcome to metalOS.\n\nYour workspace takes shape around what you need.");
     ui.set_active_model(agent.active_model_id());
+    ui.set_tiles(&agent.synthesized_tiles());
     let mut pending = false;
     let mut partial = String::new();
     let mut booting = forge.is_boot_loading();
@@ -71,6 +72,16 @@ pub fn run(
                 }
             }
         }
+        while let Some(action) = ui.take_tile_action() {
+            match agent.execute_tile_action(&action) {
+                Ok(_) => ui.set_tiles(&agent.synthesized_tiles()),
+                Err(error) => {
+                    transcript.push_str("\n\nWelder: ");
+                    transcript.push_str(&alloc::format!("{}", error));
+                    ui.set_transcript(&transcript);
+                }
+            }
+        }
         if pending {
             if let Poll::Ready(result) = agent.poll_console_reply() {
                 pending = false;
@@ -81,6 +92,7 @@ pub fn run(
                     Err(error) => transcript.push_str(&alloc::format!("{}", error)),
                 }
                 ui.set_transcript(&transcript);
+                ui.set_tiles(&agent.synthesized_tiles());
             }
         }
         if pending {
@@ -114,11 +126,8 @@ pub fn run(
                 }
             }
             ui.set_active_model(agent.active_model_id());
-            if pending {
-                ui.update_streaming_reply(&transcript, "Thinking…");
-            } else {
-                ui.set_transcript(&transcript);
-            }
+            ui.set_transcript(&transcript);
+            ui.set_tiles(&agent.synthesized_tiles());
         }
         let elapsed = Duration::from_nanos(rng::monotonic_time_ns().saturating_sub(start));
         let _ = crate::fs::automation::tick_kernel_automations(&mut agent, elapsed.as_millis() as u64);
@@ -129,11 +138,10 @@ pub fn run(
             }
         }
         forge.note_ui_frame();
-        // Timer/virtqueue IRQ wakeup isn't wired yet. Poll at most 60 Hz rather
-        // than WFI, which could leave input waiting indefinitely.
+        // Sleep until the next frame; Forge can use the remaining CPU time.
         let deadline = frame_start.saturating_add(16_666_667);
         while rng::monotonic_time_ns() < deadline {
-            core::hint::spin_loop();
+            crate::task::scheduler::sleep_until(deadline);
         }
     }
 }

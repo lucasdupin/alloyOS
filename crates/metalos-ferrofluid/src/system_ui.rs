@@ -10,10 +10,11 @@ use core::{
     time::Duration,
 };
 use metalos_keyboard::{LiquidDisplacement, SoftKey};
+use metalos_mcp::protocol::{AppTile, TileAction};
 use metalos_proto::{DirtyRect, InputEvent, InputEventKind};
 use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
 use slint::platform::{Key, Platform, PointerEventButton, WindowAdapter, WindowEvent};
-use slint::{ComponentHandle, LogicalPosition, PhysicalSize, SharedString};
+use slint::{ComponentHandle, LogicalPosition, ModelRc, PhysicalSize, SharedString, VecModel};
 
 slint::include_modules!();
 
@@ -46,6 +47,8 @@ pub struct FerrofluidSystemUi {
     now: Rc<Cell<Duration>>,
     submissions: Rc<RefCell<VecDeque<String>>>,
     model_cycles: Rc<Cell<usize>>,
+    tiles: Rc<RefCell<Vec<AppTile>>>,
+    tile_actions: Rc<RefCell<VecDeque<TileAction>>>,
     rgb: Vec<slint::Rgb8Pixel>,
     argb: Vec<u32>,
     size: PhysicalSize,
@@ -107,6 +110,31 @@ impl FerrofluidSystemUi {
             soft_window.dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
             soft_window.dispatch_event(WindowEvent::KeyReleased { text });
         });
+        let tiles = Rc::new(RefCell::new(Vec::<AppTile>::new()));
+        let tile_actions = Rc::new(RefCell::new(VecDeque::new()));
+        let action_tiles = tiles.clone();
+        let action_queue = tile_actions.clone();
+        let weak = ui.as_weak();
+        ui.on_tile_action(move |tile_id, action_id| {
+            if weak.upgrade().is_some_and(|ui| ui.get_reply_pending()) {
+                return;
+            }
+            if let Some(action) = action_tiles
+                .borrow()
+                .iter()
+                .find(|tile| tile.tile_id == tile_id.as_str())
+                .and_then(|tile| {
+                    tile.actions
+                        .iter()
+                        .find(|action| action.id == action_id.as_str())
+                })
+            {
+                let mut queue = action_queue.borrow_mut();
+                if queue.len() < 16 {
+                    queue.push_back(action.clone());
+                }
+            }
+        });
         ui.show()?;
         window.dispatch_event(WindowEvent::WindowActiveChanged(true));
         Ok(Self {
@@ -115,6 +143,8 @@ impl FerrofluidSystemUi {
             now,
             submissions,
             model_cycles,
+            tiles,
+            tile_actions,
             rgb: vec![slint::Rgb8Pixel::default(); width as usize * height as usize],
             argb: vec![0xff000000; width as usize * height as usize],
             size,
@@ -132,15 +162,60 @@ impl FerrofluidSystemUi {
     pub fn set_reply_pending(&self, pending: bool) {
         self.ui.set_reply_pending(pending);
     }
+    /// Render semantic app descriptors without giving apps ownership of the UI.
+    pub fn set_tiles(&self, tiles: &[AppTile]) {
+        if self.tiles.borrow().as_slice() == tiles {
+            return;
+        }
+        let views = tiles
+            .iter()
+            .map(|tile| TileView {
+                tile_id: tile.tile_id.as_str().into(),
+                title: tile.title.as_str().into(),
+                subtitle: tile.subtitle.as_str().into(),
+                items: ModelRc::new(VecModel::from(
+                    tile.items
+                        .iter()
+                        .map(|item| TileItemView {
+                            id: item.id.as_str().into(),
+                            title: item.title.as_str().into(),
+                            subtitle: item.subtitle.as_str().into(),
+                            badge: item.badge.as_str().into(),
+                            status: item.status.as_str().into(),
+                        })
+                        .collect::<Vec<_>>(),
+                )),
+                actions: ModelRc::new(VecModel::from(
+                    tile.actions
+                        .iter()
+                        .map(|action| TileActionView {
+                            id: action.id.as_str().into(),
+                            label: action.label.as_str().into(),
+                        })
+                        .collect::<Vec<_>>(),
+                )),
+            })
+            .collect::<Vec<_>>();
+        *self.tiles.borrow_mut() = tiles.to_vec();
+        self.ui.set_tiles(ModelRc::new(VecModel::from(views)));
+    }
+    pub fn take_tile_action(&self) -> Option<TileAction> {
+        self.tile_actions.borrow_mut().pop_front()
+    }
     pub fn set_transcript(&self, text: &str) {
         self.ui.set_transcript(text.into());
     }
     pub fn transcript(&self) -> String {
         String::from(self.ui.get_transcript().as_str())
     }
+    pub fn chat_scroll_offset(&self) -> f32 {
+        self.ui.get_scroll_offset()
+    }
+    pub fn chat_scroll_maximum(&self) -> f32 {
+        self.ui.get_scroll_maximum()
+    }
     pub fn update_streaming_reply(&self, base_transcript: &str, partial_reply: &str) {
-        let mut combined =
-            String::with_capacity(base_transcript.len() + 10 + partial_reply.len());
+        let mut combined = String::with_capacity(base_transcript.len() + 10 + partial_reply.len());
         combined.push_str(base_transcript);
         combined.push_str("\n\nWelder: ");
         combined.push_str(partial_reply);
@@ -468,7 +543,11 @@ mod tests {
         assert_eq!(ui.pixels()[0], 0xff000000);
         let animated = ui.pixels().to_vec();
         ui.render(Duration::from_millis(16));
-        assert_eq!(ui.pixels(), animated.as_slice(), "fixed-time sampling must not drift");
+        assert_eq!(
+            ui.pixels(),
+            animated.as_slice(),
+            "fixed-time sampling must not drift"
+        );
         ui.set_booting(false);
         let damage = ui.render(Duration::ZERO).unwrap();
         assert!(damage.width > 0 && damage.height > 0);
@@ -476,14 +555,25 @@ mod tests {
         assert!(ui.pixels().iter().all(|pixel| pixel >> 24 == 255));
         assert!(ui.pixels().iter().any(|pixel| *pixel != ui.pixels()[0]));
         // Tap the model label through the actual physical input path.
-        for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
-            ui.handle_input(InputEvent { kind, code: 0x110, x: 1050, y: 110 });
+        for kind in [
+            InputEventKind::PointerButtonDown,
+            InputEventKind::PointerButtonUp,
+        ] {
+            ui.handle_input(InputEvent {
+                kind,
+                code: 0x110,
+                x: 1050,
+                y: 110,
+            });
         }
         assert!(ui.take_model_cycle());
         assert!(!ui.take_model_cycle());
         ui.set_reply_pending(true);
         ui.ui.invoke_cycle_model();
-        assert!(!ui.take_model_cycle(), "pending replies prevent model changes");
+        assert!(
+            !ui.take_model_cycle(),
+            "pending replies prevent model changes"
+        );
         ui.set_reply_pending(false);
         // Click the composer through physical-to-logical coordinate conversion.
         for kind in [
@@ -665,12 +755,9 @@ mod tests {
         ui.render(Duration::from_millis(2960));
         let base = "Welcome to metalOS.\n\nYou: Stream test";
         ui.set_reply_pending(true);
-        ui.update_streaming_reply(base, "Thinking…");
+        ui.set_transcript(base);
         assert!(ui.render(Duration::from_millis(2976)).is_some());
-        assert_eq!(
-            ui.transcript(),
-            "Welcome to metalOS.\n\nYou: Stream test\n\nWelder: Thinking…"
-        );
+        assert_eq!(ui.transcript(), base);
         ui.update_streaming_reply(base, "Hello");
         assert!(ui.render(Duration::from_millis(2992)).is_some());
         assert_eq!(
@@ -684,6 +771,24 @@ mod tests {
             ui.transcript(),
             "Welcome to metalOS.\n\nYou: Stream test\n\nWelder: Hello metalOS!"
         );
+        let refresh = TileAction::new(
+            "refresh", "Refresh", "clock.now", Default::default(),
+        );
+        ui.set_tiles(&[AppTile {
+            tile_id: "clock.now".into(), title: "Clock".into(), subtitle: String::new(),
+            refresh_resource_uri: None, items: Vec::new(), actions: vec![refresh.clone()],
+        }]);
+        ui.ui.invoke_tile_action("clock.now".into(), "refresh".into());
+        assert_eq!(ui.take_tile_action(), Some(refresh));
+        ui.ui.invoke_tile_action("clock.now".into(), "unknown".into());
+        assert!(ui.take_tile_action().is_none());
+        ui.set_reply_pending(true);
+        ui.ui.invoke_tile_action("clock.now".into(), "refresh".into());
+        assert!(ui.take_tile_action().is_none(), "pending replies disable tile actions");
+        ui.set_reply_pending(false);
+        ui.set_tiles(&[]);
+        ui.ui.invoke_tile_action("clock.now".into(), "refresh".into());
+        assert!(ui.take_tile_action().is_none(), "removed tiles cannot dispatch actions");
         // Key releases retain the original character even if Shift changes.
         let mut keys = EvdevKeyboard::default();
         keys.translate(42, true);

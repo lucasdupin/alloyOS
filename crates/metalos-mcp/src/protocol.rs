@@ -191,6 +191,164 @@ impl McpPrompt {
     }
 }
 
+/// App-provided SKILL text file descriptor (`/apps/<app_id>/SKILL.md`).
+///
+/// Supplies task instructions and MCP/Tile usage guidance to Welder without granting
+/// implicit capability escalation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppSkill {
+    pub app_id: String,
+    pub name: String,
+    pub path: String,
+    pub description: String,
+    pub content: String,
+}
+
+impl AppSkill {
+    pub fn new(
+        app_id: impl Into<String>,
+        name: impl Into<String>,
+        path: impl Into<String>,
+        description: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
+        Self {
+            app_id: app_id.into(),
+            name: name.into(),
+            path: path.into(),
+            description: description.into(),
+            content: content.into(),
+        }
+    }
+
+    pub fn to_mcp_value(&self) -> McpValue {
+        McpValue::Map(mcp_map(&[
+            ("app_id", McpValue::Text(self.app_id.clone())),
+            ("name", McpValue::Text(self.name.clone())),
+            ("path", McpValue::Text(self.path.clone())),
+            ("description", McpValue::Text(self.description.clone())),
+            ("content", McpValue::Text(self.content.clone())),
+        ]))
+    }
+}
+
+/// Interactive semantic action exposed on a declarative `AppTile` that maps to an MCP tool call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TileAction {
+    pub id: String,
+    pub label: String,
+    pub tool_name: String,
+    pub default_args: BTreeMap<String, McpValue>,
+}
+
+impl TileAction {
+    pub fn new(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        tool_name: impl Into<String>,
+        default_args: BTreeMap<String, McpValue>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+            tool_name: tool_name.into(),
+            default_args,
+        }
+    }
+
+    pub fn to_mcp_value(&self) -> McpValue {
+        McpValue::Map(mcp_map(&[
+            ("id", McpValue::Text(self.id.clone())),
+            ("label", McpValue::Text(self.label.clone())),
+            ("tool_name", McpValue::Text(self.tool_name.clone())),
+            ("default_args", McpValue::Map(self.default_args.clone())),
+        ]))
+    }
+}
+
+/// Renderer-agnostic item row inside an `AppTile` (e.g. a single scheduled task row).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TileItem {
+    pub id: String,
+    pub title: String,
+    pub subtitle: String,
+    pub badge: String,
+    pub status: String,
+}
+
+impl TileItem {
+    pub fn new(
+        id: impl Into<String>,
+        title: impl Into<String>,
+        subtitle: impl Into<String>,
+        badge: impl Into<String>,
+        status: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            title: title.into(),
+            subtitle: subtitle.into(),
+            badge: badge.into(),
+            status: status.into(),
+        }
+    }
+
+    pub fn to_mcp_value(&self) -> McpValue {
+        McpValue::Map(mcp_map(&[
+            ("id", McpValue::Text(self.id.clone())),
+            ("title", McpValue::Text(self.title.clone())),
+            ("subtitle", McpValue::Text(self.subtitle.clone())),
+            ("badge", McpValue::Text(self.badge.clone())),
+            ("status", McpValue::Text(self.status.clone())),
+        ]))
+    }
+}
+
+/// Declarative, UI-framework-agnostic Tile descriptor exposed by an MCP App.
+///
+/// Apps never import or depend on Slint or framebuffer primitives; instead, they expose
+/// semantic `AppTile` descriptors that Ferrofluid renders. The owning app is identified
+/// by its `/apps/<folder>/` directory name (and the `<folder>.<tile_name>` `tile_id` prefix).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppTile {
+    pub tile_id: String,
+    pub title: String,
+    pub subtitle: String,
+    pub refresh_resource_uri: Option<String>,
+    pub items: Vec<TileItem>,
+    pub actions: Vec<TileAction>,
+}
+
+impl AppTile {
+    /// Returns the app folder name derived from the `<folder>.<tile_name>` `tile_id` prefix.
+    pub fn folder(&self) -> Option<&str> {
+        self.tile_id.split_once('.').map(|(folder, _)| folder)
+    }
+
+    pub fn to_mcp_value(&self) -> McpValue {
+        McpValue::Map(mcp_map(&[
+            ("tile_id", McpValue::Text(self.tile_id.clone())),
+            ("title", McpValue::Text(self.title.clone())),
+            ("subtitle", McpValue::Text(self.subtitle.clone())),
+            (
+                "refresh_resource_uri",
+                match &self.refresh_resource_uri {
+                    Some(uri) => McpValue::Text(uri.clone()),
+                    None => McpValue::Null,
+                },
+            ),
+            (
+                "items",
+                McpValue::Array(self.items.iter().map(|i| i.to_mcp_value()).collect()),
+            ),
+            (
+                "actions",
+                McpValue::Array(self.actions.iter().map(|a| a.to_mcp_value()).collect()),
+            ),
+        ]))
+    }
+}
+
 /// Structured JSON-compatible value used across MCP messages.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpValue {
@@ -559,6 +717,10 @@ pub mod methods {
     pub const RESOURCES_READ: &str = "resources/read";
     pub const PROMPTS_LIST: &str = "prompts/list";
     pub const PROMPTS_GET: &str = "prompts/get";
+    pub const SKILLS_LIST: &str = "skills/list";
+    pub const SKILLS_READ: &str = "skills/read";
+    pub const TILES_LIST: &str = "tiles/list";
+    pub const TILES_RENDER: &str = "tiles/render";
 }
 
 /// JSON-RPC 2.0 MCP Request envelope.

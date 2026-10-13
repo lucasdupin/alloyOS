@@ -260,8 +260,23 @@ impl TensorView<'_> {
             // Unaligned NEON loads are valid; ranges are checked above.
             unsafe {
                 use core::arch::aarch64::*;
+                // Independent accumulators let NEON overlap FMA instructions
+                // instead of waiting on one dependency chain for each vector.
                 let mut sum = vdupq_n_f32(0.0);
+                let mut sum1 = sum;
+                let mut sum2 = sum;
+                let mut sum3 = sum;
                 let mut i = start;
+                while i + 16 <= end {
+                    let weights = self.data.as_ptr().add((row * x.len() + i) * 4) as *const f32;
+                    let input = x.as_ptr().add(i);
+                    sum = vfmaq_f32(sum, vld1q_f32(weights), vld1q_f32(input));
+                    sum1 = vfmaq_f32(sum1, vld1q_f32(weights.add(4)), vld1q_f32(input.add(4)));
+                    sum2 = vfmaq_f32(sum2, vld1q_f32(weights.add(8)), vld1q_f32(input.add(8)));
+                    sum3 = vfmaq_f32(sum3, vld1q_f32(weights.add(12)), vld1q_f32(input.add(12)));
+                    i += 16;
+                }
+                sum = vaddq_f32(vaddq_f32(sum, sum1), vaddq_f32(sum2, sum3));
                 while i + 4 <= end {
                     let weights = self.data.as_ptr().add((row * x.len() + i) * 4) as *const f32;
                     sum = vfmaq_f32(sum, vld1q_f32(weights), vld1q_f32(x.as_ptr().add(i)));
@@ -326,6 +341,27 @@ mod tests {
     fn truncated_never_panics() {
         for n in 0..24 {
             assert!(Gguf::parse(&b"GGUF\x03\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"[..n]).is_err())
+        }
+    }
+}
+
+#[cfg(test)]
+mod dot_product_tests {
+    use super::*;
+
+    #[test]
+    fn f32_dot_ranges_match_reference_for_vector_blocks_and_tails() {
+        let width = 65;
+        let weights: Vec<f32> = (0..width * 2).map(|i| ((i % 19) as f32 - 9.0) / 8.0).collect();
+        let data: Vec<u8> = weights.iter().flat_map(|value| value.to_le_bytes()).collect();
+        let input: Vec<f32> = (0..width).map(|i| ((i % 13) as f32 - 6.0) / 4.0).collect();
+        let tensor = TensorView { shape: &[65, 2], encoding: 0, data: &data };
+        for row in 0..2 {
+            for (start, end) in [(0, 65), (1, 64), (5, 8), (17, 65), (3, 3)] {
+                let reference: f32 = (start..end).map(|i| weights[row * width + i] * input[i]).sum();
+                let actual = tensor.dot_range(row, &input, start, end);
+                assert!((actual - reference).abs() < 0.0001, "row={row}, range={start}..{end}: {actual} vs {reference}");
+            }
         }
     }
 }

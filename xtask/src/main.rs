@@ -507,13 +507,24 @@ fn run_qemu(release: bool, debug_shell: bool, model_image: Option<PathBuf>, memo
     Ok(())
 }
 
+struct E2eVolume(PathBuf);
+impl E2eVolume {
+    fn new() -> Result<Self> {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
+        let path = std::env::temp_dir().join(format!("metalos-e2e-{}-{stamp}", std::process::id()));
+        std::fs::create_dir(&path)?;
+        Ok(Self(path))
+    }
+}
+impl Drop for E2eVolume {
+    fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+}
+
 fn run_e2e_tests(kernel_image: &Path, _overall_timeout: Duration) -> Result<()> {
-    let workspace_root = get_workspace_root()?;
-    let cobalt_image = workspace_root
-        .join("target")
-        .join("aarch64-unknown-none")
-        .join("debug")
-        .join("cobaltfs-e2e.img");
+    // Keep user settings within this run, but never inherit another run's config.
+    // Declare the volume before the harness so QEMU exits before disk cleanup.
+    let volume = E2eVolume::new()?;
+    let cobalt_image = volume.0.join("cobaltfs.img");
     ensure_cobaltfs_image(&cobalt_image)?;
 
     println!(
@@ -678,7 +689,8 @@ fn run_ci() -> Result<()> {
     println!("[xtask] Checking model asset tooling (offline)...");
     let assets = Command::new("python3").current_dir(&workspace_root).args(["-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py"]).status().context("Failed to run model asset and launcher tests")?;
     if !assets.success() { return Err(anyhow!("model asset tests failed")); }
-    let model_kernel = build_crates_mode(false, false, true)?;
+    // Exercise inference with the optimized kernel used for real model workloads.
+    let model_kernel = build_crates_mode(true, false, true)?;
     println!("[xtask] Checking large-file model loading in QEMU (synthetic fixture)...");
     let loader_test = Command::new("cargo").current_dir(&workspace_root)
         .args(["test", "-p", "metalos-dev-harness", "--test", "qemu_model_loader", "--",

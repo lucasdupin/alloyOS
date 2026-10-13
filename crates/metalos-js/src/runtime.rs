@@ -108,6 +108,15 @@ impl JsIsolate {
         source: &str,
         host: &mut dyn MetalOsHost,
     ) -> Result<JsValue, JsError> {
+        self.evaluate_source(source, host, true)
+    }
+
+    fn evaluate_source(
+        &mut self,
+        source: &str,
+        host: &mut dyn MetalOsHost,
+        run_main: bool,
+    ) -> Result<JsValue, JsError> {
         self.steps_executed = 0;
         let program = parse_program(source)?;
 
@@ -121,7 +130,7 @@ impl JsIsolate {
                 ControlFlow::Return(v) => return Ok(v),
             }
         }
-        if last_val == JsValue::Undefined
+        if run_main && last_val == JsValue::Undefined
             && matches!(program.last(), Some(Stmt::FunctionDecl { name, .. }) if name == "main")
         {
             if let Ok(JsValue::Function(main_fn)) = self.lookup_var("main") {
@@ -129,6 +138,27 @@ impl JsIsolate {
             }
         }
         Ok(last_val)
+    }
+
+    /// Evaluates a JavaScript module source (hoisting its functions and top-level bindings)
+    /// and invokes the named function `fn_name` with `args`.
+    pub fn call_function(
+        &mut self,
+        source: &str,
+        fn_name: &str,
+        args: &[JsValue],
+        host: &mut dyn MetalOsHost,
+    ) -> Result<JsValue, JsError> {
+        self.evaluate_source(source, host, false)?;
+        let func_val = self.lookup_var(fn_name)?;
+        match func_val {
+            JsValue::Function(func) => self.invoke_js_function(func, args, host),
+            other => Err(JsError::TypeError(format!(
+                "'{}' is not a function (found {})",
+                fn_name,
+                other.type_of()
+            ))),
+        }
     }
 
     fn tick_step(&mut self) -> Result<(), JsError> {
@@ -1004,6 +1034,56 @@ impl JsIsolate {
                     .map_err(JsError::ForbiddenCapability)?;
                 host.ui_notify(&msg);
                 Ok(JsValue::Bool(true))
+            }
+            ("scheduler", "list") => {
+                host.check_capability(&CapabilityRequest::SchedulerAccess)
+                    .map_err(JsError::ForbiddenCapability)?;
+                host.scheduler_list().map_err(JsError::HostError)
+            }
+            ("scheduler", "create") => {
+                if args.len() < 4 {
+                    return Err(JsError::TypeError(
+                        "MetalOS.scheduler.create requires (id, scriptPath, trigger, source) arguments"
+                            .to_string(),
+                    ));
+                }
+                let id = args[0].to_js_string();
+                let script_path = args[1].to_js_string();
+                let trigger = args[2].to_js_string();
+                let source = args[3].to_js_string();
+                host.check_capability(&CapabilityRequest::SchedulerAccess)
+                    .map_err(JsError::ForbiddenCapability)?;
+                host.scheduler_create(&id, &script_path, &trigger, &source)
+                    .map_err(JsError::HostError)
+            }
+            ("scheduler", "edit") => {
+                if args.len() < 3 {
+                    return Err(JsError::TypeError(
+                        "MetalOS.scheduler.edit requires (id, scriptPath, trigger, [source]) arguments"
+                            .to_string(),
+                    ));
+                }
+                let id = args[0].to_js_string();
+                let script_path = args[1].to_js_string();
+                let trigger = args[2].to_js_string();
+                let source = args.get(3).map(|v| v.to_js_string()).unwrap_or_default();
+                host.check_capability(&CapabilityRequest::SchedulerAccess)
+                    .map_err(JsError::ForbiddenCapability)?;
+                host.scheduler_edit(&id, &script_path, &trigger, &source)
+                    .map_err(JsError::HostError)
+            }
+            ("scheduler", "delete") => {
+                let id = args
+                    .first()
+                    .ok_or_else(|| {
+                        JsError::TypeError(
+                            "MetalOS.scheduler.delete requires an id argument".to_string(),
+                        )
+                    })?
+                    .to_js_string();
+                host.check_capability(&CapabilityRequest::SchedulerAccess)
+                    .map_err(JsError::ForbiddenCapability)?;
+                host.scheduler_delete(&id).map_err(JsError::HostError)
             }
             _ => Err(JsError::TypeError(format!(
                 "Unknown host capability 'MetalOS.{}.{}'",

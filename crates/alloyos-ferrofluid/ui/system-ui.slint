@@ -259,27 +259,89 @@ component TileCard inherits Rectangle {
     }
 }
 
+component DrippingColumn inherits Rectangle {
+    in property <int> time-ms: 0;
+    in property <int> delay-ms: 0;
+    width: 9px;
+    height: 28px;
+
+    property <int> t: mod(root.time-ms + 3600 - root.delay-ms, 3600);
+
+    property <length> droplet-y: root.t < 480 ?
+        3px + (5px * root.t) / 480 :
+        root.t < 1050 ?
+        8px + (14px * (root.t - 480) * (root.t - 480)) / 324900 :
+        3px;
+
+    property <length> droplet-height: root.t < 480 ?
+        4px + (6px * root.t) / 480 :
+        root.t < 1050 ?
+        6px :
+        4px;
+
+    property <length> droplet-w: root.t < 480 ?
+        5px - (1.5px * root.t) / 480 :
+        4.5px;
+
+    property <float> droplet-opacity: root.t < 480 ?
+        0.95 :
+        root.t < 1050 ?
+        0.95 * (1.0 - ((root.t - 480) * (root.t - 480)) / 324900.0) :
+        0.0;
+
+    property <float> anchor-opacity: root.t < 480 ?
+        1.0 :
+        root.t < 1050 ?
+        1.0 - (0.65 * (root.t - 480)) / 570.0 :
+        0.35;
+
+    property <length> anchor-height: root.t < 480 ?
+        7px + (1.5px * root.t) / 480 :
+        root.t < 700 ?
+        8.5px - (1.5px * (root.t - 480)) / 220 :
+        7px;
+
+    // Falling droplet
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: root.droplet-y;
+        width: root.droplet-w;
+        height: root.droplet-height;
+        border-radius: self.width / 2;
+        background: AlloyPalette.silver;
+        opacity: root.droplet-opacity;
+    }
+
+    // Anchor dot
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: 2px;
+        width: 7px;
+        height: root.anchor-height;
+        border-radius: 3.5px;
+        background: AlloyPalette.text;
+        opacity: root.anchor-opacity;
+    }
+}
+
 component ThinkingIndicator inherits Rectangle {
+    in property <int> time-ms: 0;
     height: 30px;
     accessible-role: text;
     accessible-label: "Thinking";
-    property <int> phase: 0;
+    property <int> local-time-ms: 0;
     Timer {
-        interval: 260ms;
+        interval: 16ms;
         running: true;
-        triggered => { root.phase = mod(root.phase + 1, 3); }
+        triggered => { root.local-time-ms = root.local-time-ms + 16; }
     }
+    property <int> effective-time-ms: root.time-ms > 0 ? root.time-ms : root.local-time-ms;
     HorizontalBox {
         alignment: start;
-        spacing: 6px;
-        for dot in 3: Rectangle {
-            width: 7px;
-            height: 7px;
-            border-radius: 4px;
-            background: AlloyPalette.chrome;
-            opacity: root.phase == dot ? 1 : 0.3;
-            animate opacity { duration: 220ms; }
-        }
+        spacing: 8px;
+        DrippingColumn { time-ms: root.effective-time-ms; delay-ms: 0; }
+        DrippingColumn { time-ms: root.effective-time-ms; delay-ms: 1200; }
+        DrippingColumn { time-ms: root.effective-time-ms; delay-ms: 2400; }
     }
 }
 
@@ -314,6 +376,7 @@ export component SystemUi inherits Window {
     in-out property <string> draft;
     out property <length> composer-scroll-offset: input.scroll-offset;
     in property <bool> reply-pending: false;
+    in property <int> loading-time-ms: 0;
     in property <[TileView]> tiles;
     in property <[MarkdownBlockView]> formatted-transcript;
     in property <[ChatItemView]> chat-items;
@@ -448,7 +511,7 @@ export component SystemUi inherits Window {
                                         refresh => { root.refresh-tile(item.tile.tile-id); }
                                     }
                                 }
-                                if root.reply-pending: ThinkingIndicator { }
+                                if root.reply-pending: ThinkingIndicator { time-ms: root.loading-time-ms; }
                             }
                         }
                     }

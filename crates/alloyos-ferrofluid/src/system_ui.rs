@@ -547,6 +547,9 @@ impl FerrofluidSystemUi {
         self.now.set(elapsed.max(self.now.get()));
         slint::platform::update_timers_and_animations();
         let booting = self.ui.get_booting();
+        if self.ui.get_reply_pending() {
+            self.ui.set_loading_time_ms(self.now.get().as_millis() as i32);
+        }
         let boot_damage = if booting {
             self.boot_liquid.advance(self.now.get());
             Some(self.boot_liquid.bounds())

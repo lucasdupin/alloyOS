@@ -16,6 +16,12 @@ pub mod forge_https;
 
 pub const MODEL_ADDRESS: usize = 0x8000_0000;
 pub const MAX_MODEL_BYTES: u64 = 14 * 1024 * 1024 * 1024;
+pub fn rpc_output_pending() -> bool {
+    #[cfg(all(target_arch = "aarch64", target_os = "none"))]
+    { super::forge_https::RPC_OUTPUT_PENDING.load(core::sync::atomic::Ordering::Relaxed) }
+    #[cfg(not(all(target_arch = "aarch64", target_os = "none")))]
+    { false }
+}
 #[cfg(any(
     test,
     all(target_arch = "aarch64", target_os = "none", feature = "forge")
@@ -303,6 +309,7 @@ impl ForgeService {
                             {
                                 status["ui_frames"] = serde_json::json!(self.ui_frames);
                                 status["ui_input_events"] = serde_json::json!(self.ui_input_events);
+                                status["inference_timing"] = serde_json::json!(super::forge_worker::timing());
                                 status["generation_pending"] = serde_json::json!(self
                                     .shared
                                     .borrow()

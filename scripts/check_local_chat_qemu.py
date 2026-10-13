@@ -15,11 +15,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--kernel', type=Path, required=True)
     parser.add_argument('--model-image', type=Path, required=True)
+    parser.add_argument('--memory', default='16G', help='Guest RAM (model launches require 16..31 GiB)')
+    parser.add_argument('--complete', action='store_true', help='Wait for completion and report guest inference timings')
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='mlc-') as directory:
         qmp_path = str(Path(directory) / 'qmp.sock')
         command = ['qemu-system-aarch64', '-M', 'virt', '-accel', 'hvf', '-cpu', 'host',
-                   '-kernel', str(args.kernel), '-m', '16G', '-display', 'none', '-monitor', 'none',
+                   '-kernel', str(args.kernel), '-m', args.memory, '-display', 'none', '-monitor', 'none',
                    '-device', 'virtio-gpu-device,xres=1206,yres=2622',
                    '-device', 'virtio-keyboard-device', '-device', 'virtio-tablet-device',
                    '-serial', 'stdio', '-qmp', f'unix:{qmp_path},server=on,wait=off',
@@ -104,6 +106,10 @@ def main():
                 {'type': 'btn', 'data': {'down': True, 'button': 'left'}},
                 {'type': 'btn', 'data': {'down': False, 'button': 'left'}}]})
             time.sleep(.3)
+            # Cloud is the UI default; this check explicitly exercises Gemma.
+            for code in ('slash', 'm', 'o', 'd', 'e', 'l', 'spc', 'l', 'o', 'c', 'a', 'l', 'ret'):
+                key(code)
+            time.sleep(.2)
             for letter in 'hellow':
                 key(letter)
             began = time.monotonic()
@@ -121,9 +127,25 @@ def main():
             while not any('[welder] Reply text advanced.' in item for item in log):
                 assert time.monotonic() < deadline, 'No first reply token within three minutes'
                 time.sleep(1)
-                status(identifier)
+                progress = status(identifier)
+                if progress.get('inference_timing', [0])[0] > 0:
+                    break
                 identifier += 1
             print(f'Local hellow chat stayed responsive; first text after {time.monotonic() - began:.1f}s.')
+            if args.complete:
+                deadline = time.monotonic() + 180
+                while True:
+                    final = status(identifier)
+                    if not final['generation_pending']:
+                        break
+                    identifier += 1
+                    assert time.monotonic() < deadline, 'Generation did not finish'
+                    time.sleep(1)
+                first, total, tokens = final['inference_timing']
+                decode_seconds = (total - first) / 1000
+                speed = (tokens - 1) / decode_seconds if tokens > 1 and decode_seconds > 0 else 0
+                print(f'Guest timing: first text {first / 1000:.3f}s; total {total / 1000:.3f}s; '
+                      f'{tokens} tokens; decode {speed:.2f} tokens/s.')
         finally:
             if channel:
                 channel.close()

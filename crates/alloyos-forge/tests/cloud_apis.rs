@@ -84,6 +84,7 @@ fn all_apis_execute_through_forge_and_gateway_with_explicit_selection() {
     );
     let mut gateway = ModelGateway::new();
     gateway.set_forge(forge);
+    gateway.switch_provider("local").unwrap();
     assert!(matches!(
         gateway.chat(&[Message::user("hello")], &[], &mut |_| {}),
         Err(AiError::LocalInferenceError(_))

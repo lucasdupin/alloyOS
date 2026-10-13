@@ -100,6 +100,7 @@ pub fn init() {
             "dsb ish",
             "isb",
             "mrs {tmp}, sctlr_el1",
+            "bic {tmp}, {tmp}, #(1 << 1)",  // SCTLR_EL1.A: allow unaligned Normal RAM loads
             "orr {tmp}, {tmp}, #(1 << 0)",  // SCTLR_EL1.M (Enable MMU)
             "orr {tmp}, {tmp}, #(1 << 2)",  // SCTLR_EL1.C (Enable Data Cache)
             "orr {tmp}, {tmp}, #(1 << 12)", // SCTLR_EL1.I (Enable Instruction Cache)

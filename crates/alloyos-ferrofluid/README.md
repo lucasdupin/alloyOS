@@ -64,3 +64,6 @@ Slint is pinned to 1.18.1 with default features disabled. There is no desktop
 window backend, JVM, browser, or host font access in the bare-metal runtime.
 See [Slint's upstream license](https://github.com/slint-ui/slint/blob/v1.18.1/LICENSE.md)
 for distribution terms; Quicksand's OFL is included in `assets/fonts` at the workspace root.
+
+Tap the model name in the header to switch models. Model changes are disabled
+while a reply is pending.

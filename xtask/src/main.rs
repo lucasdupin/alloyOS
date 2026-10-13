@@ -507,13 +507,24 @@ fn run_qemu(release: bool, debug_shell: bool, model_image: Option<PathBuf>, memo
     Ok(())
 }
 
+struct E2eVolume(PathBuf);
+impl E2eVolume {
+    fn new() -> Result<Self> {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
+        let path = std::env::temp_dir().join(format!("metalos-e2e-{}-{stamp}", std::process::id()));
+        std::fs::create_dir(&path)?;
+        Ok(Self(path))
+    }
+}
+impl Drop for E2eVolume {
+    fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+}
+
 fn run_e2e_tests(kernel_image: &Path, _overall_timeout: Duration) -> Result<()> {
-    let workspace_root = get_workspace_root()?;
-    let cobalt_image = workspace_root
-        .join("target")
-        .join("aarch64-unknown-none")
-        .join("debug")
-        .join("cobaltfs-e2e.img");
+    // Keep user settings within this run, but never inherit another run's config.
+    // Declare the volume before the harness so QEMU exits before disk cleanup.
+    let volume = E2eVolume::new()?;
+    let cobalt_image = volume.0.join("cobaltfs.img");
     ensure_cobaltfs_image(&cobalt_image)?;
 
     println!(

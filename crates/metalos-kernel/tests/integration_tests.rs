@@ -145,9 +145,9 @@ fn integration_full_ai_os_stack_e2e() {
 
     let mut mcp = McpRegistry::new();
     register_builtin_apps(&mut mcp).expect("builtin Tasks MCP app must pass sandbox check");
-    assert_eq!(mcp.app_count(), 1);
-    assert_eq!(mcp.list_skills().len(), 1);
-    assert_eq!(mcp.list_tiles().len(), 1);
+    assert_eq!(mcp.app_count(), 2); // Tasks and Clock are both registered.
+    assert_eq!(mcp.list_skills().len(), 2);
+    assert_eq!(mcp.list_tiles().len(), 2);
 
     // Call `tasks.create` via MCP (as Welder)
     let mut args = std::collections::BTreeMap::new();

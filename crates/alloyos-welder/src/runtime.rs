@@ -32,6 +32,8 @@ pub struct ConsoleTurnOutput {
 pub struct AgentRuntime {
     gateway: ModelGateway,
     pinned_tile_ids: Vec<String>,
+    turn_tool_calls: usize,
+    turn_tool_outputs: Vec<ToolExecutionOutput>,
     pub history: Vec<Message>,
     pub tool_registry: NativeToolRegistry,
     pub ui_synthesizer: AgentUiSynthesizer,
@@ -52,6 +54,8 @@ impl AgentRuntime {
         let mut runtime = Self {
             gateway: ModelGateway::new(),
             pinned_tile_ids: Vec::new(),
+            turn_tool_calls: 0,
+            turn_tool_outputs: Vec::new(),
             history: vec![Message::system(
                 "You are the alloyOS Ferrofluid AI Agent running on bare-metal ARM64. \
                  POSIX shells (sh, bash) do not exist for the agent; use structured OS tools, \
@@ -78,6 +82,8 @@ impl AgentRuntime {
         let mut runtime = Self {
             gateway: ModelGateway::new(),
             pinned_tile_ids: Vec::new(),
+            turn_tool_calls: 0,
+            turn_tool_outputs: Vec::new(),
             history: vec![Message::system(
                 "You are the alloyOS Ferrofluid AI Agent running on bare-metal ARM64. \
                  POSIX shells (sh, bash) do not exist for the agent; use structured OS tools, \
@@ -702,10 +708,15 @@ impl AgentRuntime {
         let messages = self.messages_with_knowledge_context(trimmed);
         let tools_snapshot = self.tool_registry.specs().to_vec();
 
-        let response = self
-            .gateway
-            .chat(&messages, &tools_snapshot, on_token)?;
-        self.apply_response(response)
+        self.turn_tool_calls = 0;
+        self.turn_tool_outputs.clear();
+        let mut messages = messages;
+        loop {
+            let response = self.gateway.chat(&messages, &tools_snapshot, on_token)?;
+            if response.tool_calls.is_empty() { return self.apply_response(response); }
+            self.execute_response_tools(&response)?;
+            messages = self.messages_with_knowledge_context(trimmed);
+        }
     }
 
     /// Console UI entry point: return immediately after starting cloud work.
@@ -738,7 +749,10 @@ impl AgentRuntime {
 
         self.history.push(Message::user(trimmed));
         let messages = self.messages_with_knowledge_context(trimmed);
-        if let Err(error) = self.gateway.start_chat(&messages) {
+        self.turn_tool_calls = 0;
+        self.turn_tool_outputs.clear();
+        let tools = self.tool_registry.specs().to_vec();
+        if let Err(error) = self.gateway.start_chat_with_tools(&messages, &tools) {
             self.history.pop();
             return Err(error);
         }
@@ -751,32 +765,50 @@ impl AgentRuntime {
         match self.gateway.poll_chat() {
             Poll::Pending => Poll::Pending,
             Poll::Ready(result) => {
-                Poll::Ready(result.and_then(|response| self.apply_response(response)))
+                let response = match result { Ok(response) => response, Err(error) => return Poll::Ready(Err(error)) };
+                if response.tool_calls.is_empty() { return Poll::Ready(self.apply_response(response)); }
+                if let Err(error) = self.execute_response_tools(&response) { return Poll::Ready(Err(error)); }
+                let tools = self.tool_registry.specs().to_vec();
+                let user = self.history.iter().rev().find(|m| m.role == alloyos_forge::provider::Role::User)
+                    .map(|m| m.content.clone()).unwrap_or_default();
+                let messages = self.messages_with_knowledge_context(&user);
+                match self.gateway.start_chat_with_tools(&messages, &tools) {
+                    Ok(()) => Poll::Pending,
+                    Err(error) => Poll::Ready(Err(error)),
+                }
             }
         }
     }
 
-    fn apply_response(&mut self, response: Response) -> Result<ConsoleTurnOutput, AiError> {
-        let mut tool_outputs = Vec::new();
-        for call in &response.tool_calls {
-            let output = self
-                .tool_registry
-                .execute_tool(call, &mut self.ui_synthesizer)?;
-            self.history
-                .push(Message::tool_result(&call.id, &output.output_json));
-            tool_outputs.push(output);
+    fn execute_response_tools(&mut self, response: &Response) -> Result<(), AiError> {
+        if self.turn_tool_calls + response.tool_calls.len() > 8 {
+            return Err(AiError::PolicyViolation("Tool call budget exhausted".into()));
         }
-
-        self.history.push(Message::assistant_with_tools(
-            &response.text,
-            response.tool_calls.clone(),
-        ));
-
+        self.turn_tool_calls += response.tool_calls.len();
+        self.history.push(Message::assistant_with_tools(&response.text, response.tool_calls.clone()));
+        for call in &response.tool_calls {
+            let output = self.tool_registry.execute_tool(call, &mut self.ui_synthesizer)?;
+            let model_output = if call.name == "mcp_list_tools" {
+                // Discovery needs schemas, not every rendered tile and full skill body.
+                // Keep the complete result for the UI, and a compact inventory for the model.
+                let value: serde_json::Value = serde_json::from_str(&output.output_json)
+                    .map_err(|_| AiError::ParseError("Invalid app inventory".into()))?;
+                format!("{{\"ok\":true,\"headless_mcp_apps\":{},\"tools\":{},\"resources\":{}}}",
+                    value["headless_mcp_apps"], value["tools"], value["resources"])
+            } else { output.output_json.clone() };
+            self.history.push(Message::tool_result(&call.id, model_output));
+            self.turn_tool_outputs.push(output);
+        }
+        Ok(())
+    }
+    fn apply_response(&mut self, response: Response) -> Result<ConsoleTurnOutput, AiError> {
+        if !response.tool_calls.is_empty() { self.execute_response_tools(&response)?; }
+        else { self.history.push(Message::assistant(&response.text)); }
         Ok(ConsoleTurnOutput {
             active_provider: self.active_provider_name(),
             active_model: response.model_name,
             response_text: response.text,
-            tool_outputs,
+            tool_outputs: core::mem::take(&mut self.turn_tool_outputs),
             config_persisted: false,
         })
     }
@@ -982,6 +1014,62 @@ mod tests {
     use super::*;
     use crate::{ProviderToolCall as ToolCall, ToolSpec, UiCallerOrigin, ViewKind};
     use alloyos_forge::provider::TokenUsage;
+    #[test]
+    fn console_local_tool_loop_discovers_filesystem_apps_before_invoking_them() {
+        use alloc::boxed::Box;
+        use alloyos_forge::{InferenceBackend, Generation, GenerationRequest, ForgeError, DEFAULT_MODEL};
+        struct Model { step: usize, app: String, tool: String }
+        impl InferenceBackend for Model {
+            fn resident_bytes(&self) -> u64 { 0 }
+            fn generate(&mut self, request: &GenerationRequest) -> Result<Generation, ForgeError> {
+                assert!(request.prompt.contains("mcp_list_tools:"));
+                let text = match self.step {
+                    0 => r#"{"kind":"tools","calls":[{"name":"mcp_list_tools","arguments":{}}]}"#.into(),
+                    1 => {
+                        assert!(request.prompt.contains("tool: {\"ok\":true,\"headless_mcp_apps\":"));
+                        assert!(request.prompt.contains(&self.tool));
+                        serde_json::json!({"kind":"tools","calls":[{"name":"mcp_call_tool","arguments":{"app":self.app,"tool":self.tool,"args":"{}"}}]}).to_string()
+                    }
+                    2 => {
+                        assert!(request.prompt.contains("requested tool mcp_call_tool"));
+                        assert_eq!(request.prompt.lines().filter(|line| line.starts_with("tool: ")).count(), 2);
+                        r#"{"kind":"final","text":"Answer based on the app result."}"#.into()
+                    }
+                    _ => panic!("unbounded model loop"),
+                };
+                self.step += 1;
+                Ok(Generation { model: DEFAULT_MODEL.into(), text, generated_tokens: 20 })
+            }
+        }
+        for asynchronous in [false, true] {
+            let mut runtime = runtime_with_apps();
+            let tool = runtime.tool_registry.mcp_registry().list_tools().into_iter()
+                .find(|tool| tool.parameters.is_empty() && tool.name.matches('.').count() == 1).unwrap();
+            let app = tool.name.split('.').next().unwrap().to_string();
+            let forge = Rc::new(RefCell::new(Forge::new(0)));
+            forge.borrow_mut().attach(DEFAULT_MODEL, Box::new(Model { step: 0, app, tool: tool.name })).unwrap();
+            runtime.gateway.set_forge(forge);
+            runtime.switch_provider("forge").unwrap();
+            let mut displayed = String::new();
+            let output = if asynchronous {
+                assert!(runtime.start_console_input("Read a live value from an available app.").unwrap().is_none());
+                loop {
+                    assert!(runtime.partial_console_reply().is_none(), "tool protocol must not leak into chat");
+                    match runtime.poll_console_reply() {
+                        Poll::Pending => {},
+                        Poll::Ready(result) => break result.unwrap(),
+                    }
+                }
+            } else {
+                runtime.handle_console_input("Read a live value from an available app.", &mut |token| displayed.push_str(token)).unwrap()
+            };
+            assert_eq!(output.response_text, "Answer based on the app result.");
+            assert_eq!(output.tool_outputs.len(), 2);
+            if !asynchronous { assert_eq!(displayed, output.response_text); }
+            assert_eq!(runtime.history.last().unwrap().content, output.response_text);
+        }
+    }
+
     #[test]
     fn app_inventory_comes_only_from_the_filesystem() {
         let backend = crate::SharedMapVfsBackend::shared();

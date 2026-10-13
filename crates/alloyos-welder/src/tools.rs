@@ -1881,6 +1881,7 @@ impl NativeToolRegistry {
                     .iter()
                     .map(|t| t.to_mcp_value().to_json())
                     .collect();
+                let resources: Vec<String> = reg.list_resources().iter().map(|r| r.to_mcp_value().to_json()).collect();
                 let skills: Vec<String> = reg
                     .list_skills()
                     .iter()
@@ -1894,9 +1895,10 @@ impl NativeToolRegistry {
                 Ok(ToolExecutionOutput {
                     tool_name: call.name.clone(),
                     output_json: format!(
-                        "{{\"ok\":true,\"headless_mcp_apps\":[{}],\"orchestrator\":\"welder\",\"ui_policy\":\"agent_exclusive\",\"tools\":[{}],\"skills\":[{}],\"tiles\":[{}]}}",
+                        "{{\"ok\":true,\"headless_mcp_apps\":[{}],\"orchestrator\":\"welder\",\"ui_policy\":\"agent_exclusive\",\"tools\":[{}],\"resources\":[{}],\"skills\":[{}],\"tiles\":[{}]}}",
                         apps.join(","),
                         tools.join(","),
+                        resources.join(","),
                         skills.join(","),
                         tiles.join(",")
                     ),

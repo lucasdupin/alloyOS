@@ -425,7 +425,7 @@ impl Gemma2 {
             .tokenizer
             .chat(&r.prompt)
             .map_err(|_| ForgeError::GenerationFailed)?;
-        if prompt.len() + r.max_tokens as usize > self.model.context.min(512) {
+        if prompt.len() + r.max_tokens as usize > self.model.context.min(2048) {
             return Err(ForgeError::InvalidRequest);
         }
         let cache_bytes = self
@@ -438,7 +438,7 @@ impl Gemma2 {
             .ok_or(ForgeError::MemoryBudgetExceeded)?;
         let workspace = prompt.len().min(PREFILL_BATCH_TOKENS).checked_mul(self.model.dim * 5 + self.model.ff * 3 + self.model.heads * self.model.head_dim)
             .and_then(|n| n.checked_mul(4)).ok_or(ForgeError::MemoryBudgetExceeded)?;
-        if cache_bytes.saturating_add(workspace) > 128 * 1024 * 1024 {
+        if cache_bytes.saturating_add(workspace) > 512 * 1024 * 1024 {
             return Err(ForgeError::MemoryBudgetExceeded);
         }
         let model = self.model.clone();

@@ -1,0 +1,14 @@
+[
+  {
+    "uri": "mcp://calc/history",
+    "name": "Calculation History",
+    "mime_type": "application/json",
+    "description": "Recent calculation history tape"
+  },
+  {
+    "uri": "mcp://calc/constants",
+    "name": "Mathematical Constants",
+    "mime_type": "application/json",
+    "description": "Common mathematical and physical constants"
+  }
+]

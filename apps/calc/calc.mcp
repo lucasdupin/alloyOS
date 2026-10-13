@@ -1,0 +1,5 @@
+# alloyOS Headless MCP App Manifest (/apps/calc/calc.mcp)
+app_id = calc
+name = Calculator
+version = 1.0.0
+capabilities = ExposeMcpTools, ExposeMcpResources, ExposeMcpPrompts, ExposeSkills, ExposeTiles

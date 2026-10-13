@@ -1,0 +1,43 @@
+[
+  {
+    "name": "calc.evaluate",
+    "description": "Evaluate an arithmetic expression deterministically (e.g. '15 + 27 * 3', '100 / 4', '2 ^ 10'). Supported operators: +, -, *, /, %, ^",
+    "params": [
+      {
+        "name": "expression",
+        "type": "string",
+        "required": true,
+        "description": "Arithmetic expression to compute"
+      }
+    ]
+  },
+  {
+    "name": "calc.convert",
+    "description": "Convert units between metric, imperial, and data systems",
+    "params": [
+      {
+        "name": "value",
+        "type": "number",
+        "required": true,
+        "description": "Numeric quantity to convert"
+      },
+      {
+        "name": "from",
+        "type": "string",
+        "required": true,
+        "description": "Source unit (e.g. km, mi, m, ft, in, c, f, kg, lb, mb, gb)"
+      },
+      {
+        "name": "to",
+        "type": "string",
+        "required": true,
+        "description": "Target unit (e.g. km, mi, m, ft, in, c, f, kg, lb, mb, gb)"
+      }
+    ]
+  },
+  {
+    "name": "calc.clear",
+    "description": "Clear the calculation history tape",
+    "params": []
+  }
+]

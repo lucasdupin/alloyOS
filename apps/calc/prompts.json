@@ -1,0 +1,12 @@
+[
+  {
+    "name": "calc.solve",
+    "description": "Solve a math problem or unit conversion accurately",
+    "params": [
+      {
+        "name": "problem",
+        "description": "Math expression or question to solve"
+      }
+    ]
+  }
+]

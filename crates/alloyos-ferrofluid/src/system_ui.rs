@@ -50,6 +50,8 @@ pub struct FerrofluidSystemUi {
     now: Rc<Cell<Duration>>,
     submissions: Rc<RefCell<VecDeque<String>>>,
     model_cycles: Rc<Cell<usize>>,
+    voice_toggles: Rc<Cell<usize>>,
+    voice_mutes: Rc<Cell<usize>>,
     tiles: Rc<RefCell<Vec<AppTile>>>,
     chat_items: Rc<RefCell<Vec<ChatItem>>>,
     available_tiles: Rc<RefCell<Vec<AppTile>>>,
@@ -139,6 +141,12 @@ impl FerrofluidSystemUi {
                 cycles.set(cycles.get().saturating_add(1));
             }
         });
+        let voice_toggles = Rc::new(Cell::new(0usize));
+        let toggles = voice_toggles.clone();
+        ui.on_voice_toggle(move || { toggles.set(toggles.get().saturating_add(1).min(16)); });
+        let voice_mutes = Rc::new(Cell::new(0usize));
+        let mutes = voice_mutes.clone();
+        ui.on_voice_mute(move || { mutes.set(mutes.get().saturating_add(1).min(16)); });
         let soft_window = window.clone();
         ui.on_soft_key(move |value| {
             let text = SoftKey::from(value).into_slint_text();
@@ -278,6 +286,8 @@ impl FerrofluidSystemUi {
             now,
             submissions,
             model_cycles,
+            voice_toggles,
+            voice_mutes,
             tiles,
             chat_items,
             available_tiles,
@@ -301,6 +311,35 @@ impl FerrofluidSystemUi {
             top_blur: vec![slint::Rgb8Pixel::default(); width as usize * (40.0 * scale) as usize],
         })
     }
+
+    /// Apply provider/session status without transferring microphone ownership to UI.
+    pub fn set_voice_state(&self, state: alloyos_mcp::display::VoiceState, caption: &str, error: &str) {
+        use alloyos_mcp::display::VoiceState;
+        self.ui.set_voice_state(match state {
+            VoiceState::Off => 0, VoiceState::Connecting => 1, VoiceState::Listening => 2,
+            VoiceState::Responding => 3, VoiceState::Muted => 4, VoiceState::Error => 5,
+        });
+        self.ui.set_voice_caption(caption.into());
+        self.ui.set_voice_error(error.into());
+        self.backdrop_dirty.set(true);
+    }
+    /// Smoothed by the view; level is microphone RMS normalized to 0..1000.
+    pub fn set_voice_level(&self, level: u16) {
+        self.ui.set_voice_level(level.min(1000) as f32 / 1000.0);
+    }
+
+    pub fn take_voice_toggle(&self) -> bool {
+        let count = self.voice_toggles.get();
+        self.voice_toggles.set(count.saturating_sub(1));
+        count > 0
+    }
+    pub fn take_voice_mute(&self) -> bool {
+        let count = self.voice_mutes.get();
+        self.voice_mutes.set(count.saturating_sub(1));
+        count > 0
+    }
+    pub fn set_reduced_motion(&self, reduced: bool) { self.ui.set_reduced_motion(reduced); }
+    pub fn open_keyboard(&self) { self.ui.invoke_open_keyboard(); }
 
     pub fn set_booting(&self, booting: bool) {
         self.backdrop_dirty.set(true);
@@ -561,7 +600,7 @@ impl FerrofluidSystemUi {
         self.now.set(elapsed.max(self.now.get()));
         slint::platform::update_timers_and_animations();
         let booting = self.ui.get_booting();
-        if self.ui.get_reply_pending() {
+        if self.ui.get_reply_pending() || (1..=3).contains(&self.ui.get_voice_state()) {
             self.ui.set_loading_time_ms(self.now.get().as_millis() as i32);
         }
         let boot_damage = if booting {
@@ -585,7 +624,7 @@ impl FerrofluidSystemUi {
         let liquid_damage = self.liquid.advance(
             self.now.get(),
             self.ui.get_keyboard_reveal(),
-            booting || sidebar_active,
+            booting || sidebar_active || self.ui.get_reduced_motion(),
         );
         if liquid_damage.is_some() || sidebar_damage.is_some() || boot_damage.is_some() {
             self.window.request_redraw();
@@ -1064,7 +1103,7 @@ mod tests {
     // Only one test owns Slint's process-wide, single-context platform.
     fn assert_long_composer_scrolling(ui: &mut FerrofluidSystemUi) {
         for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
-            ui.handle_input(InputEvent { kind, code: 0x110, x: 300, y: 2500 });
+            ui.handle_input(InputEvent { kind, code: 0x110, x: 771, y: 2454 });
         }
         let text = "This is a long chat message that should keep the newest characters visible while typing. ".repeat(4);
         for ch in text.chars() { ui.ui.invoke_soft_key(ch.to_string().into()); }
@@ -1269,6 +1308,47 @@ mod tests {
         for frame in 0..4 { ui.render(Duration::from_millis(frame * 16)); }
         assert!(ui.chat_scroll_maximum() > 0.0, "inline bold paragraphs must wrap and grow the transcript");
         ui.set_transcript(&original_transcript);
+        // Voice intent starts only on an explicit mic tap; typing emits mute.
+        assert!(!ui.take_voice_toggle());
+        for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
+            ui.handle_input(InputEvent { kind, code: 0x110, x: 435, y: 2454 });
+        }
+        assert!(ui.take_voice_toggle());
+        assert!(!ui.take_voice_toggle());
+        ui.set_voice_state(alloyos_mcp::display::VoiceState::Listening, "Live caption", "");
+        assert_eq!(ui.ui.get_voice_caption().as_str(), "Live caption");
+        ui.set_reduced_motion(true);
+        ui.set_voice_level(0);
+        ui.render(Duration::ZERO);
+        let quiet = ui.pixels().to_vec();
+        ui.set_voice_level(1000);
+        ui.render(Duration::ZERO);
+        assert!(ui.pixels() != quiet.as_slice(), "microphone volume must change vector wave geometry");
+        assert_eq!(ui.ui.get_voice_level(), 1.0);
+        ui.set_voice_level(u16::MAX);
+        assert_eq!(ui.ui.get_voice_level(), 1.0, "volume is clamped");
+        // The merged mic remains centered and can still stop the session.
+        for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
+            ui.handle_input(InputEvent { kind, code: 0x110, x: 603, y: 2454 });
+        }
+        assert!(ui.take_voice_toggle());
+        ui.set_reduced_motion(false);
+        ui.open_keyboard();
+        ui.render(Duration::ZERO);
+        assert!(ui.take_voice_mute(), "opening keyboard must mute capture");
+        ui.set_reduced_motion(true);
+        ui.render(Duration::ZERO);
+        assert_eq!(ui.ui.get_keyboard_reveal(), 213.0, "reduced motion opens without sliding");
+        ui.ui.set_draft("preserved draft".into());
+        ui.ui.invoke_release_editor();
+        ui.render(Duration::ZERO);
+        assert_eq!(ui.ui.get_draft().as_str(), "preserved draft");
+        assert_eq!(ui.ui.get_keyboard_reveal(), 0.0, "reduced motion dismisses immediately");
+        assert!(!ui.take_voice_toggle(), "dismissal must not resume capture");
+        ui.ui.set_draft("".into());
+        ui.set_voice_state(alloyos_mcp::display::VoiceState::Off, "", "");
+        ui.render(Duration::ZERO);
+        ui.set_reduced_motion(false);
         assert_long_composer_scrolling(&mut ui);
         // Tapping the model name directly requests a model change.
         for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
@@ -1316,8 +1396,8 @@ mod tests {
             ui.handle_input(InputEvent {
                 kind,
                 code: 0x110,
-                x: 300,
-                y: 2500,
+                x: 771,
+                y: 2454,
             });
         }
         for kind in [InputEventKind::KeyDown, InputEventKind::KeyUp] {
@@ -1413,8 +1493,8 @@ mod tests {
             ui.handle_input(InputEvent {
                 kind,
                 code: 0x110,
-                x: 300,
-                y: 2500,
+                x: 771,
+                y: 2454,
             });
         }
         ui.render(Duration::from_millis(1136));
@@ -1467,8 +1547,8 @@ mod tests {
             ui.handle_input(InputEvent {
                 kind,
                 code: 0x110,
-                x: 300,
-                y: 2500,
+                x: 771,
+                y: 2454,
             });
         }
         ui.render(Duration::from_millis(2400));

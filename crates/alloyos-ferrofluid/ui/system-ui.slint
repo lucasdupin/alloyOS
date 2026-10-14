@@ -372,7 +372,7 @@ export component SystemUi inherits Window {
     out property <length> sidebar-reveal: root.sidebar-dragging ? root.sidebar-drag-reveal : root.sidebar-open ? root.sidebar-width : 0px;
     animate sidebar-reveal { duration: root.sidebar-dragging ? 0ms : 260ms; easing: ease-out; }
     callback release-editor();
-    release-editor => { unfocused.focus(); }
+    release-editor => { unfocused.focus(); root.composer-active = false; }
     in property <string> active-model: "Gemini";
     in property <string> model-selection-status;
     in property <string> transcript: "Welcome to alloyOS.\n\nYour workspace takes shape around what you need.";
@@ -398,6 +398,25 @@ export component SystemUi inherits Window {
     callback submit(string);
     callback cycle-model();
     callback soft-key(string);
+    callback voice-toggle();
+    callback voice-mute();
+    in property <int> voice-state: 0;
+    in property <float> voice-level: 0;
+    property <bool> voice-active: root.voice-state >= 1 && root.voice-state <= 3;
+    property <float> voice-merge: root.voice-active ? 1 : 0;
+    animate voice-merge { duration: root.reduced-motion ? 0ms : 480ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+    property <float> wave-level: root.voice-level;
+    animate wave-level { duration: root.reduced-motion ? 0ms : 100ms; easing: ease-out; }
+    in property <string> voice-caption;
+    in property <string> voice-error;
+    in property <bool> reduced-motion: false;
+    property <bool> composer-active: false;
+    property <float> animated-typing-progress: keyboard.shown ? 1 : 0;
+    property <float> typing-progress: root.reduced-motion ? (keyboard.shown ? 1 : 0) : root.animated-typing-progress;
+    animate animated-typing-progress { duration: root.reduced-motion ? 0ms : 420ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+    changed keyboard-visible => { if root.keyboard-visible { root.voice-mute(); } }
+    callback open-keyboard();
+    open-keyboard => { root.composer-active = true; input.focus(); keyboard.reopen(); }
     out property <length> chat-top: body.y + chat.y;
     out property <length> scroll-offset: -scroll.content-y;
     out property <length> scroll-maximum: max(0px, scroll.content-height - scroll.visible-height);
@@ -527,15 +546,21 @@ export component SystemUi inherits Window {
                     }
                 }
             }
-            HorizontalBox {
-                padding: 20px;
+            composer := Rectangle {
+                height: (root.voice-state != 0 || root.voice-caption != "" ? 140px : 112px) * (1 - root.typing-progress) + 72px * root.typing-progress;
+                vertical-stretch: 0;
                 input := AlloyLineEdit {
+                    x: 20px; y: 20px + 16px * (1 - root.typing-progress);
+                    width: parent.width - 40px;
+                    visible: root.composer-active || root.typing-progress > 0;
+                    opacity: root.typing-progress;
                     placeholder-text: "What would you like to do?";
                     text <=> root.draft;
                     edited => { keyboard.reopen(); }
                     accepted => { if (root.draft != "" && !root.reply-pending) { root.submit(root.draft); } }
                 }
             }
+
         }
         unfocused := FocusScope { width: 0px; height: 0px; }
         keyboard := SoftKeyboard {
@@ -543,9 +568,111 @@ export component SystemUi inherits Window {
             y: parent.height - root.keyboard-reveal;
             width: parent.width - 8px;
             requested: input.has-focus;
+            reduced-motion: root.reduced-motion;
             suspended: root.booting || root.sidebar-reveal > 0px;
             key(value) => { root.soft-key(value); }
-            dismiss => { unfocused.focus(); }
+            dismiss => { root.release-editor(); }
+        }
+        // Cubic vector ribbons, driven by the smoothed microphone RMS envelope.
+        // Their baseline is the display edge; lower lobes bleed beyond the viewport.
+        Rectangle {
+            x: 0px; y: parent.height - 70px; width: parent.width; height: 140px;
+            visible: root.voice-active && !root.keyboard-visible;
+            opacity: root.voice-merge;
+            for layer in 3: Path {
+                width: parent.width; height: parent.height;
+                viewbox-width: 360; viewbox-height: 70;
+                property <float> phase: (root.reduced-motion ? 0 : root.loading-time-ms / 600) + layer * 1.7;
+                property <float> amplitude: 2 + root.wave-level * (22 - layer * 4);
+                property <float> crest: Math.sin(self.phase * 1rad) * self.amplitude;
+                property <float> trough: Math.cos(self.phase * 1rad) * self.amplitude;
+                fill: layer == 0 ? #b8b8ca35 : layer == 1 ? #9696b348 : #d2d2e248;
+                MoveTo { x: 0; y: 35; }
+                CubicTo { control-1-x: 45; control-1-y: 35; control-2-x: 50; control-2-y: 35 - parent.crest; x: 90; y: 35 - parent.crest; }
+                CubicTo { control-1-x: 135; control-1-y: 35 - parent.crest; control-2-x: 135; control-2-y: 35 + parent.trough; x: 180; y: 35 + parent.trough; }
+                CubicTo { control-1-x: 225; control-1-y: 35 + parent.trough; control-2-x: 230; control-2-y: 35 - parent.crest; x: 270; y: 35 - parent.crest; }
+                CubicTo { control-1-x: 315; control-1-y: 35 - parent.crest; control-2-x: 315; control-2-y: 35; x: 360; y: 35; }
+                CubicTo { control-1-x: 290; control-1-y: 35; control-2-x: 280; control-2-y: 39 + parent.trough; x: 240; y: 39 + parent.trough; }
+                CubicTo { control-1-x: 180; control-1-y: 39 + parent.trough; control-2-x: 160; control-2-y: 39 - parent.crest; x: 120; y: 39 - parent.crest; }
+                CubicTo { control-1-x: 65; control-1-y: 39 - parent.crest; control-2-x: 60; control-2-y: 35; x: 0; y: 35; }
+                Close {}
+            }
+        }
+        toolbar := Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: parent.height - 80px + 134px * root.typing-progress;
+            width: 160px - 96px * root.voice-merge + 28px * root.typing-progress;
+            height: 64px + 24px * root.typing-progress;
+            visible: root.typing-progress < 1;
+            opacity: 1 - root.typing-progress;
+            background: transparent;
+            Image { source: @image-url("icons/metaballs.svg"); width: parent.width; height: parent.height; image-fit: fill; visible: root.voice-merge == 0; }
+            // The lobes converge continuously into one circle; the neck stays thin.
+            Path {
+                width: parent.width; height: parent.height;
+                visible: root.voice-merge > 0 && root.voice-merge < 1;
+                viewbox-width: 160 - 96 * root.voice-merge; viewbox-height: 64;
+                fill: #29292b;
+                MoveTo { x: 32; y: 0; }
+                CubicTo { control-1-x: 52; control-1-y: 0; control-2-x: 56 - 48 * root.voice-merge; control-2-y: 27; x: 80 - 48 * root.voice-merge; y: 27; }
+                CubicTo { control-1-x: 104 - 48 * root.voice-merge; control-1-y: 27; control-2-x: 108 - 96 * root.voice-merge; control-2-y: 0; x: 128 - 96 * root.voice-merge; y: 0; }
+                CubicTo { control-1-x: 170.67 - 96 * root.voice-merge; control-1-y: 0; control-2-x: 170.67 - 96 * root.voice-merge; control-2-y: 64; x: 128 - 96 * root.voice-merge; y: 64; }
+                CubicTo { control-1-x: 108 - 96 * root.voice-merge; control-1-y: 64; control-2-x: 104 - 48 * root.voice-merge; control-2-y: 37; x: 80 - 48 * root.voice-merge; y: 37; }
+                CubicTo { control-1-x: 56 - 48 * root.voice-merge; control-1-y: 37; control-2-x: 52; control-2-y: 64; x: 32; y: 64; }
+                CubicTo { control-1-x: -10.67; control-1-y: 64; control-2-x: -10.67; control-2-y: 0; x: 32; y: 0; }
+                Close {}
+            }
+            Rectangle {
+                width: 64px; height: 64px; border-radius: 32px;
+                x: (parent.width - self.width) / 2;
+                background: #29292b; opacity: root.voice-merge;
+            }
+            for index in 2: Rectangle {
+                x: index == 0 ? 0px : parent.width - self.width;
+                width: 64px; height: 64px;
+                background: transparent;
+                opacity: index == 0 ? 1 : 1 - root.voice-merge;
+                property <float> swell: touch.pressed ? 1.12 : 1;
+                animate swell { duration: root.reduced-motion ? 0ms : 240ms; easing: ease-out; }
+                Rectangle {
+                    width: 62px * parent.swell; height: 62px * parent.swell;
+                    x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                    border-radius: self.width / 2;
+                    background: #29292b;
+                    opacity: touch.pressed ? 1 : 0;
+                }
+                Rectangle {
+                    width: 52px; height: 52px; x: 6px; y: 6px;
+                    border-radius: 26px;
+                    background: #5a5a60;
+                    visible: index == 0 && root.voice-state == 2;
+                    opacity: root.reduced-motion ? 0.35 : 0.25 + 0.18 * Math.sin(root.loading-time-ms / 700 * 1rad);
+                }
+                Image {
+                    source: index == 0 ? @image-url("icons/mic.svg") : @image-url("icons/keyboard.svg");
+                    width: 24px * parent.swell; height: 24px * parent.swell;
+                    x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                    opacity: index == 0 && root.voice-state == 4 ? 0.45 : 1;
+                }
+                touch := TouchArea {
+                    enabled: !root.keyboard-visible && (index == 0 || !root.voice-active);
+                    accessible-role: button;
+                    accessible-label: index == 0 ? (root.voice-state == 0 || root.voice-state == 5 ? "Start voice conversation" : root.voice-state == 4 ? "Resume voice conversation" : "Stop voice conversation") : "Open keyboard";
+                    clicked => { if index == 0 { root.voice-toggle(); } else { root.open-keyboard(); } }
+                }
+            }
+        }
+        Text {
+            x: 20px; y: toolbar.y - self.height - 8px;
+            width: parent.width - 40px; height: 32px;
+            overflow: elide;
+            vertical-alignment: center;
+            visible: !root.keyboard-visible && (root.voice-state != 0 || root.voice-caption != "");
+            text: root.voice-error != "" ? root.voice-error : root.voice-caption != "" ? root.voice-caption : root.voice-state == 1 ? "Connecting…" : root.voice-state == 2 ? "Listening…" : root.voice-state == 3 ? "Responding…" : root.voice-state == 4 ? "Microphone muted" : "Voice unavailable";
+            color: root.voice-state == 5 ? AlloyPalette.rust : AlloyPalette.muted;
+            font-size: 13px;
+            horizontal-alignment: center;
+            wrap: word-wrap;
         }
         // This layer is omitted while the host captures the pristine workspace.
         // Its image is a separately blurred backdrop; tiles are drawn afterwards.

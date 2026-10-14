@@ -72,7 +72,8 @@ cargo test -p alloyos-ferrofluid
 # Render the same bare-metal adapter to a PPM without a desktop backend
 cargo run -p alloyos-ferrofluid --example system_ui_preview -- /tmp/system-ui.ppm
 
-# Preview the focused composer and soft keyboard
+# Preview a listening session or the focused composer and soft keyboard
+cargo run -p alloyos-ferrofluid --example system_ui_preview -- /tmp/voice.ppm --voice
 cargo run -p alloyos-ferrofluid --example system_ui_preview -- /tmp/keyboard.ppm --keyboard
 
 # Capture mid-slide displacement or an expanded key
@@ -98,3 +99,19 @@ Inline bold uses font measurements from Slint to wrap styled words. Code content
 fences during streaming. Other inline formatting, links, images, and tables
 remain visible as source text. Slint's built-in Markdown parser requires `std`
 and is not used by the bare-metal UI.
+
+The resting composer is a connected microphone/keyboard metaball toolbar. Keyboard
+entry reveals the draft field, moves the toolbar down, and raises the soft keyboard
+using the same easing and duration. Dismissal preserves the draft and returns the
+toolbar. `set_reduced_motion` disables those transitions and liquid displacement.
+Voice is an intent/status boundary: `take_voice_toggle` and `take_voice_mute` feed
+the session owner, while `set_voice_state` applies status, live captions, and errors.
+Opening the keyboard emits mute; dismissal never emits an automatic resume.
+
+Connecting, listening, and responding merge the two toolbar lobes into a centered
+microphone while fading the keyboard icon. Muted, off, and error states restore
+the pair. Three overlapping Slint cubic Path ribbons animate at the display edge,
+with lower lobes bleeding off-screen behind the mic;
+`set_voice_level(u16)` accepts a normalized 0..1000 microphone volume envelope.
+The view smooths level changes, uses phase motion without FFT, and keeps phase
+static with reduced motion enabled. `--voice` previews a representative loud frame.

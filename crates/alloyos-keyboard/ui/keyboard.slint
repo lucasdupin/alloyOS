@@ -73,12 +73,14 @@ component SoftKey inherits Rectangle {
 export component SoftKeyboard inherits Rectangle {
     // Host provides focus/scroll intent; this project owns reveal and dismissal.
     in property <bool> requested: false;
+    in property <bool> reduced-motion: false;
     in property <bool> suspended: false;
     in property <length> scroll-offset: 0px;
     property <bool> dismissed: false;
     out property <bool> shown: root.requested && !root.dismissed && !root.suspended;
-    out property <length> reveal: root.shown ? root.height : 0px;
-    animate reveal { duration: 420ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
+    property <length> animated-reveal: root.shown ? root.height : 0px;
+    out property <length> reveal: root.reduced-motion ? (root.shown ? root.height : 0px) : root.animated-reveal;
+    animate animated-reveal { duration: root.reduced-motion ? 0ms : 420ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
     changed requested => { root.dismissed = false; }
     changed scroll-offset => {
         if (root.shown) {

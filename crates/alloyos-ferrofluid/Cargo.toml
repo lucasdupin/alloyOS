@@ -14,7 +14,7 @@ libm = "0.2"
 alloyos-keyboard = { path = "../alloyos-keyboard" }
 alloyos-proto = { path = "../alloyos-proto" }
 alloyos-mcp = { path = "../alloyos-mcp" }
-slint = { version = "=1.18.1", default-features = false, features = ["compat-1-18", "unsafe-single-threaded", "libm", "renderer-software"] }
+slint = { version = "=1.18.1", default-features = false, features = ["compat-1-18", "unsafe-single-threaded", "libm", "renderer-software", "software-renderer-path"] }
 
 [build-dependencies]
 alloyos-proto = { path = "../alloyos-proto" }

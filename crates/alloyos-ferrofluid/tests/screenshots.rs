@@ -39,8 +39,21 @@ fn system_ui_screenshots() {
     ui.set_booting(false);
     ui.render(Duration::from_millis(16));
     snapshot(&mut suite, "workspace", &ui);
-    pointer(&mut ui, InputEventKind::PointerButtonDown, 300, 2500);
-    pointer(&mut ui, InputEventKind::PointerButtonUp, 300, 2500);
+    ui.set_voice_state(alloyos_mcp::display::VoiceState::Listening, "Tell me about my workspace", "");
+    ui.set_voice_level(850);
+    ui.render(Duration::from_millis(16));
+    // Settle the merge and volume envelope without advancing later fixtures.
+    ui.set_reduced_motion(true);
+    ui.render(Duration::from_millis(16));
+    snapshot(&mut suite, "voice-listening", &ui);
+    ui.set_voice_state(alloyos_mcp::display::VoiceState::Error, "", "Microphone permission required");
+    ui.render(Duration::from_millis(16));
+    snapshot(&mut suite, "voice-error", &ui);
+    ui.set_voice_state(alloyos_mcp::display::VoiceState::Off, "", "");
+    ui.render(Duration::from_millis(16));
+    ui.set_reduced_motion(false);
+    pointer(&mut ui, InputEventKind::PointerButtonDown, 771, 2454);
+    pointer(&mut ui, InputEventKind::PointerButtonUp, 771, 2454);
     for frame in 2..=61 {
         ui.render(Duration::from_millis(frame * 16));
         if frame == 11 {
@@ -286,8 +299,8 @@ fn system_ui_screenshots() {
     let history = vec![alloyos_ferrofluid::ChatItem::Text("Older conversation line\n".repeat(100))];
     ui.set_chat_items(&history);
     ui.render(Duration::from_millis(14000));
-    pointer(&mut ui, InputEventKind::PointerButtonDown, 300, 2500);
-    pointer(&mut ui, InputEventKind::PointerButtonUp, 300, 2500);
+    pointer(&mut ui, InputEventKind::PointerButtonDown, 771, 2454);
+    pointer(&mut ui, InputEventKind::PointerButtonUp, 771, 2454);
     for frame in 1..=40 { ui.render(Duration::from_millis(14000 + frame * 16)); }
     pointer(&mut ui, InputEventKind::PointerButtonDown, 400, 600);
     for (frame, y) in [650, 750, 900, 1100, 1300, 1400].into_iter().enumerate() {
@@ -314,8 +327,8 @@ fn system_ui_screenshots() {
     ui.set_reply_pending(false);
     for frame in 0..=60 { ui.render(Duration::from_millis(17000 + frame * 16)); }
     snapshot(&mut suite, "clock-before-followup", &ui);
-    pointer(&mut ui, InputEventKind::PointerButtonDown, 300, 2500);
-    pointer(&mut ui, InputEventKind::PointerButtonUp, 300, 2500);
+    pointer(&mut ui, InputEventKind::PointerButtonDown, 771, 2454);
+    pointer(&mut ui, InputEventKind::PointerButtonUp, 771, 2454);
     for frame in 0..=60 { ui.render(Duration::from_millis(18000 + frame * 16)); }
     snapshot(&mut suite, "clock-keyboard-open", &ui);
     pointer(&mut ui, InputEventKind::PointerButtonDown, 75, 2073);

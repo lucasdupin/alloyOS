@@ -11,18 +11,13 @@ fn main() {
     if std::env::args().any(|arg| arg == "--boot") {
         ui.render(Duration::from_millis(1200));
     }
+    if std::env::args().any(|arg| arg == "--voice") {
+        ui.set_voice_state(alloyos_mcp::display::VoiceState::Listening, "Tell me about my workspace", "");
+        ui.set_voice_level(850);
+        for frame in 1..=60 { ui.render(Duration::from_millis(frame * 16)); }
+    }
     if std::env::args().any(|arg| arg == "--keyboard") {
-        for kind in [
-            alloyos_proto::InputEventKind::PointerButtonDown,
-            alloyos_proto::InputEventKind::PointerButtonUp,
-        ] {
-            ui.handle_input(alloyos_proto::InputEvent {
-                kind,
-                code: 0x110,
-                x: 300,
-                y: 2500,
-            });
-        }
+        ui.open_keyboard();
         let sliding = std::env::args().any(|arg| arg == "--liquid");
         for frame in 1..=if sliding { 10 } else { 60 } {
             ui.render(Duration::from_millis(frame * 16));

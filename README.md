@@ -90,6 +90,20 @@ HTTPS bridge. In chat, you can ask to switch models (such as asking for Claude, 
 selected provider and may incur API charges. The launcher requires `curl` for
 certificate-verified HTTPS.
 
+The bottom toolbar has connected microphone and keyboard controls. Tap the mic
+to start continuous Gemini voice: the balls merge, the keyboard fades, and
+overlapping vector waves follow microphone volume. Tap again to end it. Opening the keyboard
+mutes input while retaining the session; tap the mic to resume. Typed messages
+during that session go through the live model. Captions and completed turns stay
+in the conversation, and Welder's existing tools are available to voice.
+
+Voice currently uses a native macOS audio/WebSocket helper for QEMU, built by the
+launcher, and requires a Gemini API key and microphone permission. The Live model
+is configured independently of the text model with `voice_model` in `/etc/ai.conf`.
+Other selected providers show voice as unavailable. Use headphones for initial
+testing: acoustic echo cancellation is not implemented. See
+[the voice plan](VOICE_PLAN.md) and [host audio notes](scripts/audio/README.md).
+
 For automation, use `./run.sh --non-interactive` (as the first option).
 The launcher downloads and packages missing weights, then builds and runs in
 release mode with 16 GiB guest RAM. Accept the Gemma license on Hugging Face

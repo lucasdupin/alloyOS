@@ -401,6 +401,7 @@ pub fn init_kernel_agent_runtime(forge: Rc<RefCell<Forge>>) -> AgentRuntime {
     backend.borrow_mut().set_forge(forge.clone());
     let mut runtime = AgentRuntime::with_vfs_backend(backend);
     runtime.set_forge(forge);
+    runtime.tool_registry.set_http_transport(alloc::boxed::Box::new(crate::drivers::mcp_https::HostRegistryHttp::default()));
     let _ = runtime.notify_system_boot();
     let _ = runtime.notify_network_online();
     runtime

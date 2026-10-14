@@ -34,6 +34,7 @@ pub struct AgentRuntime {
     pinned_tile_ids: Vec<String>,
     turn_tool_calls: usize,
     turn_tool_outputs: Vec<ToolExecutionOutput>,
+    pending_tool_response: Option<(Response, usize)>,
     pub history: Vec<Message>,
     pub tool_registry: NativeToolRegistry,
     pub ui_synthesizer: AgentUiSynthesizer,
@@ -56,6 +57,7 @@ impl AgentRuntime {
             pinned_tile_ids: Vec::new(),
             turn_tool_calls: 0,
             turn_tool_outputs: Vec::new(),
+            pending_tool_response: None,
             history: vec![Message::system(
                 "You are the alloyOS Ferrofluid AI Agent running on bare-metal ARM64. \
                  POSIX shells (sh, bash) do not exist for the agent; use structured OS tools, \
@@ -84,6 +86,7 @@ impl AgentRuntime {
             pinned_tile_ids: Vec::new(),
             turn_tool_calls: 0,
             turn_tool_outputs: Vec::new(),
+            pending_tool_response: None,
             history: vec![Message::system(
                 "You are the alloyOS Ferrofluid AI Agent running on bare-metal ARM64. \
                  POSIX shells (sh, bash) do not exist for the agent; use structured OS tools, \
@@ -724,7 +727,7 @@ impl AgentRuntime {
         &mut self,
         input: &str,
     ) -> Result<Option<ConsoleTurnOutput>, AiError> {
-        if self.gateway.is_pending() {
+        if self.gateway.is_pending() || self.pending_tool_response.is_some() {
             return Err(AiError::PolicyViolation(
                 "A reply is already pending".into(),
             ));
@@ -762,17 +765,27 @@ impl AgentRuntime {
         self.gateway.partial_reply()
     }
     pub fn poll_console_reply(&mut self) -> Poll<Result<ConsoleTurnOutput, AiError>> {
+        if self.pending_tool_response.is_some() {
+            match self.poll_response_tools() {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                Poll::Ready(Ok(())) => {
+                    let tools = self.tool_registry.specs().to_vec();
+                    let user = self.history.iter().rev().find(|message| message.role == alloyos_forge::provider::Role::User).map(|message| message.content.clone()).unwrap_or_default();
+                    let messages = self.messages_with_knowledge_context(&user);
+                    return match self.gateway.start_chat_with_tools(&messages, &tools) {
+                        Ok(()) => Poll::Pending,
+                        Err(error) => Poll::Ready(Err(error)),
+                    };
+                }
+            }
+        }
         match self.gateway.poll_chat() {
             Poll::Pending => Poll::Pending,
-            Poll::Ready(result) => {
-                let response = match result { Ok(response) => response, Err(error) => return Poll::Ready(Err(error)) };
+            Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+            Poll::Ready(Ok(response)) => {
                 if response.tool_calls.is_empty() { return Poll::Ready(self.apply_response(response)); }
-                if let Err(error) = self.execute_response_tools(&response) { return Poll::Ready(Err(error)); }
-                let tools = self.tool_registry.specs().to_vec();
-                let user = self.history.iter().rev().find(|m| m.role == alloyos_forge::provider::Role::User)
-                    .map(|m| m.content.clone()).unwrap_or_default();
-                let messages = self.messages_with_knowledge_context(&user);
-                match self.gateway.start_chat_with_tools(&messages, &tools) {
+                match self.begin_response_tools(response) {
                     Ok(()) => Poll::Pending,
                     Err(error) => Poll::Ready(Err(error)),
                 }
@@ -780,38 +793,52 @@ impl AgentRuntime {
         }
     }
 
-    fn execute_response_tools(&mut self, response: &Response) -> Result<(), AiError> {
+    fn begin_response_tools(&mut self, response: Response) -> Result<(), AiError> {
         if self.turn_tool_calls + response.tool_calls.len() > 8 {
             return Err(AiError::PolicyViolation("Tool call budget exhausted".into()));
         }
         self.turn_tool_calls += response.tool_calls.len();
         self.history.push(Message::assistant_with_tools(&response.text, response.tool_calls.clone()));
-        for call in &response.tool_calls {
-            let output = match self.tool_registry.execute_tool(call, &mut self.ui_synthesizer) {
-                Ok(output) => output,
-                Err(error @ (AiError::InvalidToolArguments(_) | AiError::UnknownTool(_))) => {
-                    // Complete the tool exchange so the model can repair a bad
-                    // call and the next user turn never inherits a dangling call.
-                    ToolExecutionOutput {
-                        tool_name: call.name.clone(),
-                        output_json: serde_json::json!({"ok":false,"error":error.to_string()}).to_string(),
-                        synthesized_view: None,
-                    }
-                }
-                Err(error) => return Err(error),
+        self.pending_tool_response = Some((response, 0));
+        Ok(())
+    }
+
+    fn poll_response_tools(&mut self) -> Poll<Result<(), AiError>> {
+        loop {
+            let Some((response, index)) = &self.pending_tool_response else { return Poll::Ready(Ok(())); };
+            let Some(call) = response.tool_calls.get(*index).cloned() else {
+                self.pending_tool_response = None;
+                return Poll::Ready(Ok(()));
+            };
+            let output = match self.tool_registry.poll_execute_tool(&call, &mut self.ui_synthesizer) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Ok(output)) => output,
+                Poll::Ready(Err(error @ (AiError::InvalidToolArguments(_) | AiError::UnknownTool(_)))) => ToolExecutionOutput {
+                    tool_name: call.name.clone(),
+                    output_json: serde_json::json!({"ok":false,"error":error.to_string()}).to_string(),
+                    synthesized_view: None,
+                },
+                Poll::Ready(Err(error)) => { self.pending_tool_response = None; return Poll::Ready(Err(error)); }
             };
             let model_output = if call.name == "mcp_list_tools" {
-                // Discovery needs schemas, not every rendered tile and full skill body.
-                // Keep the complete result for the UI, and a compact inventory for the model.
-                let value: serde_json::Value = serde_json::from_str(&output.output_json)
-                    .map_err(|_| AiError::ParseError("Invalid app inventory".into()))?;
-                format!("{{\"ok\":true,\"headless_mcp_apps\":{},\"tools\":{},\"resources\":{}}}",
-                    value["headless_mcp_apps"], value["tools"], value["resources"])
+                let value: serde_json::Value = match serde_json::from_str(&output.output_json) {
+                    Ok(value) => value,
+                    Err(_) => { self.pending_tool_response = None; return Poll::Ready(Err(AiError::ParseError("Invalid app inventory".into()))); }
+                };
+                format!("{{\"ok\":{},\"headless_mcp_apps\":{},\"tools\":{},\"resources\":{}}}", value["ok"], value["headless_mcp_apps"], value["tools"], value["resources"])
             } else { output.output_json.clone() };
             self.history.push(Message::tool_result(&call.id, model_output));
             self.turn_tool_outputs.push(output);
+            if let Some((_, index)) = &mut self.pending_tool_response { *index += 1; }
         }
-        Ok(())
+    }
+
+    fn execute_response_tools(&mut self, response: &Response) -> Result<(), AiError> {
+        self.begin_response_tools(response.clone())?;
+        loop {
+            if let Poll::Ready(result) = self.poll_response_tools() { return result; }
+            core::hint::spin_loop();
+        }
     }
     fn apply_response(&mut self, response: Response) -> Result<ConsoleTurnOutput, AiError> {
         if !response.tool_calls.is_empty() { self.execute_response_tools(&response)?; }

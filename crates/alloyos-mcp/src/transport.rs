@@ -10,9 +10,11 @@ use alloc::{
     vec::Vec,
 };
 use core::cell::RefCell;
+use core::task::Poll;
 
 pub const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
 
+#[derive(serde::Serialize)]
 pub struct HttpRequest {
     pub method: &'static str,
     pub url: String,
@@ -20,6 +22,8 @@ pub struct HttpRequest {
     pub body: String,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HttpResponse {
     pub status: u16,
     pub headers: Vec<(String, String)>,
@@ -30,6 +34,12 @@ pub struct HttpResponse {
 /// blocking the kernel UI; the synchronous tool interface does not supply a driver.
 pub trait HttpTransport {
     fn request(&mut self, request: &HttpRequest) -> Result<HttpResponse, String>;
+    fn start_request(&mut self, request: &HttpRequest) -> Poll<Result<HttpResponse, String>> {
+        Poll::Ready(self.request(request))
+    }
+    fn poll_request(&mut self) -> Poll<Result<HttpResponse, String>> {
+        Poll::Ready(Err("no pending HTTP request".into()))
+    }
 }
 
 pub struct HttpClient {
@@ -99,5 +109,24 @@ impl HttpClient {
             body: String::new(),
         })
         .map(|response| response.body)
+    }
+    pub fn start_get(&mut self, url: &str) -> Poll<Result<HttpResponse, McpError>> {
+        let request = HttpRequest { method: "GET", url: url.into(), headers: Vec::new(), body: String::new() };
+        match &mut self.transport {
+            Some(transport) => transport.start_request(&request).map(Self::check_response),
+            None => Poll::Ready(self.request(&request)),
+        }
+    }
+    pub fn poll_get(&mut self) -> Poll<Result<HttpResponse, McpError>> {
+        match &mut self.transport {
+            Some(transport) => transport.poll_request().map(Self::check_response),
+            None => Poll::Ready(Err(McpError::internal_error("no pending HTTP transport"))),
+        }
+    }
+    fn check_response(response: Result<HttpResponse, String>) -> Result<HttpResponse, McpError> {
+        let response = response.map_err(McpError::internal_error)?;
+        if response.body.len() > MAX_HTTP_BODY_BYTES { return Err(McpError::internal_error("HTTP response body exceeds limit")); }
+        if !(200..300).contains(&response.status) { return Err(McpError::internal_error(format!("HTTP request failed with status {}", response.status))); }
+        Ok(response)
     }
 }

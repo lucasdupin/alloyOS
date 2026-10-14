@@ -5,6 +5,7 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefCell;
+use core::task::Poll;
 
 use crate::ui_synth::{
     AgentUiSynthesizer, SynthesizedUiView, UiCallerOrigin, UiMetric, UiScheduleEntry, ViewKind,
@@ -214,6 +215,7 @@ pub struct NativeToolRegistry {
     default_capabilities: ScriptCapabilities,
     sys_status: SystemStatus,
     http_routes: BTreeMap<String, String>,
+    pending_service_search: Option<(ToolCall, String)>,
     notifications: Vec<String>,
     logs: Vec<String>,
     execution_reports: Vec<ScriptExecutionReport>,
@@ -294,6 +296,7 @@ impl NativeToolRegistry {
                 active_tasks: 6,
             },
             http_routes: BTreeMap::new(),
+            pending_service_search: None,
             notifications: Vec::new(),
             logs: Vec::new(),
             execution_reports: Vec::new(),
@@ -808,6 +811,7 @@ impl NativeToolRegistry {
                 ), ToolParameter::new("page", "integer", "Page number, starting at 1", false),
                 ToolParameter::new("page_size", "integer", "Results per page, 1 to 100", false)],
             ),
+            ToolSpec::new("mcp_search_services", "Search the public official MCP Registry for third-party services such as Gmail; no registry API key is required. This discovers metadata, not an authenticated account connection.", vec![ToolParameter::new("query", "string", "Service keyword, for example gmail", true)]),
             ToolSpec::new(
                 "smithery_install",
                 "Install a third-party MCP server from Smithery.ai into /apps/<app_id> on CobaltFS.",
@@ -1666,6 +1670,44 @@ impl NativeToolRegistry {
     }
 
     /// Executes a `ToolCall` against the native OS tool registry and updates `ui_synth` when applicable.
+    fn service_search_output(call: &ToolCall, query: &str, body: &str) -> Result<ToolExecutionOutput, AiError> {
+        let value: serde_json::Value = serde_json::from_str(body).map_err(|_| AiError::InvalidToolArguments("MCP Registry returned invalid JSON".into()))?;
+        let entries = value["servers"].as_array().ok_or_else(|| AiError::InvalidToolArguments("MCP Registry response has no servers array".into()))?;
+        let mut servers = Vec::new();
+        for entry in entries {
+            let server = entry.get("server").ok_or_else(|| AiError::InvalidToolArguments("MCP Registry entry has no server metadata".into()))?;
+            let name = server["name"].as_str().ok_or_else(|| AiError::InvalidToolArguments("MCP Registry entry has no name".into()))?;
+            servers.push(serde_json::json!({"name":name,"description":server["description"],"version":server["version"],"repository":server["repository"],"remotes":server["remotes"],"packages":server["packages"]}));
+        }
+        Ok(ToolExecutionOutput { tool_name: call.name.clone(), output_json: serde_json::json!({"ok":true,"source":"official_mcp_registry","query":query,"count":servers.len(),"servers":servers,"metadata":value["metadata"]}).to_string(), synthesized_view: None })
+    }
+
+    /// The UI polls network tools between frames, rather than blocking on HTTP.
+    pub fn poll_execute_tool(&mut self, call: &ToolCall, ui: &mut AgentUiSynthesizer) -> Poll<Result<ToolExecutionOutput, AiError>> {
+        if call.name != "mcp_search_services" { return Poll::Ready(self.execute_tool(call, ui)); }
+        let client = self.mcp_registry.borrow().http_client();
+        let (query, response) = if let Some((pending, query)) = &self.pending_service_search {
+            if pending != call { return Poll::Ready(Err(AiError::PolicyViolation("another registry search is pending".into()))); }
+            (query.clone(), client.borrow_mut().poll_get())
+        } else {
+            let query = match extract_json_string_field(&call.arguments_json, "query").filter(|query| !query.trim().is_empty()) {
+                Some(query) => query,
+                None => return Poll::Ready(Err(AiError::InvalidToolArguments("missing query".into()))),
+            };
+            let url = format!("https://registry.modelcontextprotocol.io/v0.1/servers?search={}&limit=5", encode_url_component(&query));
+            let response = client.borrow_mut().start_get(&url);
+            self.pending_service_search = Some((call.clone(), query.clone()));
+            (query, response)
+        };
+        match response {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(response) => {
+                self.pending_service_search = None;
+                Poll::Ready(response.map_err(|error| AiError::InvalidToolArguments(error.message)).and_then(|response| Self::service_search_output(call, &query, &response.body)))
+            }
+        }
+    }
+
     fn app_snapshot(&mut self) -> Result<alloyos_mcp::PackageSnapshot, String> {
         if let Some(backend) = &self.vfs_backend {
             backend.borrow_mut().package_snapshot()
@@ -1947,6 +1989,12 @@ impl NativeToolRegistry {
         }
 
         match call.name.as_str() {
+            "mcp_search_services" => {
+                loop {
+                    if let Poll::Ready(result) = self.poll_execute_tool(call, ui_synth) { return result; }
+                    core::hint::spin_loop();
+                }
+            }
             "fs_read" => {
                 let raw_path = extract_json_string_field(&call.arguments_json, "path")
                     .ok_or_else(|| AiError::InvalidToolArguments("missing 'path'".to_string()))?;

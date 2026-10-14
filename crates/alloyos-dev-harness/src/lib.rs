@@ -80,7 +80,7 @@ impl Guest {
                     break;
                 }
                 if let Ok(line) = String::from_utf8(line) {
-                    if (line.starts_with("FORGE1\t") || line.starts_with("FORGEHTTP1\t") || line.contains("[systemui] Slint window online;")) && tx.try_send(line).is_err() {
+                    if (line.starts_with("FORGE1\t") || line.starts_with("FORGEHTTP1\t") || line.starts_with("MCPHTTP1\t") || line.contains("[systemui] Slint window online;")) && tx.try_send(line).is_err() {
                         break;
                     }
                 }
@@ -129,7 +129,7 @@ impl Guest {
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(_) => return Err("guest transport closed".into()),
             };
-            if let Some(reply) = https::relay(&line, https::post) {
+            if let Some(reply) = https::registry_relay(&line).or_else(|| https::relay(&line, https::post)) {
                 self.input.write_all(reply.as_bytes()).and_then(|_|self.input.flush()).map_err(|_|"cloud relay closed")?;
                 continue;
             }

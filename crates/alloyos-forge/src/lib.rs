@@ -11,6 +11,7 @@ use core::{fmt, task::Poll};
 
 pub const DEFAULT_MODEL: &str = "gemma-2-2b-it";
 pub const MAX_OUTPUT_TOKENS: u32 = 256;
+pub const MAX_CLOUD_OUTPUT_TOKENS: u32 = 4096;
 pub const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024 + 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +33,7 @@ pub enum ForgeError {
     },
     TransportUnavailable,
     InvalidResponse,
+    ApiResponseError { provider: String, model: String, reason: &'static str },
     Busy,
 }
 impl ForgeError {
@@ -53,12 +55,16 @@ impl ForgeError {
             Self::ApiError { .. } => "http_error",
             Self::TransportUnavailable => "https_transport_unavailable",
             Self::InvalidResponse => "invalid_api_response",
+            Self::ApiResponseError { .. } => "invalid_api_response",
             Self::Busy => "inference_busy",
         }
     }
 }
 impl fmt::Display for ForgeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Self::ApiResponseError { provider, model, reason } = self {
+            return write!(f, "{provider} ({model}): {reason}");
+        }
         if let Self::ApiError {
             status,
             provider,
@@ -85,7 +91,7 @@ impl GenerationRequest {
     pub fn validate(&self) -> Result<(), ForgeError> {
         if self.prompt.is_empty()
             || self.max_tokens == 0
-            || self.max_tokens > MAX_OUTPUT_TOKENS
+            || self.max_tokens > MAX_CLOUD_OUTPUT_TOKENS
         {
             Err(ForgeError::InvalidRequest)
         } else {

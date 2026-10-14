@@ -355,6 +355,12 @@ pub struct HostHttps {
 pub fn take_deferred_rpc() -> Option<String> {
     DEFERRED_RPC.lock().pop_front()
 }
+pub fn defer_rpc(line: String) {
+    if line.len() <= alloyos_forge::MAX_FRAME_BYTES {
+        let mut queue = DEFERRED_RPC.lock();
+        if queue.len() < 8 { queue.push_back(line); }
+    }
+}
 impl HttpsClient for HostHttps {
     fn post(&mut self, request: &HttpRequest) -> Result<HttpResponse, ForgeError> {
         // Compatibility for callers outside the UI's cooperative request path.

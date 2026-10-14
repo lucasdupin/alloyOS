@@ -150,6 +150,41 @@ fn post_once(request: &HttpRequest, timeout: std::time::Duration) -> Result<Http
     })
 }
 
+pub fn registry_get(url: &str) -> Result<serde_json::Value, String> {
+    if !url.starts_with("https://registry.modelcontextprotocol.io/v0.1/servers?") || url.bytes().any(|byte| byte.is_ascii_control()) { return Err("registry destination rejected".into()); }
+    let config = format!("url = {}\nrequest = \"GET\"\nproto = \"=https\"\nconnect-timeout = 5\nmax-time = 10\nretry = 1\nretry-delay = 1\nretry-all-errors\nmax-filesize = 1048576\nsilent\nwrite-out = \"\\n%{{http_code}}\"\n", quote(url));
+    let mut child = Command::new("curl").args(["-q", "--config", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|_| "registry HTTP process failed")?;
+    let mut stdin = child.stdin.take().ok_or("registry stdin unavailable")?;
+    use std::io::Write;
+    stdin.write_all(config.as_bytes()).map_err(|_| "registry config write failed")?;
+    drop(stdin);
+    let mut bytes = Vec::new();
+    child.stdout.take().ok_or("registry stdout unavailable")?.take(1024 * 1024 + 5).read_to_end(&mut bytes).map_err(|_| "registry read failed")?;
+    if bytes.len() > 1024 * 1024 + 4 { let _ = child.kill(); let _ = child.wait(); return Err("registry response too large".into()); }
+    if !child.wait().map_err(|_| "registry wait failed")?.success() { return Err("registry HTTPS failed".into()); }
+    let response = String::from_utf8(bytes).map_err(|_| "registry response encoding failed")?;
+    let (body, status) = response.rsplit_once('\n').ok_or("registry status missing")?;
+    let status: u16 = status.parse().map_err(|_| "invalid registry status")?;
+    if std::env::var_os("ALLOYOS_TRACE_E2E").is_some() { eprintln!("[mcp-search] stage=http_response status={status} body_bytes={}", body.len()); }
+    Ok(serde_json::json!({"status":status,"headers":[],"body":body}))
+}
+
+pub fn registry_relay(line: &str) -> Option<String> {
+    if !line.starts_with("MCPHTTP1\t") { return None; }
+    let fields: Vec<_> = line.trim_end_matches(['\r', '\n']).split('\t').collect();
+    let id = fields.get(1).and_then(|id| id.parse::<u64>().ok()).unwrap_or(0);
+    let result = (|| {
+        if fields.len() != 4 || fields[2] != "get" || line.len() > HTTP_FRAME_LIMIT { return Err("invalid registry frame".into()); }
+        let value: serde_json::Value = serde_json::from_str(&decode_hex(fields[3]).map_err(|_| "invalid registry hex")?).map_err(|_| "invalid registry JSON")?;
+        if value["method"] != "GET" || value["body"] != "" || value["headers"].as_array().is_none_or(|headers| !headers.is_empty()) { return Err("invalid registry HTTP method/headers".into()); }
+        registry_get(value["url"].as_str().ok_or("missing registry URL")?)
+    })();
+    Some(match result {
+        Ok(response) => format!("MCPHTTP1\t{id}\tok\t{}\n", encode_hex(&response.to_string())),
+        Err(_) => format!("MCPHTTP1\t{id}\terror\tregistry_https_failed\n"),
+    })
+}
+
 /// Handle only the private cloud frame and never expose raw failure details.
 pub fn relay(
     line: &str,
@@ -173,6 +208,13 @@ pub fn relay(
             return Err("destination_rejected".into());
         }
         let response = execute(&request)?;
+        if std::env::var_os("ALLOYOS_TRACE_E2E").is_some() {
+            let value: serde_json::Value = serde_json::from_str(&response.body).unwrap_or_default();
+            let candidate = &value["candidates"][0];
+            let finish = match candidate["finishReason"].as_str() { Some("STOP") => "STOP", Some("MAX_TOKENS") => "MAX_TOKENS", Some("SAFETY") => "SAFETY", _ => "other" };
+            let text_bytes: usize = candidate["content"]["parts"].as_array().map(|parts| parts.iter().filter(|part| part["thought"] != true).filter_map(|part| part["text"].as_str()).map(str::len).sum()).unwrap_or(0);
+            eprintln!("[api] stage=response status={} bytes={} finish={} text_bytes={} output_tokens={} thought_tokens={}", response.status, response.body.len(), finish, text_bytes, value["usageMetadata"]["candidatesTokenCount"].as_u64().unwrap_or(0), value["usageMetadata"]["thoughtsTokenCount"].as_u64().unwrap_or(0));
+        }
         if response.body.len() > HTTP_BODY_LIMIT {
             return Err("response_too_large".into());
         }
@@ -216,7 +258,7 @@ pub fn run_ui(command: &mut Command) -> Result<(), String> {
             let Ok(line) = String::from_utf8(bytes) else {
                 break;
             };
-            if let Some(reply) = relay(&line, post) {
+            if let Some(reply) = registry_relay(&line).or_else(|| relay(&line, post)) {
                 if input
                     .write_all(reply.as_bytes())
                     .and_then(|_| input.flush())
@@ -224,7 +266,7 @@ pub fn run_ui(command: &mut Command) -> Result<(), String> {
                 {
                     break;
                 }
-            } else if !line.starts_with("FORGEHTTP1") {
+            } else if !line.starts_with("FORGEHTTP1") && !line.starts_with("MCPHTTP1") {
                 print!("{line}");
             }
         }
@@ -287,6 +329,20 @@ mod tests {
         for (index, delay) in delays.iter().enumerate() {
             let base = Duration::from_secs(1 << index);
             assert!(*delay >= base && *delay <= base + Duration::from_millis(500));
+        }
+    }
+
+    #[test]
+    fn registry_relay_rejects_credentials_and_other_destinations() {
+        for value in [
+            serde_json::json!({"method":"GET","url":"https://example.com/servers?search=gmail","headers":[],"body":""}),
+            serde_json::json!({"method":"GET","url":"https://registry.modelcontextprotocol.io/v0.1/servers?search=gmail","headers":[["Authorization","fixture-secret"]],"body":""}),
+            serde_json::json!({"method":"POST","url":"https://registry.modelcontextprotocol.io/v0.1/servers?search=gmail","headers":[],"body":"fixture-secret"}),
+        ] {
+            let frame = format!("MCPHTTP1\t9\tget\t{}\n", encode_hex(&value.to_string()));
+            let reply = registry_relay(&frame).unwrap();
+            assert_eq!(reply, "MCPHTTP1\t9\terror\tregistry_https_failed\n");
+            assert!(!reply.contains("fixture-secret"));
         }
     }
 

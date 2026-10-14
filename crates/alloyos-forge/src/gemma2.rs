@@ -420,6 +420,7 @@ impl Gemma2 {
     }
     fn make_job(&mut self, r: &GenerationRequest) -> Result<Job, ForgeError> {
         r.validate()?;
+        if r.max_tokens > crate::MAX_OUTPUT_TOKENS { return Err(ForgeError::InvalidRequest); }
         let prompt = self
             .model
             .tokenizer

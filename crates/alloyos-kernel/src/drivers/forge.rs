@@ -2,6 +2,7 @@
 use super::{fw_cfg::BootAuth, serial::SERIAL1};
 use alloc::{
     boxed::Box,
+    format,
     collections::VecDeque,
     rc::Rc,
     string::{String, ToString},
@@ -44,6 +45,7 @@ pub struct ForgeService {
     _auth: Option<BootAuth>,
     remote_pending: Option<(u64, u64)>,
     outgoing: VecDeque<u8>,
+    console_requests: VecDeque<(u64, String)>,
     ui_frames: u64,
     ui_input_events: u64,
     boot_error: Option<&'static str>,
@@ -60,6 +62,7 @@ impl ForgeService {
             _auth: None,
             remote_pending: None,
             outgoing: VecDeque::new(),
+            console_requests: VecDeque::new(),
             ui_frames: 0,
             ui_input_events: 0,
             boot_error: None,
@@ -290,6 +293,11 @@ impl ForgeService {
         }
         Some(match alloyos_forge::protocol::Request::parse(line) {
             Ok(request) => {
+                if let alloyos_forge::protocol::Command::Chat(input) = &request.command {
+                    if self.console_requests.len() >= 1 { return Some(alloyos_forge::protocol::response(request.id, Err(alloyos_forge::ForgeError::Busy))); }
+                    self.console_requests.push_back((request.id, input.clone()));
+                    return None;
+                }
                 if let alloyos_forge::protocol::Command::Generate(input) = &request.command {
                     match self.shared.borrow_mut().start_generation(input) {
                         Ok(job) => {
@@ -341,6 +349,14 @@ impl ForgeService {
     pub fn note_ui_input(&mut self) {
         self.ui_input_events = self.ui_input_events.saturating_add(1);
     }
+    pub fn take_console_request(&mut self) -> Option<(u64, String)> { self.console_requests.pop_front() }
+    pub fn finish_console_request(&mut self, id: u64, result: Result<String, String>) {
+        let frame = match result {
+            Ok(output) => alloyos_forge::protocol::response(id, Ok(output)),
+            Err(error) => format!("FORGE1\t{id}\terror\tchat_failed\t{}\n", alloyos_forge::protocol::encode_hex(&error)),
+        };
+        self.outgoing.extend(frame.bytes());
+    }
     pub fn note_ui_frame(&mut self) {
         self.ui_frames = self.ui_frames.saturating_add(1);
     }
@@ -362,7 +378,8 @@ impl ForgeService {
         }
         let tick_start = super::rng::monotonic_time_ns();
         // HTTPS owns incoming UART bytes while an API generation is pending.
-        if !self.shared.borrow().pending_uses_transport() {
+        if !self.shared.borrow().pending_uses_transport()
+            && !super::mcp_https::REQUEST_PENDING.load(core::sync::atomic::Ordering::Relaxed) {
             #[cfg(all(target_arch = "aarch64", target_os = "none"))]
             if let Some(line) = super::forge_https::take_deferred_rpc() {
                 for byte in line.bytes().chain(core::iter::once(b'\n')) {

@@ -142,3 +142,19 @@ python3 scripts/check_local_chat_qemu.py --kernel target/aarch64-unknown-none/re
 
 The test verifies continued rendering and keyboard input while Forge's independent
 kernel task executes inference, then waits for the first text in Welder's chat.
+
+## Gmail MCP search acceptance
+
+`python3 scripts/check_mcp_search_qemu.py --kernel /absolute/path/to/alloyos-kernel --log /tmp/mcp-search.jsonl`
+boots a fresh, diskless QEMU VM and exercises the UI/Welder chat path with two
+Gmail searches. By default the model is simulated and the official public MCP
+Registry is live. Add `--live-model` to use the configured Gemini key; this sends
+OS tool definitions, synthetic questions and public registry metadata to Google
+and incurs API usage. Each search permits at most eight model calls, each with a
+2,048-token output budget. It never loads existing conversations or personal files.
+
+The stage log records token counts, finish reasons, registry counts, chat results
+and UI frame progress without credentials, prompts or raw response text. Passing
+requires fresh registry lookups and final answers containing a returned service
+name. Discovery returns service metadata; Gmail account access requires a separate
+authenticated connection.

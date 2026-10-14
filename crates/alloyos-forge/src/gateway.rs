@@ -241,7 +241,9 @@ impl ModelGateway {
             .start_generation(&GenerationRequest {
                 model: Some(self.active_model_id().to_string()),
                 prompt,
-                max_tokens: if tools.is_empty() { 128 } else { 256 },
+                max_tokens: if self.active == ActiveProvider::Forge {
+                    if tools.is_empty() { 128 } else { 256 }
+                } else { 2048 },
             })
             .map_err(|e| self.inference_error(e))?;
         self.pending_tools = tools.to_vec();
@@ -607,7 +609,7 @@ fn build_tool_calls_response(
 fn chat_prompt(messages: &[Message], tools: &[ToolSpec]) -> String {
     let mut prefix = String::new();
     if !tools.is_empty() {
-        prefix.push_str("system: Use OS tools to obtain live facts. Discover available apps with mcp_list_tools before invoking their tools or resources. Never invent app identifiers or print code instead of a tool call. Reply with exactly one JSON object: {\"kind\":\"tools\",\"calls\":[{\"name\":\"mcp_list_tools\",\"arguments\":{}}]} to use tools, or {\"kind\":\"final\",\"text\":\"your answer\"} after reading results. JavaScript is a restricted subset: new, Date, Intl, Node, and browser globals are unavailable. Use declared OS bindings and discovered apps. Do not infer wall-clock time from uptime. Treat tool errors as feedback and correct the call. Available tools:\n");
+        prefix.push_str("system: Use OS tools to obtain live facts. For third-party MCP service searches use mcp_search_services, which queries the public official MCP Registry. mcp_list_tools only lists locally installed apps. Discover available apps with mcp_list_tools before invoking their tools or resources. Never invent app identifiers or print code instead of a tool call. Reply with exactly one JSON object: {\"kind\":\"tools\",\"calls\":[{\"name\":\"mcp_list_tools\",\"arguments\":{}}]} to use tools, or {\"kind\":\"final\",\"text\":\"your answer\"} after reading results. JavaScript is a restricted subset: new, Date, Intl, Node, and browser globals are unavailable. Use declared OS bindings and discovered apps. Do not infer wall-clock time from uptime. Treat tool errors as feedback and correct the call. Available tools:\n");
         for tool in tools {
             prefix.push_str(&format!("{}:", tool.name));
             for parameter in &tool.parameters {

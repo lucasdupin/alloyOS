@@ -15,6 +15,21 @@ struct FixtureHttp {
     requests: Arc<Mutex<Vec<(String, Value)>>>,
     provider: ApiProvider,
 }
+
+#[test]
+fn gemini_thinking_budget_exhaustion_has_actionable_safe_error() {
+    let mut forge = Forge::new(0);
+    forge.connect_api(ApiProvider::Gemini, ApiProvider::Gemini.default_model(), "fixture-key", Box::new(FixtureHttp {
+        status: 200,
+        response: json!({"candidates": [{"finishReason": "MAX_TOKENS", "content": {"parts": []}}], "usageMetadata": {"thoughtsTokenCount": 256}}).to_string(),
+        requests: Arc::new(Mutex::new(Vec::new())),
+        provider: ApiProvider::Gemini,
+    })).unwrap();
+    let error = forge.generate(&GenerationRequest { model: Some(ApiProvider::Gemini.default_model().into()), prompt: "search Gmail MCP services".into(), max_tokens: 256 }).unwrap_err();
+    assert_eq!(error.code(), "invalid_api_response");
+    assert!(error.to_string().contains("output/thinking token budget"));
+    assert!(!error.to_string().contains("fixture-key"));
+}
 impl HttpsClient for FixtureHttp {
     fn post(&mut self, request: &HttpRequest) -> Result<HttpResponse, ForgeError> {
         let body: Value = serde_json::from_str(&request.body).unwrap();
@@ -154,15 +169,15 @@ fn all_apis_execute_through_forge_and_gateway_with_explicit_selection() {
     }
     let requests = captured.lock().unwrap();
     assert_eq!(requests[0].0, "https://api.anthropic.com/v1/messages");
-    assert_eq!(requests[0].1["max_tokens"], 128);
+    assert_eq!(requests[0].1["max_tokens"], 2048);
     assert!(requests[0].1["messages"][0]["content"]
         .as_str()
         .unwrap()
         .contains("東京"));
     assert!(requests[1].0.ends_with(":generateContent"));
-    assert_eq!(requests[1].1["generationConfig"]["maxOutputTokens"], 128);
+    assert_eq!(requests[1].1["generationConfig"]["maxOutputTokens"], 2048);
     assert_eq!(requests[2].0, "https://api.openai.com/v1/responses");
-    assert_eq!(requests[2].1["max_output_tokens"], 128);
+    assert_eq!(requests[2].1["max_output_tokens"], 2048);
     assert_eq!(requests[2].1["store"], false);
 }
 #[test]
@@ -201,7 +216,7 @@ fn api_failures_never_turn_into_canned_text_or_leak_response_details() {
                     max_tokens: 128,
                 })
                 .unwrap_err();
-            assert_eq!(error, expected);
+            if expected == ForgeError::InvalidResponse { assert_eq!(error.code(), "invalid_api_response"); } else { assert_eq!(error, expected); }
             assert!(!error.to_string().contains("fixture-secret"));
         }
     }

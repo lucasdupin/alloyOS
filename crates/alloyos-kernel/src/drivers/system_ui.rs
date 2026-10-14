@@ -2,7 +2,7 @@
 //! Slint lives on the boot/UI context, never in a shared driver static or IRQ.
 
 use super::{rng, virtio_gpu, virtio_input};
-use alloc::{collections::VecDeque, string::String};
+use alloc::{collections::VecDeque, string::{String, ToString}};
 use core::{task::Poll, time::Duration};
 use alloyos_ferrofluid::{system_ui::FerrofluidSystemUi, ChatItem, TileEvent};
 
@@ -28,6 +28,7 @@ pub fn run(
     mut forge: super::forge::ForgeService,
     mut agent: alloyos_welder::AgentRuntime,
 ) -> ! {
+    let mut console_rpc_id = None;
     let start = rng::monotonic_time_ns();
     let welcome = String::from("Welcome to alloyOS.\n\nYour workspace takes shape around what you need.");
     let mut transcript = welcome.clone();
@@ -62,6 +63,17 @@ pub fn run(
     loop {
         let frame_start = rng::monotonic_time_ns();
         forge.poll();
+        if !pending {
+            if let Some((id, input)) = forge.take_console_request() {
+                crate::serial_println!("[welder-e2e] stage=chat_started");
+                match agent.start_console_input(&input) {
+                    Ok(None) => { console_rpc_id = Some(id); pending = true; ui.set_reply_pending(true); }
+                    Ok(Some(output)) => { forge.finish_console_request(id, Ok(serde_json::json!({"text":output.response_text,"tools":[]}).to_string())); }
+                    Err(error) => forge.finish_console_request(id, Err(error.to_string())),
+                }
+            }
+        }
+
         if booting && !forge.is_boot_loading() {
             booting = false;
             ui.set_booting(false);
@@ -161,6 +173,11 @@ pub fn run(
                 transcript.push_str("\n\nWelder: ");
                 match result {
                     Ok(output) => {
+                        if let Some(id) = console_rpc_id.take() {
+                            let tools: alloc::vec::Vec<_> = output.tool_outputs.iter().map(|output| serde_json::json!({"name":output.tool_name,"output":serde_json::from_str::<serde_json::Value>(&output.output_json).unwrap_or(serde_json::Value::Null)})).collect();
+                            crate::serial_println!("[welder-e2e] stage=chat_finished success=true tools={}", tools.len());
+                            forge.finish_console_request(id, Ok(serde_json::json!({"text":output.response_text,"tools":tools}).to_string()));
+                        }
                         transcript.push_str(&output.response_text);
                         let welder_msg = alloc::format!("Welder: {}", output.response_text);
                         if let Some(ChatItem::Text(last)) = chat_items.last_mut() {
@@ -186,6 +203,10 @@ pub fn run(
                         }
                     }
                     Err(error) => {
+                        if let Some(id) = console_rpc_id.take() {
+                            crate::serial_println!("[welder-e2e] stage=chat_finished success=false");
+                            forge.finish_console_request(id, Err(error.to_string()));
+                        }
                         let err_msg = alloc::format!("Welder: {}", error);
                         transcript.push_str(&alloc::format!("{}", error));
                         if let Some(ChatItem::Text(last)) = chat_items.last_mut() {

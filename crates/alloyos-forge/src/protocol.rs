@@ -9,6 +9,7 @@ pub enum Command {
     Status,
     Models,
     Generate(GenerationRequest),
+    Chat(String),
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
@@ -54,6 +55,11 @@ impl Request {
         let command = match (fields[2], fields.len()) {
             ("status", 3) => Command::Status,
             ("models", 3) => Command::Models,
+            ("chat", 4) => {
+                let text = decode_hex(fields[3])?;
+                if text.trim().is_empty() { return Err(ForgeError::InvalidRequest); }
+                Command::Chat(text)
+            }
             ("generate", 6) => {
                 let req = GenerationRequest {
                     model: if fields[3] == "-" {
@@ -86,6 +92,7 @@ impl Forge {
     pub fn dispatch(&mut self, request: Request) -> String {
         let result = match request.command {
             Command::Generate(r) => self.generate(&r).map(|g| g.text),
+            Command::Chat(_) => Err(ForgeError::InvalidRequest), // Owned by the UI's Welder runtime.
             Command::Status | Command::Models => {
                 let models = self
                     .models()
@@ -123,7 +130,7 @@ mod tests {
         for input in [
             "FORGE1\t1\tstatus\textra",
             "FORGE2\t1\tstatus",
-            "FORGE1\t1\tgenerate\t-\t257\t61",
+            "FORGE1\t1\tgenerate\t-\t4097\t61",
             "FORGE1\t1\tgenerate\t-\t1\tff",
         ] {
             assert!(Request::parse(input).is_err());

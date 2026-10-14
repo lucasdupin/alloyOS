@@ -371,7 +371,8 @@ impl ApiTransport {
             return self.parse_sse(model, &response.body);
         }
         let value: Value =
-            serde_json::from_str(&response.body).map_err(|_| ForgeError::InvalidResponse)?;
+            serde_json::from_str(&response.body).map_err(|_| ForgeError::ApiResponseError { provider: self.provider.name().into(), model: model.id.clone(), reason: "response is not valid JSON" })?;
+        let response_error = |reason| ForgeError::ApiResponseError { provider: self.provider.name().into(), model: model.id.clone(), reason };
         let mut text = String::new();
         let tokens = match self.provider {
             ApiProvider::Claude => {
@@ -392,10 +393,13 @@ impl ApiTransport {
                 let candidate = value["candidates"]
                     .as_array()
                     .and_then(|v| v.first())
-                    .ok_or(ForgeError::InvalidResponse)?;
+                    .ok_or_else(|| response_error("response has no candidate (blocked or malformed response)"))?;
+                if candidate["finishReason"] == "MAX_TOKENS" {
+                    return Err(response_error("generation exhausted its output/thinking token budget; increase max_tokens"));
+                }
                 for part in candidate["content"]["parts"]
                     .as_array()
-                    .ok_or(ForgeError::InvalidResponse)?
+                    .ok_or_else(|| response_error("candidate has no content parts"))?
                 {
                     if part["thought"] != true {
                         if let Some(chunk) = part["text"].as_str() {
@@ -430,9 +434,9 @@ impl ApiTransport {
             }
         };
         if text.is_empty() {
-            return Err(ForgeError::InvalidResponse);
+            return Err(response_error("response contains no visible text"));
         }
-        let generated_tokens = u32::try_from(tokens.ok_or(ForgeError::InvalidResponse)?)
+        let generated_tokens = u32::try_from(tokens.ok_or_else(|| response_error("response is missing output token usage"))?)
             .map_err(|_| ForgeError::InvalidResponse)?;
         Ok(Generation {
             model: model.id.clone(),

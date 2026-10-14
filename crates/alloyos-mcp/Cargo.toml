@@ -11,3 +11,4 @@ path = "src/lib.rs"
 alloyos-js = { path = "../alloyos-js" }
 alloyos-proto = { path = "../alloyos-proto" }
 serde_json = { version = "1", default-features = false, features = ["alloc", "arbitrary_precision"] }
+serde = { version = "1", default-features = false, features = ["alloc", "derive"] }

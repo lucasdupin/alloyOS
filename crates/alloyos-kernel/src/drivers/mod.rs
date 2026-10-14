@@ -6,6 +6,7 @@ pub mod fw_cfg;
 pub mod forge;
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub mod forge_https;
+pub mod mcp_https;
 pub mod system_ui;
 pub mod virtio_blk;
 pub mod virtio_gpu;

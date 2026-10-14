@@ -2,6 +2,24 @@
 
 use alloyos_proto::SyscallNo;
 
+/// Query the protected-process ABI before using supervisor-granted endpoints.
+pub fn protected_abi_version() -> i64 {
+    unsafe { crate::syscall::syscall0(alloyos_proto::process::QUERY_ABI_VERSION) }
+}
+
+/// Send a bounded payload on a supervisor-granted local handle.
+pub fn ipc_send(handle: u64, payload: &[u8]) -> i64 {
+    unsafe { crate::syscall::syscall3(alloyos_proto::process::IPC_SEND,
+        handle, payload.as_ptr() as u64, payload.len() as u64) }
+}
+
+/// Receive a message, including its eight-byte kernel-derived sender PID header.
+/// Empty endpoints return EAGAIN; short buffers leave the message queued.
+pub fn ipc_receive(handle: u64, buffer: &mut [u8]) -> i64 {
+    unsafe { crate::syscall::syscall3(alloyos_proto::process::IPC_RECEIVE,
+        handle, buffer.as_mut_ptr() as u64, buffer.len() as u64) }
+}
+
 /// Information about the current operating system and architecture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]

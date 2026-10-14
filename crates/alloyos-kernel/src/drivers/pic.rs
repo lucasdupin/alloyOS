@@ -18,7 +18,12 @@ unsafe fn rearm() {
 pub fn start_timer() {
     #[cfg(all(target_arch = "aarch64", target_os = "none"))]
     unsafe {
-        let version = (core::ptr::read_volatile((GICD_BASE + 0xffe8) as *const u32) >> 4) & 15;
+        // GICv2 has a 4 KiB distributor; reading the GICv3 PIDR2 offset
+        // unconditionally causes an external abort on QEMU's default GICv2.
+        let v2_id = (core::ptr::read_volatile((GICD_BASE + 0xfe8) as *const u32) >> 4) & 15;
+        let version = if v2_id == 2 { 2 } else {
+            (core::ptr::read_volatile((GICD_BASE + 0xffe8) as *const u32) >> 4) & 15
+        };
         GIC_VERSION.store(version, core::sync::atomic::Ordering::Relaxed);
         if version >= 3 {
             // QEMU virt's CPU0 redistributor; SGI/PPI registers occupy its second page.

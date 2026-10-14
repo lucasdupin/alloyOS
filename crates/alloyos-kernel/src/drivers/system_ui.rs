@@ -1,27 +1,13 @@
 //! Driver bridge for the Ferrofluid-owned Slint System UI.
 //! Slint lives on the boot/UI context, never in a shared driver static or IRQ.
 
-use super::{rng, virtio_gpu, virtio_input};
+use super::rng;
 use alloc::{collections::VecDeque, string::{String, ToString}};
 use core::{task::Poll, time::Duration};
-use alloyos_ferrofluid::{system_ui::FerrofluidSystemUi, ChatItem, TileEvent};
+use alloyos_mcp::display::{ChatItem, TileEvent};
+use super::display_server::DisplayProxy as FerrofluidSystemUi;
 
-pub fn create() -> FerrofluidSystemUi {
-    let size = virtio_gpu::VIRTIO_GPU
-        .lock()
-        .as_ref()
-        .expect("GPU initialized")
-        .framebuffer_info();
-    virtio_input::VIRTIO_INPUT
-        .lock()
-        .set_display_size(size.width, size.height);
-    FerrofluidSystemUi::new(
-        size.width,
-        size.height,
-        alloyos_proto::display::PHONE_SCALE as f32,
-    )
-    .expect("initialize Ferrofluid Slint System UI")
-}
+pub fn create() -> FerrofluidSystemUi { FerrofluidSystemUi::new() }
 
 pub fn run(
     mut ui: FerrofluidSystemUi,
@@ -60,7 +46,10 @@ pub fn run(
         ui.set_booting(false);
     }
 
+    #[cfg(feature="process-runtime-selftest")]
+    ui.acceptance();
     loop {
+        ui.poll();
         let frame_start = rng::monotonic_time_ns();
         forge.poll();
         if !pending {
@@ -73,7 +62,6 @@ pub fn run(
                 }
             }
         }
-
         if booting && !forge.is_boot_loading() {
             booting = false;
             ui.set_booting(false);
@@ -86,15 +74,6 @@ pub fn run(
             chat_items.push(ChatItem::Text(err_msg));
             ui.set_transcript(&transcript);
             ui.set_chat_items(&chat_items);
-        }
-        // Bound work per frame so a busy input device cannot starve rendering.
-        for _ in 0..64 {
-            let event = virtio_input::VIRTIO_INPUT.lock().poll_ui_event();
-            let Some(event) = event else {
-                break;
-            };
-            ui.handle_input(event);
-            forge.note_ui_input();
         }
         while ui.take_model_cycle() {
             if !pending {
@@ -241,6 +220,7 @@ pub fn run(
             }
         }
         if let Some(text) = if pending { None } else { ui.take_submission() } {
+            if text.trim()=="/display restart" {ui.request_restart();continue;}
             if transcript.len() > 16 * 1024 {
                 transcript.clear();
             }
@@ -324,12 +304,7 @@ pub fn run(
                 }
             }
         }
-        if let Some(damage) = ui.render(elapsed) {
-            if let Some(gpu) = virtio_gpu::VIRTIO_GPU.lock().as_mut() {
-                let size = ui.size();
-                gpu.present_scaled_argb(ui.pixels(), size.width, size.height, Some(damage));
-            }
-        }
+        ui.flush();
         forge.note_ui_frame();
         // Sleep until the next frame; Forge can use the remaining CPU time.
         let deadline = frame_start.saturating_add(16_666_667);

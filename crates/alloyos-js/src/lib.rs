@@ -6,6 +6,7 @@ extern crate std;
 extern crate alloc;
 
 pub mod app;
+pub mod process;
 pub use app::{invoke_app_handler, validate_app_handlers, AppHandler, AppHandlerResult};
 pub mod ast;
 pub mod host;

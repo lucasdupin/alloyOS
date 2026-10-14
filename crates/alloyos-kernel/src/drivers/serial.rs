@@ -158,3 +158,27 @@ macro_rules! serial_println {
     () => ($crate::serial_print!("\n"));
     ($($arg:tt)*) => ($crate::serial_print!("{}\n", format_args!($($arg)*)));
 }
+
+/// Last-resort crash output: no allocator or serial mutex, bounded hardware waits.
+pub fn emergency_print(args: fmt::Arguments) {
+    struct Emergency;
+    impl fmt::Write for Emergency {
+        fn write_str(&mut self, text: &str) -> fmt::Result {
+            #[cfg(all(target_arch = "aarch64", target_os = "none"))]
+            for byte in text.bytes() {
+                let mut ready = false;
+                for _ in 0..100_000 {
+                    if unsafe { read_volatile((PL011_BASE + UARTFR) as *const u32) } & FR_TXFF == 0 { ready = true; break; }
+                    core::hint::spin_loop();
+                }
+                if !ready { return Err(fmt::Error); }
+                unsafe { write_volatile((PL011_BASE + UARTDR) as *mut u32, byte as u32); }
+            }
+            #[cfg(not(all(target_arch = "aarch64", target_os = "none")))]
+            std::print!("{}", text);
+            Ok(())
+        }
+    }
+    use fmt::Write;
+    let _ = Emergency.write_fmt(args);
+}

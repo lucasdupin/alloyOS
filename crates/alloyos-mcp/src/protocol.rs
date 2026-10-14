@@ -239,7 +239,7 @@ impl AppSkill {
 }
 
 /// Interactive semantic action exposed on a declarative `AppTile` that maps to an MCP tool call.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TileAction {
     pub id: String,
     pub label: String,
@@ -273,7 +273,7 @@ impl TileAction {
 }
 
 /// Renderer-agnostic item row inside an `AppTile` (e.g. a single scheduled task row).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TileItem {
     pub id: String,
     pub title: String,
@@ -315,7 +315,7 @@ impl TileItem {
 /// Apps never import or depend on Slint or framebuffer primitives; instead, they expose
 /// semantic `AppTile` descriptors that Ferrofluid renders. The owning app is identified
 /// by its `/apps/<folder>/` directory name (and the `<folder>.<tile_name>` `tile_id` prefix).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AppTile {
     pub tile_id: String,
     pub title: String,
@@ -356,7 +356,7 @@ impl AppTile {
 }
 
 /// Structured JSON-compatible value used across MCP messages.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum McpValue {
     Null,
     Bool(bool),
@@ -446,6 +446,7 @@ impl McpValue {
 
     /// Parse a JSON string into an `McpValue`.
     pub fn from_json(input: &str) -> Result<Self, McpError> {
+        alloyos_js::process::validate_wire(input).map_err(McpError::parse_error)?;
         let value = serde_json::from_str::<serde_json::Value>(input)
             .map_err(|error| McpError::parse_error(format!("invalid JSON: {}", error)))?;
         Ok(Self::from_json_value(value))

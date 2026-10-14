@@ -122,6 +122,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn migration_preserves_empty_dirs_and_rolls_back_failed_process_packaging() {
+        let root = std::env::temp_dir().join(format!("alloyos-migration-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("source/empty")).unwrap();
+        fs::write(root.join("source/state.bin"), b"preserved").unwrap();
+        let image = root.join("volume.img");
+        crate::ensure_cobaltfs_image(&image).unwrap();
+        copy_tree(&image, &root.join("source"), "/var").unwrap();
+        // Simulate an older smaller image while retaining its allocated blocks.
+        OpenOptions::new()
+            .write(true)
+            .open(&image)
+            .unwrap()
+            .set_len(31 * 1024 * 1024)
+            .unwrap();
+        let original = fs::read(&image).unwrap();
+        crate::ensure_cobaltfs_image(&image).unwrap();
+        assert_eq!(fs::metadata(&image).unwrap().len(), 32 * 1024 * 1024);
+        let export = root.join("export");
+        export_tree(&image, &export).unwrap();
+        assert!(export.join("var/empty").is_dir());
+        assert_eq!(
+            fs::read(export.join("var/state.bin")).unwrap(),
+            b"preserved"
+        );
+        assert!(export_tree(&image, &export).is_err());
+        // Missing executable artifacts must restore the exact original image.
+        assert!(crate::package_processes(&root, false, &image).is_err());
+        assert_eq!(fs::read(&image).unwrap(), original);
+        assert!(!image.with_extension("migration-pending").exists());
+        // Retry does not collide with stale staging data.
+        crate::ensure_cobaltfs_image(&image).unwrap();
+        assert_eq!(fs::metadata(&image).unwrap().len(), 32 * 1024 * 1024);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn image_contains_arbitrary_files_before_boot_and_preserves_other_data() {
         let root =
             std::env::temp_dir().join(format!("alloyos-filesystem-image-{}", std::process::id()));
@@ -202,4 +239,53 @@ mod tests {
         drop(filesystem);
         fs::remove_dir_all(root).unwrap();
     }
+}
+
+/// Preserve a development volume in a fresh destination; never merge stale exports.
+pub fn export_tree(image: &Path, destination: &Path) -> Result<()> {
+    if destination.exists() {
+        return Err(anyhow!(
+            "migration export already exists: {}",
+            destination.display()
+        ));
+    }
+    let file = OpenOptions::new().read(true).write(true).open(image)?;
+    let sectors = file.metadata()?.len() / 512;
+    let filesystem = CobaltFS::mount(Arc::new(ImageDevice {
+        file: Mutex::new(file),
+        sectors,
+    }))
+    .map_err(|e| anyhow!("mount for migration: {e:?}"))?;
+    fn visit(filesystem: &CobaltFS, path: &str, out: &Path) -> Result<()> {
+        fs::create_dir(out)?;
+        for name in filesystem
+            .readdir(filesystem.lookup(path).map_err(|e| anyhow!("{e:?}"))?.ino)
+            .map_err(|e| anyhow!("{e:?}"))?
+        {
+            if name == "." || name == ".." {
+                continue;
+            }
+            if name.contains('/') || name.contains('\\') {
+                return Err(anyhow!("invalid migration filename"));
+            }
+            let target = format!("{}/{}", path.trim_end_matches('/'), name);
+            let inode = filesystem.lookup(&target).map_err(|e| anyhow!("{e:?}"))?;
+            match inode.kind {
+                InodeKind::Directory => visit(filesystem, &target, &out.join(name))?,
+                InodeKind::File => {
+                    let mut bytes = vec![0; inode.size];
+                    let count = filesystem
+                        .read(inode.ino, 0, &mut bytes)
+                        .map_err(|e| anyhow!("cannot export {target}: {e:?}"))?;
+                    if count != bytes.len() {
+                        return Err(anyhow!("short migration read: {target}"));
+                    }
+                    fs::write(out.join(name), bytes)?;
+                }
+                _ => return Err(anyhow!("unsupported migration inode: {target}")),
+            }
+        }
+        Ok(())
+    }
+    visit(&filesystem, "/", destination)
 }

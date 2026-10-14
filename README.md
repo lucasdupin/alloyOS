@@ -21,19 +21,19 @@
 
 See **[ROADMAP.md](ROADMAP.md)** for the full architecture and milestone plan.
 
-## User Knowledge (Planned)
+## User Knowledge
 
-The main agent will maintain a local Markdown repository under `/knowledge/`
-to learn durable user facts, preferences, interests, and project context from
-conversation. Entries track their source and scope, with inferred observations
-kept separate from explicit statements. The user can inspect, correct, delete,
-or pause learning.
+The main agent (**Welder**) maintains a local Markdown repository under `/knowledge/`
+on CobaltFS to learn durable user facts, preferences, interests, and project context
+from conversation. Entries track their source and scope, with inferred observations
+kept separate from explicit statements. Welder automatically extracts durable context,
+filters credentials, and provides bounded retrieval into model turns. The user can
+inspect, correct, delete, or pause learning via `/knowledge` slash commands, natural-language
+requests, or the declarative `knowledge.profile` tile.
 
 Knowledge is user context; skills are supplied by applications under `/apps/`.
 There is no separate `/skills/` directory or profile skill. See
-[KNOWLEDGE.md](KNOWLEDGE.md) for the design and implementation sequence.
-This is planned: the UI-to-agent bridge and persistent AI filesystem tools
-must be connected before profile learning can work across reboots.
+[KNOWLEDGE.md](KNOWLEDGE.md) for the design, storage schema, and tool architecture.
 
 ## Workspace Structure
 
@@ -48,7 +48,7 @@ must be connected before profile learning can work across reboots.
 | [`crates/alloyos-js`](crates/alloyos-js) | Embedded `#![no_std]` JavaScript engine (`V8Isolate` / `JsRuntime`), `AlloyOS.*` bindings (zero shell access), and event/time scheduler (`scriptd`) |
 | [`crates/alloyos-mcp`](crates/alloyos-mcp) | Headless **Model Context Protocol (MCP)** developer app SDK, zero-UI capability sandbox, and filesystem-discovered JavaScript apps |
 | [`crates/alloyos-forge`](crates/alloyos-forge) | Model gateway, resident Gemma inference, cloud provider adapters, and model selection |
-| [`crates/alloyos-welder`](crates/alloyos-welder) | Agent orchestration, conversation and setup, shell-free native tools, persistent console configuration, and agent-exclusive UI synthesis |
+| [`crates/alloyos-welder`](crates/alloyos-welder) | Agent orchestration, conversation and setup, shell-free native tools, local `/knowledge/` learning and retrieval, persistent console configuration, and agent-exclusive UI synthesis |
 | [`xtask`](xtask) | Build, QEMU (`-M virt -accel hvf`) runner, and headless E2E test harness |
 
 ## Filesystem

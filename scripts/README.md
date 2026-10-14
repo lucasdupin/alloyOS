@@ -142,6 +142,30 @@ python3 scripts/check_local_chat_qemu.py --kernel target/aarch64-unknown-none/re
 
 The test verifies continued rendering and keyboard input while Forge's independent
 kernel task executes inference, then waits for the first text in Welder's chat.
+# Protected-process guest acceptance
+
+`python3 scripts/test-process-isolation.py` builds the `process-selftest` kernel
+variant and runs bounded EL0 probes in headless QEMU with TCG. Use
+`--gic-version 3` to exercise GICv3, or `--accel hvf --gic-version 3` on Apple
+Silicon. The runner requires the guest PASS marker and terminates its own QEMU
+instance; it does not change the filesystem disk or run production apps.
+
+The probes verify restricted syscalls, ABI discovery, private-stack output,
+invalid-pointer rejection, denied shared-descriptor access, granted IPC,
+privileged-memory fault containment, and progress alongside a non-yielding
+process. They establish the low-level memory and syscall boundaries.
+
+Run `python3 scripts/test-process-runtime.py` for the protected production runtime.
+It packages `/system/ferrofluid` and `/bin/app-runner` on CobaltFS, then exercises
+real app handlers, capability-scoped host operations, app resource containment and
+Ferrofluid crash/restart with host conversation/dashboard restoration. Use
+`--gic-version 3` for GICv3 and `--accel hvf` on Apple Silicon.
+
+`cargo xtask build --release` builds the kernel and protected executables. For UI
+iteration, `cargo xtask processes --release` rebuilds and packages only executables;
+it does not rebuild the kernel. Existing small development volumes migrate to
+32 MiB while preserving files and keeping an original backup. Restart the guest
+to load an updated executable; running guest storage must not be overwritten.
 
 ## Gmail MCP search acceptance
 
@@ -158,3 +182,43 @@ and UI frame progress without credentials, prompts or raw response text. Passing
 requires fresh registry lookups and final answers containing a returned service
 name. Discovery returns service metadata; Gmail account access requires a separate
 authenticated connection.
+
+For graphical input/restart verification, build the normal release kernel and run
+`python3 scripts/test-process-ui.py`. It sends `/apps` through the real VirtIO
+keyboard, captures the reply, then sends `/display restart` and waits for a fresh
+process frame. Review native PNGs in `target/process-validation`; native PNG avoids
+the installed QEMU PPM capture’s RGB row-padding issue at the 1206-pixel width.
+Protected user executables are optimized/stripped even with the default debug
+kernel so they fit the packaged volume and loader quota.
+
+## Crash diagnostics
+
+Bare-metal builds retain frame pointers. Kernel panics and synchronous faults
+print `[crash]` records with fault registers, process identity and up to 32 stack
+frames. Corrupted or inaccessible stacks stop with a reason instead of following
+arbitrary pointers. Panic output bypasses the serial mutex and allocator. EL0
+Ferrofluid and app-runner panics report their message before a breakpoint; the
+kernel prints the private stack and contains the fault as before.
+
+The development harness displays and appends only crash records to
+`target/alloyos-crash.log`; set `ALLOYOS_CRASH_LOG` to choose another path. Raw
+Forge/MCP HTTP envelopes are excluded. The serial-shell runner uses its ordinary
+terminal output, which can be redirected to a file.
+
+Resolve addresses against the **exact ELF from that guest**:
+
+```sh
+python3 scripts/symbolicate_crash.py --elf target/aarch64-unknown-none/debug/alloyos-kernel --log target/alloyos-crash.log
+python3 scripts/check_crash_qemu.py --log /tmp/alloyos-crash.log
+python3 scripts/test-process-isolation.py --accel hvf --gic-version 3
+```
+
+The crash acceptance test uses an isolated build directory and diskless VM,
+intentionally panics while holding the serial lock, and requires symbolicated
+parent frames. It saves the matching ELF next to the log. Use `--accel tcg` on
+hosts without HVF. Symbolication discovers `llvm-nm` from PATH or the Rust
+`llvm-tools-preview` component and prints demangled function names and offsets.
+For user faults, pass the matching `ferrofluid` or `app-runner` ELF: all protected
+processes use overlapping virtual addresses. Keep that ELF when collecting logs;
+rebuilding can change addresses. Optimized/inlined calls may not have separate
+frames; source line lookup is not provided by this helper.

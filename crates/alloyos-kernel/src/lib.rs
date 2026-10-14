@@ -13,3 +13,5 @@ pub mod net;
 pub mod syscall;
 pub mod task;
 pub mod sync;
+
+pub mod diagnostics;

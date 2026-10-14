@@ -258,6 +258,7 @@ pub fn run_ui(command: &mut Command) -> Result<(), String> {
             let Ok(line) = String::from_utf8(bytes) else {
                 break;
             };
+            crate::crash::record(&line);
             if let Some(reply) = registry_relay(&line).or_else(|| relay(&line, post)) {
                 if input
                     .write_all(reply.as_bytes())

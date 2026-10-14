@@ -8,6 +8,8 @@ name = "alloyos_ferrofluid"
 path = "src/lib.rs"
 
 [dependencies]
+alloyos-user = { path = "../alloyos-user" }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
 libm = "0.2"
 alloyos-keyboard = { path = "../alloyos-keyboard" }
 alloyos-proto = { path = "../alloyos-proto" }
@@ -21,3 +23,12 @@ slint-build = "=1.18.1"
 [dev-dependencies]
 alloyos-js = { path = "../alloyos-js" }
 png = "=0.18.1"
+
+[features]
+executable = []
+
+[[bin]]
+name = "ferrofluid"
+path = "src/main.rs"
+required-features = ["executable"]
+test = false

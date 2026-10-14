@@ -1,5 +1,6 @@
 //! The development harness's bounded, loopback-only development endpoint and guest serial transport.
 pub mod credentials;
+pub mod crash;
 pub mod https;
 pub mod model_loader;
 use serde::Deserialize;
@@ -80,6 +81,8 @@ impl Guest {
                     break;
                 }
                 if let Ok(line) = String::from_utf8(line) {
+                    crate::crash::record(&line);
+                    if line.starts_with("[crash] ") { eprint!("{line}"); }
                     if (line.starts_with("FORGE1\t") || line.starts_with("FORGEHTTP1\t") || line.starts_with("MCPHTTP1\t") || line.contains("[systemui] Slint window online;")) && tx.try_send(line).is_err() {
                         break;
                     }

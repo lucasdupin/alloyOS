@@ -12,7 +12,9 @@ extern crate self as alloyos_mcp;
 mod fixture_apps;
 
 pub mod apps;
+pub mod process;
 pub mod protocol;
+pub mod display;
 pub mod packages;
 pub mod registry;
 pub mod sandbox;

@@ -1,18 +1,8 @@
 //! UI-owned pin order and typed events. Persistence is supplied by the OS owner.
 use alloc::{string::String, vec::Vec};
-use alloyos_mcp::protocol::{AppTile, TileAction};
+use alloyos_mcp::protocol::AppTile;
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum TileEvent {
-    Action {
-        tile_id: String,
-        action: TileAction,
-    },
-    Refresh {
-        tile_id: String,
-        resource_uri: String,
-    },
-}
+pub use alloyos_mcp::display::TileEvent;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DashboardState {

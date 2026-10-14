@@ -29,51 +29,63 @@ pub enum Token {
     StringLit(String),
 
     // Operators
-    Plus,          // +
-    Minus,         // -
-    Star,          // *
-    Slash,         // /
-    Percent,       // %
-    PlusPlus,      // ++
-    MinusMinus,    // --
-    Assign,        // =
-    PlusAssign,    // +=
-    MinusAssign,   // -=
-    EqEq,          // ==
-    NotEq,         // !=
-    StrictEq,      // ===
-    StrictNotEq,   // !==
-    Lt,            // <
-    Le,            // <=
-    Gt,            // >
-    Ge,            // >=
-    AndAnd,        // &&
-    OrOr,          // ||
-    Bang,          // !
-    FatArrow,      // =>
+    Plus,        // +
+    Minus,       // -
+    Star,        // *
+    Slash,       // /
+    Percent,     // %
+    PlusPlus,    // ++
+    MinusMinus,  // --
+    Assign,      // =
+    PlusAssign,  // +=
+    MinusAssign, // -=
+    EqEq,        // ==
+    NotEq,       // !=
+    StrictEq,    // ===
+    StrictNotEq, // !==
+    Lt,          // <
+    Le,          // <=
+    Gt,          // >
+    Ge,          // >=
+    AndAnd,      // &&
+    OrOr,        // ||
+    Bang,        // !
+    FatArrow,    // =>
 
     // Delimiters
-    LParen,        // (
-    RParen,        // )
-    LBrace,        // {
-    RBrace,        // }
-    LBracket,      // [
-    RBracket,      // ]
-    Comma,         // ,
-    Dot,           // .
-    Colon,         // :
-    Semicolon,     // ;
+    LParen,    // (
+    RParen,    // )
+    LBrace,    // {
+    RBrace,    // }
+    LBracket,  // [
+    RBracket,  // ]
+    Comma,     // ,
+    Dot,       // .
+    Colon,     // :
+    Semicolon, // ;
 
     Eof,
 }
 
 /// Tokenizes JavaScript source code into a sequence of `Token`s ending with `Token::Eof`.
+pub const MAX_SOURCE_BYTES: usize = 256 * 1024;
+pub const MAX_TOKENS: usize = 8192;
 pub fn tokenize(src: &str) -> Result<Vec<Token>, JsError> {
+    if src.len() > MAX_SOURCE_BYTES {
+        return Err(JsError::SyntaxError(
+            "Source exceeds parser byte limit".into(),
+        ));
+    }
     let chars: Vec<char> = src.chars().collect();
     let mut pos = 0;
     let mut tokens = Vec::new();
 
     while pos < chars.len() {
+        if tokens.len() >= MAX_TOKENS {
+            return Err(JsError::SyntaxError(
+                "Source exceeds parser token limit".into(),
+            ));
+        }
         let ch = chars[pos];
 
         // Skip whitespace
@@ -163,7 +175,11 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, JsError> {
                 pos += 1;
             }
             // If followed by decimal point, consume fractional digits and truncate to i64
-            if pos < chars.len() && chars[pos] == '.' && pos + 1 < chars.len() && chars[pos + 1].is_ascii_digit() {
+            if pos < chars.len()
+                && chars[pos] == '.'
+                && pos + 1 < chars.len()
+                && chars[pos + 1].is_ascii_digit()
+            {
                 pos += 1;
                 while pos < chars.len() && chars[pos].is_ascii_digit() {
                     pos += 1;

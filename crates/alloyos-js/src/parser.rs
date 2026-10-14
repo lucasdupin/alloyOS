@@ -13,16 +13,161 @@ use crate::value::JsError;
 /// Parses JavaScript source code into a list of top-level AST statements.
 pub fn parse_program(src: &str) -> Result<Vec<Stmt>, JsError> {
     let tokens = tokenize(src)?;
-    let mut parser = Parser { tokens, pos: 0 };
+    validate_complexity(&tokens)?;
+    let mut parser = Parser {
+        tokens,
+        pos: 0,
+        depth: 0,
+    };
     parser.parse_program()
 }
 
+// Reject expensive shapes before constructing recursive ASTs. Operator budget
+// includes postfix chains, ensuring both evaluation and recursive Drop stay bounded.
+const MAX_PARSE_DEPTH: usize = 24;
+const MAX_DELIMITER_DEPTH: usize = 12;
+const MAX_CHAIN_OPERATORS: usize = 64;
+fn validate_complexity(tokens: &[Token]) -> Result<(), JsError> {
+    let (mut delimiters, mut operators) = (0usize, 0usize);
+    for token in tokens {
+        match token {
+            Token::LParen | Token::LBrace | Token::LBracket => {
+                delimiters += 1;
+                if delimiters > MAX_DELIMITER_DEPTH {
+                    return Err(JsError::SyntaxError(
+                        "Source exceeds parser nesting limit".into(),
+                    ));
+                }
+            }
+            Token::RParen | Token::RBrace | Token::RBracket => {
+                delimiters = delimiters.saturating_sub(1);
+            }
+            Token::Semicolon => operators = 0,
+            _ => (),
+        }
+        if matches!(
+            token,
+            Token::Plus
+                | Token::Minus
+                | Token::Star
+                | Token::Slash
+                | Token::Percent
+                | Token::PlusPlus
+                | Token::MinusMinus
+                | Token::Assign
+                | Token::PlusAssign
+                | Token::MinusAssign
+                | Token::EqEq
+                | Token::NotEq
+                | Token::StrictEq
+                | Token::StrictNotEq
+                | Token::Lt
+                | Token::Le
+                | Token::Gt
+                | Token::Ge
+                | Token::AndAnd
+                | Token::OrOr
+                | Token::Bang
+                | Token::Typeof
+                | Token::Dot
+                | Token::LBracket
+        ) {
+            operators += 1;
+            if operators > MAX_CHAIN_OPERATORS {
+                return Err(JsError::SyntaxError(
+                    "Source exceeds parser operator-chain limit".into(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+// Iterative inspection also bounds left-deep chains that recursive-descent
+// depth alone cannot see (including calls containing function-body semicolons).
+fn push_target<'a>(t: &'a AssignTarget, pending: &mut Vec<(&'a Expr, usize)>, next: usize) {
+    match t {
+        AssignTarget::Member { object, .. } => pending.push((object.as_ref(), next)),
+        AssignTarget::Index { object, index } => {
+            pending.push((object.as_ref(), next));
+            pending.push((index.as_ref(), next));
+        }
+        _ => (),
+    }
+}
+fn validate_expr_tree(root: &Expr) -> Result<(), JsError> {
+    let mut pending = vec![(root, 1usize)];
+    while let Some((expr, depth)) = pending.pop() {
+        if depth > 32 {
+            return Err(JsError::SyntaxError(
+                "Source exceeds AST expression depth limit".into(),
+            ));
+        }
+        let next = depth + 1;
+        match expr {
+            Expr::Update { target: t, .. } => push_target(t, &mut pending, next),
+            Expr::Assign {
+                target: t, value, ..
+            } => {
+                push_target(t, &mut pending, next);
+                pending.push((value, next));
+            }
+            Expr::Binary { left, right, .. } => {
+                pending.push((left, next));
+                pending.push((right, next));
+            }
+            Expr::Unary { expr, .. } => pending.push((expr, next)),
+            Expr::Member { object, .. } => pending.push((object, next)),
+            Expr::Index { object, index } => {
+                pending.push((object, next));
+                pending.push((index, next));
+            }
+            Expr::Call { callee, args } => {
+                pending.push((callee, next));
+                for arg in args {
+                    pending.push((arg, next));
+                }
+            }
+            Expr::ArrayLit(items) => {
+                for item in items {
+                    pending.push((item, next));
+                }
+            }
+            Expr::ObjectLit(items) => {
+                for (_, item) in items {
+                    pending.push((item, next));
+                }
+            }
+            Expr::ArrowFunction {
+                body: ArrowBody::Expr(expr),
+                ..
+            } => pending.push((expr, next)),
+            _ => (), // Statement bodies have their own guarded parse boundaries.
+        }
+    }
+    Ok(())
+}
 struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    depth: usize,
 }
 
 impl Parser {
+    fn bounded<T>(
+        &mut self,
+        parse: impl FnOnce(&mut Self) -> Result<T, JsError>,
+    ) -> Result<T, JsError> {
+        if self.depth >= MAX_PARSE_DEPTH {
+            return Err(JsError::SyntaxError(
+                "Source exceeds parser recursion limit".into(),
+            ));
+        }
+        self.depth += 1;
+        let result = parse(self);
+        self.depth -= 1;
+        result
+    }
+
     fn peek(&self) -> &Token {
         self.tokens.get(self.pos).unwrap_or(&Token::Eof)
     }
@@ -83,6 +228,10 @@ impl Parser {
     }
 
     fn parse_stmt(&mut self) -> Result<Stmt, JsError> {
+        self.bounded(|parser| parser.parse_stmt_inner())
+    }
+
+    fn parse_stmt_inner(&mut self) -> Result<Stmt, JsError> {
         if matches!(self.peek(), Token::Ident(s) if s == "export") {
             self.advance();
             if matches!(self.peek(), Token::Ident(s) if s == "default") {
@@ -316,6 +465,12 @@ impl Parser {
     }
 
     fn parse_assignment(&mut self) -> Result<Expr, JsError> {
+        let expr = self.bounded(|parser| parser.parse_assignment_inner())?;
+        validate_expr_tree(&expr)?;
+        Ok(expr)
+    }
+
+    fn parse_assignment_inner(&mut self) -> Result<Expr, JsError> {
         if self.is_arrow_function_ahead() {
             return self.parse_arrow_function();
         }
@@ -353,6 +508,7 @@ impl Parser {
                 left: Box::new(expr),
                 right: Box::new(right),
             };
+            validate_expr_tree(&expr)?;
         }
         Ok(expr)
     }
@@ -367,6 +523,7 @@ impl Parser {
                 left: Box::new(expr),
                 right: Box::new(right),
             };
+            validate_expr_tree(&expr)?;
         }
         Ok(expr)
     }
@@ -389,6 +546,7 @@ impl Parser {
                     left: Box::new(expr),
                     right: Box::new(right),
                 };
+                validate_expr_tree(&expr)?;
             } else {
                 break;
             }
@@ -414,6 +572,7 @@ impl Parser {
                     left: Box::new(expr),
                     right: Box::new(right),
                 };
+                validate_expr_tree(&expr)?;
             } else {
                 break;
             }
@@ -437,6 +596,7 @@ impl Parser {
                     left: Box::new(expr),
                     right: Box::new(right),
                 };
+                validate_expr_tree(&expr)?;
             } else {
                 break;
             }
@@ -461,6 +621,7 @@ impl Parser {
                     left: Box::new(expr),
                     right: Box::new(right),
                 };
+                validate_expr_tree(&expr)?;
             } else {
                 break;
             }
@@ -469,6 +630,12 @@ impl Parser {
     }
 
     fn parse_unary(&mut self) -> Result<Expr, JsError> {
+        let expr = self.bounded(|parser| parser.parse_unary_inner())?;
+        validate_expr_tree(&expr)?;
+        Ok(expr)
+    }
+
+    fn parse_unary_inner(&mut self) -> Result<Expr, JsError> {
         match self.peek() {
             Token::Bang => {
                 self.advance();
@@ -527,6 +694,12 @@ impl Parser {
     }
 
     fn parse_postfix(&mut self) -> Result<Expr, JsError> {
+        let expr = self.bounded(|parser| parser.parse_postfix_inner())?;
+        validate_expr_tree(&expr)?;
+        Ok(expr)
+    }
+
+    fn parse_postfix_inner(&mut self) -> Result<Expr, JsError> {
         let mut expr = self.parse_primary()?;
 
         loop {
@@ -556,6 +729,7 @@ impl Parser {
                         object: Box::new(expr),
                         property: prop,
                     };
+                    validate_expr_tree(&expr)?;
                 }
                 Token::LBracket => {
                     self.advance();
@@ -565,6 +739,7 @@ impl Parser {
                         object: Box::new(expr),
                         index: Box::new(index),
                     };
+                    validate_expr_tree(&expr)?;
                 }
                 Token::LParen => {
                     self.advance();
@@ -587,6 +762,7 @@ impl Parser {
                         callee: Box::new(expr),
                         args,
                     };
+                    validate_expr_tree(&expr)?;
                 }
                 Token::PlusPlus => {
                     self.advance();
@@ -596,6 +772,7 @@ impl Parser {
                         target,
                         prefix: false,
                     };
+                    validate_expr_tree(&expr)?;
                 }
                 Token::MinusMinus => {
                     self.advance();
@@ -605,6 +782,7 @@ impl Parser {
                         target,
                         prefix: false,
                     };
+                    validate_expr_tree(&expr)?;
                 }
                 _ => break,
             }
@@ -614,6 +792,12 @@ impl Parser {
     }
 
     fn parse_primary(&mut self) -> Result<Expr, JsError> {
+        let expr = self.bounded(|parser| parser.parse_primary_inner())?;
+        validate_expr_tree(&expr)?;
+        Ok(expr)
+    }
+
+    fn parse_primary_inner(&mut self) -> Result<Expr, JsError> {
         match self.peek().clone() {
             Token::Undefined => {
                 self.advance();
@@ -658,7 +842,10 @@ impl Parser {
             Token::LParen => {
                 self.advance();
                 let expr = self.parse_expr()?;
-                self.consume(&Token::RParen, "Expected ')' after parenthesized expression")?;
+                self.consume(
+                    &Token::RParen,
+                    "Expected ')' after parenthesized expression",
+                )?;
                 Ok(expr)
             }
             Token::LBracket => self.parse_array_literal(),
@@ -734,5 +921,41 @@ fn expr_to_assign_target(expr: Expr) -> Result<AssignTarget, JsError> {
         _ => Err(JsError::SyntaxError(
             "Invalid left-hand side in assignment".to_string(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod resource_tests {
+    use super::*;
+    #[test]
+    fn extreme_sources_reject_before_deep_ast_allocation_or_drop() {
+        let sources = [
+            format!("{}true;", "!".repeat(10000)),
+            format!("{}1{};", "(".repeat(1000), ")".repeat(1000)),
+            format!("{}1;", "1+".repeat(4000)),
+            format!("a{};", "()".repeat(1000)),
+            format!("{}1;", "if(true) ".repeat(1000)),
+            // Function-body semicolons must not reset the actual AST depth limit.
+            format!("{}1;", "function() { return 1; } + ".repeat(200)),
+            "1;".repeat(10000),
+            " ".repeat(crate::lexer::MAX_SOURCE_BYTES + 1),
+        ];
+        for source in sources {
+            assert!(parse_program(&source).is_err());
+        }
+        assert!(parse_program("function callTool(name,args) { return 'alive'; }").is_ok());
+    }
+    #[test]
+    fn shipped_app_sources_fit_bounded_parser() {
+        for source in [
+            include_str!("../../../apps/calc/main.js"),
+            include_str!("../../../apps/clock/main.js"),
+            include_str!("../../../apps/memory/main.js"),
+            include_str!("../../../apps/package-manager/main.js"),
+            include_str!("../../../apps/tasks/main.js"),
+            include_str!("../../../apps/weather/main.js"),
+        ] {
+            parse_program(source).unwrap();
+        }
     }
 }

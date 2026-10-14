@@ -47,8 +47,10 @@ dependencies = [
  "alloyos-keyboard",
  "alloyos-mcp",
  "alloyos-proto",
+ "alloyos-user",
  "libm",
  "png",
+ "serde_json",
  "slint",
  "slint-build",
 ]
@@ -74,7 +76,6 @@ name = "alloyos-kernel"
 version = "0.1.0"
 dependencies = [
  "alloyos-boot",
- "alloyos-ferrofluid",
  "alloyos-forge",
  "alloyos-js",
  "alloyos-mcp",
@@ -116,7 +117,9 @@ version = "0.1.0"
 name = "alloyos-user"
 version = "0.1.0"
 dependencies = [
+ "alloyos-js",
  "alloyos-proto",
+ "linked_list_allocator",
 ]
 
 [[package]]

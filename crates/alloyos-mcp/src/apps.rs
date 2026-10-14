@@ -407,7 +407,7 @@ impl JsApp {
         host
     }
 
-    fn sync_host(&mut self, host: alloyos_js::VirtualHostEnv) {
+    fn sync_host(&self, host: alloyos_js::VirtualHostEnv) {
         if let Some(ref vfs) = self.vfs_files {
             *vfs.borrow_mut() = host.files;
         }
@@ -469,16 +469,16 @@ impl McpApp for JsApp {
             alloyos_js::JsValue::Object(js_args_map),
         ];
 
-        let result = alloyos_js::invoke_app_handler(
+        let result = crate::process::invoke(
+            &self.manifest.app_id,
             &self.source,
             alloyos_js::AppHandler::CallTool,
             &js_args,
             50_000,
             &mut host,
-        )
-        .map_err(|e| McpError::internal_error(format!("JS callTool error: {}", e)))?;
-
+        );
         self.sync_host(host);
+        let result = result.map_err(|e| McpError::internal_error(format!("JS callTool error: {}", e)))?;
 
         let parsed = McpValue::from_json(&result.text)
             .unwrap_or_else(|_| McpValue::Text(result.text.clone()));
@@ -502,14 +502,16 @@ impl McpApp for JsApp {
         let mut host = self.make_host();
         let js_args = [alloyos_js::JsValue::String(uri.to_string())];
 
-        let result = alloyos_js::invoke_app_handler(
+        let result = crate::process::invoke(
+            &self.manifest.app_id,
             &self.source,
             alloyos_js::AppHandler::ReadResource,
             &js_args,
             50_000,
             &mut host,
-        )
-        .map_err(|e| McpError::internal_error(format!("JS readResource error: {}", e)))?;
+        );
+        self.sync_host(host);
+        let result = result.map_err(|e| McpError::internal_error(format!("JS readResource error: {}", e)))?;
 
         let text = result.text;
         if let Ok(McpValue::Map(ref m)) = McpValue::from_json(&text) {
@@ -544,14 +546,16 @@ impl McpApp for JsApp {
             alloyos_js::JsValue::Object(js_args_map),
         ];
 
-        let result = alloyos_js::invoke_app_handler(
+        let result = crate::process::invoke(
+            &self.manifest.app_id,
             &self.source,
             alloyos_js::AppHandler::GetPrompt,
             &js_args,
             50_000,
             &mut host,
-        )
-        .map_err(|e| McpError::internal_error(format!("JS getPrompt error: {}", e)))?;
+        );
+        self.sync_host(host);
+        let result = result.map_err(|e| McpError::internal_error(format!("JS getPrompt error: {}", e)))?;
 
         Ok(result.text)
     }
@@ -564,14 +568,16 @@ impl McpApp for JsApp {
         let mut host = self.make_host();
         let js_args = [alloyos_js::JsValue::String(tile_id.to_string())];
 
-        let result = alloyos_js::invoke_app_handler(
+        let result = crate::process::invoke(
+            &self.manifest.app_id,
             &self.source,
             alloyos_js::AppHandler::RenderTile,
             &js_args,
             50_000,
             &mut host,
-        )
-        .map_err(|e| McpError::internal_error(format!("JS renderTile error: {}", e)))?;
+        );
+        self.sync_host(host);
+        let result = result.map_err(|e| McpError::internal_error(format!("JS renderTile error: {}", e)))?;
 
         parse_app_tile_from_json(&result.text)
             .map_err(|e| McpError::internal_error(format!("invalid tile json: {}", e)))

@@ -1,6 +1,10 @@
 pub mod app_process;
+pub mod js_process;
+pub mod ipc;
 pub mod pcb;
 pub mod scheduler;
+#[cfg(feature = "process-selftest")]
+pub mod selftest;
 
 #[cfg(test)]
 pub mod tests;

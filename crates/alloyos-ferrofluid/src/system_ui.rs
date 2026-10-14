@@ -40,11 +40,7 @@ impl Platform for FerrofluidPlatform {
 }
 
 /// Interleaved conversational item rendered in the continuous chat scroll view.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ChatItem {
-    Text(String),
-    Tile(AppTile),
-}
+pub use alloyos_mcp::display::ChatItem;
 
 /// Single owner of the system window. Drivers supply time/input and consume
 /// opaque ARGB8888 pixels; they never own or invoke Slint components.

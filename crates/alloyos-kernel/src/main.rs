@@ -73,6 +73,7 @@ _start:
     b .Lbss_loop
 
 .Lbss_done:
+    mov x29, xzr               // terminate the initial frame-pointer chain
     bl aarch64_kernel_entry
     b .Lpark
 "#
@@ -94,6 +95,8 @@ pub extern "C" fn aarch64_kernel_entry() -> ! {
 
     // 2. Initialize PL011 UART (for early debug output)
     drivers::serial::init();
+    #[cfg(feature = "crash-selftest")]
+    alloyos_kernel::diagnostics::selftest();
 
     // 3. Print boot banner
     serial_println!("alloyOS v0.1.0 booting...");
@@ -131,23 +134,10 @@ pub extern "C" fn aarch64_kernel_entry() -> ! {
     drivers::pic::init();
     let _ = drivers::rng::next_u64();
 
-    // 6. Present the static logotype using Ferrofluid's own font and display scale.
-    let _ = drivers::virtio_gpu::init();
+    // Hardware-owned splash until the protected display executable is loaded.
+    let boot_display = drivers::virtio_gpu::init();
+    drivers::display_server::boot_splash(boot_display);
     drivers::virtio_input::init();
-    let system_ui = if drivers::virtio_gpu::has_hardware_display() {
-        let mut ui = drivers::system_ui::create();
-        ui.set_booting(true);
-        ui.render(core::time::Duration::ZERO);
-        let size = ui.size();
-        drivers::virtio_gpu::present_ui_frame(ui.pixels(), size.width, size.height);
-        Some(ui)
-    } else {
-        None
-    };
-    #[cfg(any(not(feature = "forge"), feature = "debug-shell"))]
-    let mut system_ui = system_ui;
-    serial_println!("[splash] Static alloyOS logotype visible.");
-
     // 7. Init VFS (probes VirtIO-Blk for CobaltFS volume, falls back to RamFS)
     let root_backend = fs::init();
     serial_println!("[fs] POSIX VFS (/ [{}], /dev, /proc) online.", root_backend);
@@ -157,31 +147,15 @@ pub extern "C" fn aarch64_kernel_entry() -> ! {
     alloyos_kernel::net::with_net_stack(|_| {});
     serial_println!("[net] VirtIO-Net + TCP/IP + DNS + TLS 1.3 stack online.");
 
-    // 9. Transition the Ferrofluid-owned Slint window from boot to System UI.
+    let system_ui = if drivers::virtio_gpu::has_hardware_display() && !cfg!(feature="debug-shell") {
+        Some(drivers::system_ui::create())
+    } else { None };
+    #[cfg(any(not(feature = "forge"), feature = "debug-shell"))]
+    let mut system_ui = system_ui;
     #[cfg(feature = "debug-shell")]
-    {
-        drop(system_ui.take());
-        serial_println!("[ferrofluidd] System UI disabled (serial debug shell).");
-    }
+    { drop(system_ui.take()); serial_println!("[ferrofluidd] System UI disabled (serial debug shell)."); }
     #[cfg(all(not(feature = "debug-shell"), not(feature = "forge")))]
-    if let Some(ui) = system_ui.as_mut() {
-        ui.set_booting(false);
-        ui.render(core::time::Duration::ZERO);
-        let size = ui.size();
-        drivers::virtio_gpu::crossfade_to_frame(ui.pixels(), size.width, size.height);
-    }
-    #[cfg(not(feature = "debug-shell"))]
-    let (mw, mh) = system_ui.as_ref().map(|ui| {
-        let size = ui.size();
-        (size.width, size.height)
-    }).unwrap_or((0, 0));
-    #[cfg(not(feature = "debug-shell"))]
-    serial_println!(
-        "[ferrofluidd] Ferrofluid display server online ({}x{}, agent-exclusive UI mode).",
-        mw,
-        mh
-    );
-
+    if let Some(ui) = system_ui.as_mut() { ui.set_booting(false); ui.flush(); }
     // 10. Init Embedded JS Engine (V8 / JS Isolate) & Event/Time Scheduler (`scriptd`) (Phase 6)
     #[cfg(feature = "forge")]
     let forge_service = drivers::forge::ForgeService::from_boot();
@@ -223,12 +197,17 @@ pub extern "C" fn aarch64_kernel_entry() -> ! {
 
     // 13. Init scheduler, spawn init task
     task::init();
-    #[cfg(any(not(feature = "debug-shell"), feature = "forge"))]
+    #[cfg(feature = "process-selftest")]
+    task::selftest::run();
     {
         task::scheduler::spawn_kernel(2, drivers::forge_worker::run);
         task::scheduler::start_preemption();
         serial_println!("[scheduler] Timer-preempted UI and Forge tasks online.");
     }
+
+    task::js_process::install();
+    #[cfg(feature="process-runtime-selftest")]
+    task::js_process::acceptance();
 
     // 14. Ferrofluid owns the Slint System UI and its execution context.
     #[cfg(not(feature = "debug-shell"))]
@@ -262,7 +241,7 @@ fn alloc_error(layout: core::alloc::Layout) -> ! {
 #[cfg(target_os = "none")]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    serial_println!("{}", info);
+    alloyos_kernel::diagnostics::panic_report(info);
     loop {
         arch::wfi();
     }

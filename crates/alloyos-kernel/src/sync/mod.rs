@@ -32,6 +32,10 @@ impl<T> IrqMutex<T> {
     pub const fn new(value: T) -> Self {
         Self(spin::Mutex::new(value))
     }
+    pub fn try_lock(&self) -> Option<IrqMutexGuard<'_, T>> {
+        let interrupts = InterruptGuard::new();
+        self.0.try_lock().map(|guard| IrqMutexGuard { guard, _interrupts: interrupts })
+    }
     pub fn lock(&self) -> IrqMutexGuard<'_, T> {
         let interrupts = InterruptGuard::new();
         IrqMutexGuard {

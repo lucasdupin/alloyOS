@@ -1,9 +1,11 @@
+use crate::mm::paging::{FrameAllocator, OffsetPageTable, Size4KiB};
 #[cfg(target_os = "none")]
 use linked_list_allocator::LockedHeap;
-use crate::mm::paging::{FrameAllocator, OffsetPageTable, Size4KiB};
 
 #[cfg(not(feature = "forge"))]
-pub const HEAP_SIZE: usize = 64 * 1024 * 1024;
+// Private executable pages, UI heap, ELF archive, framebuffers and app engines
+// all draw from this allocator. A 256 MiB guest leaves room for kernel/initrd.
+pub const HEAP_SIZE: usize = 160 * 1024 * 1024;
 // Weights are borrowed from the reserved loader region, not copied into this
 // heap. This budget covers model metadata, bounded KV cache, and working memory.
 #[cfg(feature = "forge")]
@@ -36,7 +38,6 @@ pub fn init_heap(
 
     Ok(())
 }
-
 
 #[cfg(target_os = "none")]
 struct PreemptionSafeAllocator;

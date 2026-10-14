@@ -6,9 +6,10 @@
 - **Single-User by Design**: Personal devices are single-owner devices. alloyOS intentionally omits multi-user support (no UIDs/GIDs, user session switching, `/home/<user>` hierarchies, or cross-user permission matrices). Security and isolation boundaries exist strictly between **the AI Agent** and **capability-scoped JS isolates / headless MCP apps**, eliminating an entire class of state-synchronization and permission bugs.
 - **No Shell for the AI**: The AI agent cannot see or execute shell commands (`sh`, `exec`, `spawn`). It interacts with the OS exclusively through typed native tools, local JavaScript (`alloyos-js`), and MCP servers.
 - **Agent-Exclusive UI & Declarative Tiles**: Developer apps are strictly headless (`alloyos-mcp`) and never link against or depend on any UI toolkit. Each app can expose **MCP entry points** (tools, resources, prompts), **SKILLs** (text files under `/apps/<app_id>/SKILL.md`), and declarative **Tiles** (`AppTile` schemas that can be embedded in the chat stream or pinned to the **Dashboard**). Only Welder and **Ferrofluid (`ferrofluidd`)** synthesize and render UI surfaces.
-- **One Process per App (required; pending)**: Every JavaScript app runs in its own independently scheduled OS process with a private virtual address space. `alloyos-mcp` invokes app handlers through IPC; manifest capabilities remain enforced inside each app process. An app fault or hang must not stop the host, Welder, Ferrofluid, or other apps.
+- **One Process per App**: Every JavaScript app runs in its own independently scheduled OS process with a private virtual address space. `alloyos-mcp` invokes app handlers through IPC; manifest capabilities remain enforced inside each app process. An app fault or hang must not stop the host, Welder, Ferrofluid, or other apps.
+- **Protected Display Server**: Ferrofluid runs as a separate EL0 process with a private address space and its own executable. Kernel drivers retain hardware ownership and expose bounded input, time, and presentation interfaces. Ferrofluid can be rebuilt and restarted independently of the kernel. Initially, kernel drivers, VFS, and networking remain together, and Welder and Forge remain in the existing host; further service separation is deferred.
 - **Welder-Centralized App Orchestration & Capability-Based Scheduler Access**: No app can access or invoke another app; **only Welder centralizes app access and orchestration**. Apps declare `ScriptSchedulerAccess` in their filesystem manifests to receive scheduler bindings and storage scopes. Rust OS services do not select applications by name.
-- **Agent-Owned User Knowledge**: The planned knowledge service maintains local user context under `/knowledge/`, with source tracking and user correction/deletion controls. Skills are supplied by `/apps/`, independently of knowledge; no top-level `/skills/` directory is planned.
+- **Agent-Owned User Knowledge**: Welder's knowledge service maintains local user context under `/knowledge/`, with source tracking and user correction/deletion controls. Skills are supplied by `/apps/`, independently of knowledge; no top-level `/skills/` directory is planned.
 
 ---
 
@@ -71,6 +72,16 @@ stream or pinned to the **Dashboard**. No app can access another app — only
 Welder centralizes app orchestration — and `Tasks` is the sole app allowed to
 access `ScriptScheduler`.
 
+These component relationships now cross protected process boundaries: Ferrofluid
+is loaded from `/system/ferrofluid` into a private EL0 address space, and JavaScript
+MCP handlers execute in private app processes using `/bin/app-runner`. Welder,
+Forge, filesystem/network services and hardware drivers remain in the kernel host.
+The QEMU bootloader is a startup stage, not a concurrent process.
+
+Ferrofluid code, Slint UI, fonts and assets are independently packaged with
+`cargo xtask processes --release`; this command does not build or relink the kernel.
+The shared display IPC schema is an ABI: changing it requires rebuilding both ends.
+
 
 ---
 
@@ -88,6 +99,13 @@ device access. The current QEMU boot path loads the kernel ELF directly.
 - [x] **Kernel services**
   - Heap and frame allocation, task scheduling, syscall dispatch and device drivers
   - Userland syscall wrappers in `alloyos-user`; serial debug shell via `--debug-shell`
+- [x] **Shared protected-process foundation**
+  - Static AArch64 ELF loading from CobaltFS with validated entry/segments, W^X permissions, zeroed BSS, inaccessible gaps and private heap/stack pages across multiple leaf tables
+  - Real EL0 entry/return, address-space switching, FP/SIMD context preservation and timer preemption
+  - Validated copy-in/out, restricted syscalls, supervisor-derived caller identity, bounded IPC and role-specific host operations; protected processes cannot access shared descriptors, kernel memory or peers
+  - Fallible private-memory allocation, execution deadlines, fault/exit/cancellation cleanup and independently packaged executables
+  - Low-level guest gates: `python3 scripts/test-process-isolation.py` (GICv2/GICv3); complete runtime gates: `python3 scripts/test-process-runtime.py`
+  - Current IPC polls bounded queues; general-purpose blocking IPC and arbitrary POSIX executable hosting remain future work
 - [x] **Storage foundation**
   - VFS mount table, persistent CobaltFS, RamFS and DevFS
   - VirtIO block transport for filesystem disks
@@ -157,7 +175,15 @@ soft keyboard and liquid displacement effects.
 
 - [x] **Platform and rendering**
   - Software rendering, damage tracking, embedded Quicksand font and Fluent dark controls
-  - All UI operations remain on the boot/UI execution context
+  - All Slint operations run on the protected display process’s UI thread
+- [x] **Independent protected Ferrofluid display server**
+  - Standalone `/system/ferrofluid` ELF owns Slint, UI assets, input interpretation and rendering in a private EL0 process; the kernel has no Ferrofluid/Slint linkage
+  - Kernel drivers retain GPU/input hardware ownership; only the authorized display PID can poll input or present validated fixed-size frames
+  - Bounded host/display IPC carries submissions, incremental replies, model state, conversation items, tiles, tile actions and dashboard pins
+  - Authoritative conversation/dashboard state stays in the host; display faults and expired execution leases trigger restart with bounded retry/backoff and restored presentation state
+  - `/display restart` reloads Ferrofluid without rebooting; applied-state ACKs verify restored conversation/pin content. Kernel-owned startup bars remain visible until Ferrofluid renders its boot/workspace UI
+  - `cargo xtask processes --release` rebuilds and updates packaged executables without rebuilding the kernel; CobaltFS development-volume upgrades preserve files and retain an original backup with rollback on packaging failure
+  - Runtime guest acceptance covers actual EL0 display fault, restart and restored conversation/dashboard state; normal graphical input and unchanged-kernel rebuild are separate verification gates
 - [x] **Conversation and keyboard input**
   - Conversation viewport, text editing, submission and soft keyboard
   - Welder request/reply bridge, active model display and pending-reply state
@@ -281,14 +307,12 @@ Strict isolation and orchestration rules govern all apps:
   - Provide a JavaScript app under `/apps/package-manager/` with MCP tools/resources and a status Tile for installed apps, per-package errors, and revalidation, following the app pattern used by Tasks
   - Back its inventory and lifecycle operations with a typed OS package service; Welder orchestrates requests, and PackageManager does not directly invoke other apps or write `/apps/`
   - Keep the watcher, validation records, and diagnostic service available even if the PackageManager app itself is invalid or unavailable
-- [ ] **One protected OS process per JavaScript app**
-  - Current apps execute inside the MCP host; JavaScript isolates and shared-address-space kernel tasks do not satisfy this requirement
-  - Implemented foundation: private ARM64 page tables, bounded caller-bound IPC, EL0 context metadata and fault handling; app launch remains disabled pending syscall validation and resource ownership
-  - Add user-mode app processes with per-process page tables, private heaps/stacks, and preemptive scheduling; prevent access to kernel and other app memory
-  - Run `alloyos-js` inside each app process, loading `/apps/<app_id>/main.js` under its manifest-derived capability policy
-  - Route MCP requests, results, and authorized OS operations over bounded IPC; derive caller identity from the process rather than trusting app-supplied IDs
-  - Enforce memory and execution limits, request timeouts/cancellation, and process teardown/restart so a faulty app cannot block other apps or the system UI
-  - Add QEMU regression tests for cross-process memory protection, denied capabilities, and continued host/UI/other-app operation when an app crashes, hangs, or exceeds its limits
+- [x] **One protected OS process per JavaScript app**
+  - MCP tool, resource, prompt and tile handlers run `alloyos-js` inside their app’s private EL0 process, using package source and manifest-derived host capability policy
+  - Host operations cross bounded kernel-identified IPC; caller identity comes from the scheduled process and app host, never an app-supplied ID
+  - Each app has a 16 MiB heap/stack allocation, source/token/AST limits, interpreter fuel limits and a five-second invocation deadline enforced by timer preemption and per-request host IPC budgets (256 calls / 4 MiB); faults, exhausted memory and timeouts remain contained
+  - Protected executable exception stacks reserve 128 KiB in the kernel; private backing uses fallible 1 MiB chunks to avoid restart fragmentation. At most four app processes are resident; inactive processes can be retired to admit another installed app. Explicit cancellation and package invalidation/update/removal retire private memory and IPC; a later invocation launches a fresh process
+  - Guest regression checks cover real interpreter/FS/scheduler IPC, peer capability denial, display/shared-descriptor denial, persistent process reuse, independent peer progress and fault/resource recovery
 - [x] **Agent presentation library**
   - Welder synthesizes structured views and attaches declarative `AppTile` payloads from MCP tool/resource outputs
 - [ ] **Ferrofluid Dashboard & Tile renderer integration**
@@ -324,13 +348,28 @@ learning. See [KNOWLEDGE.md](KNOWLEDGE.md) for the design.
 
 ## Milestone Summary
 
+### Process Boundary Acceptance
+
+The shared ELF loader, protected app runner and standalone Ferrofluid executable
+are implemented. Reproduce the low-level boundary probes with
+`python3 scripts/test-process-isolation.py`, then exercise the production runtime
+with `python3 scripts/test-process-runtime.py`. The latter loads both executables
+from CobaltFS and checks app operations plus a real display fault/restart.
+
+Use `cargo xtask build --release` for a complete build and
+`cargo xtask processes --release` for UI/app executable updates. ABI changes require
+a complete build. Welder/Forge and kernel services retain their existing host
+boundary; further service isolation is deferred. General asynchronous app host I/O,
+arbitrary ELF applications and Boa migration remain outside this process-boundary
+increment.
+
 | Milestone | Deliverable | Target Crate(s) | Status |
 |---|---|---|---|
 | **M1: ARM64 Core & CobaltFS** | Boot entry, kernel services, VFS and persistent storage | `alloyos-kernel`, `alloyos-user` | Foundation implemented; agent persistence pending |
 | **M2: Networking & Model Transport** | Guest TCP/IP and authenticated Forge cloud access | `alloyos-kernel`, `alloyos-user`, `alloyos-forge`, `alloyos-dev-harness` | Implemented |
 | **M3: Boot & Model Readiness** | Liquid boot logo, resident weight loading and workspace transition | `alloyos-boot`, `alloyos-kernel`, `alloyos-ferrofluid` | Logo turbulence and loading implemented |
-| **M4: Ferrofluid System UI & Dashboard** | System UI rendering, customizable Dashboard with dynamic Tiles, chat bridge and native input | `alloyos-ferrofluid`, `alloyos-keyboard`, `alloyos-kernel` | Chat and keyboard connected; Dashboard, inline Tile rendering, IRQ wakeups and voice pending |
+| **M4: Ferrofluid System UI & Dashboard** | Independently built protected display server, System UI rendering, customizable Dashboard with dynamic Tiles, chat bridge and native input | `alloyos-ferrofluid`, `alloyos-keyboard`, `alloyos-kernel` | Protected independent display executable, chat/keyboard IPC and supervised recovery implemented; remaining Dashboard/Tile, IRQ wakeup and voice work tracked above |
 | **M5: Welder & Forge** | Centralized app orchestration, resident inference and cloud adapters | `alloyos-welder`, `alloyos-forge` | Runtime libraries and model access implemented; complete agent integration and full-model acceptance pending |
 | **M6: JS Automation** | Capability-scoped interpreter and time/event scheduler | `alloyos-js`, `alloyos-welder`, `alloyos-kernel` | Current interpreter and scheduler implemented; Boa support deferred, low priority |
-| **M7: Headless Apps (MCP, SKILLs & Tiles)** | JavaScript apps in separate protected processes, MCP entry points, `SKILL.md` files, declarative Tiles, and Welder-only orchestration | `alloyos-mcp`, `alloyos-js`, `alloyos-kernel`, `alloyos-welder`, `alloyos-ferrofluid` | MCP surfaces and manifest guards implemented; per-app process isolation and Ferrofluid Dashboard/chat Tile rendering pending |
+| **M7: Headless Apps (MCP, SKILLs & Tiles)** | JavaScript apps in separate protected processes, MCP entry points, `SKILL.md` files, declarative Tiles, and Welder-only orchestration | `alloyos-mcp`, `alloyos-js`, `alloyos-kernel`, `alloyos-welder`, `alloyos-ferrofluid` | Protected app handlers, bounded host IPC and manifest guards implemented; remaining Ferrofluid Dashboard/chat Tile work tracked above |
 | **M8: User Knowledge** | Durable profile, retrieval, learning and user controls | `alloyos-welder`, `alloyos-kernel`, `alloyos-ferrofluid` | Implemented |

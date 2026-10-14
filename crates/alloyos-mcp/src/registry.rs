@@ -204,6 +204,7 @@ impl McpRegistry {
 
     /// Unregister an MCP application by app_id.
     pub fn unregister_app(&mut self, app_id: &str) -> bool {
+        crate::process::stop(app_id);
         self.package_revisions.remove(app_id);
         self.apps.remove(app_id).is_some()
     }

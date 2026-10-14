@@ -3,3 +3,6 @@ xtask = "run --package xtask --"
 
 [build]
 # Default target for kernel crates only — do not set globally, use per-crate
+
+[target.aarch64-unknown-none]
+rustflags = ["-C", "force-frame-pointers=yes"]

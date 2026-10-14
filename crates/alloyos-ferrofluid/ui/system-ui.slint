@@ -267,62 +267,47 @@ component DrippingColumn inherits Rectangle {
     width: 9px;
     height: 28px;
 
-    property <int> t: mod(root.time-ms + 3600 - root.delay-ms, 3600);
+    // Match the boot liquid's slow growth, thinning neck and accelerating fall.
+    property <int> t: mod(root.time-ms + 4200 - root.delay-ms, 4200);
+    property <float> growth: min(root.t / 750.0, 1.0);
+    property <float> falling: max((root.t - 750) / 1000.0, 0.0);
+    property <float> release: min(root.falling / 0.22, 1.0);
+    property <float> recovery: min(root.falling / 0.35, 1.0);
+    property <length> droplet-w: 1.2px + 3px * root.growth;
+    property <length> droplet-height: root.droplet-w * (1.4 - 0.25 * root.release);
+    property <length> droplet-center-y: 6px + 5px * root.growth
+        + 48px * root.falling * root.falling;
+    property <float> droplet-opacity: clamp((1320 - root.t) / 250.0, 0.0, 1.0);
+    property <length> anchor-w: 7px - 1px * root.growth * (1.0 - root.recovery);
+    property <length> anchor-height: 7px + 1.5px * root.growth * (1.0 - root.recovery);
 
-    property <length> droplet-y: root.t < 480 ?
-        3px + (5px * root.t) / 480 :
-        root.t < 1050 ?
-        8px + (14px * (root.t - 480) * (root.t - 480)) / 324900 :
-        3px;
+    // The neck thins as the drop gains mass, then breaks at release.
+    if root.t < 750: Rectangle {
+        width: 2.4px - 1.8px * root.growth;
+        x: (parent.width - self.width) / 2;
+        y: 6px;
+        height: root.droplet-center-y - self.y;
+        border-radius: self.width / 2;
+        background: AlloyPalette.text;
+    }
 
-    property <length> droplet-height: root.t < 480 ?
-        4px + (6px * root.t) / 480 :
-        root.t < 1050 ?
-        6px :
-        4px;
-
-    property <length> droplet-w: root.t < 480 ?
-        5px - (1.5px * root.t) / 480 :
-        4.5px;
-
-    property <float> droplet-opacity: root.t < 480 ?
-        0.95 :
-        root.t < 1050 ?
-        0.95 * (1.0 - ((root.t - 480) * (root.t - 480)) / 324900.0) :
-        0.0;
-
-    property <float> anchor-opacity: root.t < 480 ?
-        1.0 :
-        root.t < 1050 ?
-        1.0 - (0.65 * (root.t - 480)) / 570.0 :
-        0.35;
-
-    property <length> anchor-height: root.t < 480 ?
-        7px + (1.5px * root.t) / 480 :
-        root.t < 700 ?
-        8.5px - (1.5px * (root.t - 480)) / 220 :
-        7px;
-
-    // Falling droplet
     Rectangle {
         x: (parent.width - self.width) / 2;
-        y: root.droplet-y;
+        y: root.droplet-center-y - self.height / 2;
         width: root.droplet-w;
         height: root.droplet-height;
         border-radius: self.width / 2;
-        background: AlloyPalette.silver;
+        background: AlloyPalette.text;
         opacity: root.droplet-opacity;
     }
 
-    // Anchor dot
     Rectangle {
         x: (parent.width - self.width) / 2;
         y: 2px;
-        width: 7px;
+        width: root.anchor-w;
         height: root.anchor-height;
-        border-radius: 3.5px;
+        border-radius: self.width / 2;
         background: AlloyPalette.text;
-        opacity: root.anchor-opacity;
     }
 }
 
@@ -342,8 +327,8 @@ component ThinkingIndicator inherits Rectangle {
         alignment: start;
         spacing: 8px;
         DrippingColumn { time-ms: root.effective-time-ms; delay-ms: 0; }
-        DrippingColumn { time-ms: root.effective-time-ms; delay-ms: 1200; }
-        DrippingColumn { time-ms: root.effective-time-ms; delay-ms: 2400; }
+        DrippingColumn { time-ms: root.effective-time-ms; delay-ms: 1400; }
+        DrippingColumn { time-ms: root.effective-time-ms; delay-ms: 2800; }
     }
 }
 

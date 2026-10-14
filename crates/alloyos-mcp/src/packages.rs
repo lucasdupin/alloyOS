@@ -203,6 +203,19 @@ mod tests {
     }
 
     #[test]
+    fn extreme_js_packages_are_rejected_and_valid_packages_recover() {
+        let mut service=PackageService::new();
+        let expressions=[format!("{}true","!".repeat(10000)),format!("{}1{}","(".repeat(1000),")".repeat(1000)),format!("{}1","1+".repeat(4000)),format!("a{}","()".repeat(1000)),format!("{}1","function() { return 1; } + ".repeat(200))];
+        for expression in expressions {
+            let mut snapshot=sample();
+            snapshot.files.insert("/apps/sample_timer/main.js".into(),format!("function callTool(name,args) {{ return {}; }}",expression));
+            service.apply_snapshot(snapshot);
+            assert!(!service.status("sample_timer").unwrap().ready);
+            service.apply_snapshot(sample());
+            assert!(service.status("sample_timer").unwrap().ready);
+        }
+    }
+    #[test]
     fn empty_package_directory_is_visible_with_missing_manifest() {
         let mut service = PackageService::new();
         service.apply_snapshot(PackageSnapshot { directories: alloc::vec!["/apps/empty".into()], ..PackageSnapshot::default() });

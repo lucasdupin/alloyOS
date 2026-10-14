@@ -60,6 +60,38 @@ impl Scheduler {
         None
     }
 
+    fn expire_due(&mut self, now: u64) {
+        for task in self
+            .current
+            .iter()
+            .chain(self.ready_queue.iter())
+            .chain(self.blocked_queue.iter())
+        {
+            if task.state() != TaskState::Zombie
+                && task
+                    .execution_deadline
+                    .lock()
+                    .is_some_and(|deadline| now >= deadline)
+                && task.address_space.lock().is_some()
+            {
+                task.set_exit_code(-110);
+                *task.wake_deadline.lock() = None;
+            }
+        }
+        // Queued contexts never own the current exception stack or TTBR0, so
+        // their backing can be released immediately after their budget expires.
+        let release_zombie = |task: &Arc<Task>| {
+            if task.state() != TaskState::Zombie {
+                return true;
+            }
+            task.address_space.lock().take();
+            task.ports.lock().clear();
+            false
+        };
+        self.ready_queue.retain(release_zombie);
+        self.blocked_queue.retain(release_zombie);
+    }
+
     fn wake_due(&mut self, now: u64) {
         if let Some(current) = self.current.as_ref() {
             if current.state() == TaskState::Blocked
@@ -118,7 +150,9 @@ pub fn start_preemption() {
     boot.set_state(TaskState::Running);
     scheduler.current = Some(boot);
     scheduler.idle = Some(Arc::new(Task::kernel_thread(3, idle_run)));
-    scheduler.ready_queue.retain(|task| task.kernel_context);
+    scheduler
+        .ready_queue
+        .retain(|task| task.kernel_context || task.address_space.lock().is_some());
     drop(scheduler);
     crate::drivers::pic::start_timer();
 }
@@ -132,6 +166,7 @@ pub fn preempt(frame: *mut crate::arch::idt::TrapFrame) -> *mut crate::arch::idt
     // We have entered on the next context's exception stack. Previously retired
     // stacks are now safe to reap; never drop the stack this handler runs on.
     scheduler.retired_contexts.clear();
+    scheduler.expire_due(crate::drivers::rng::monotonic_time_ns());
     let Some(current) = scheduler.current.as_ref() else {
         return frame;
     };
@@ -164,6 +199,7 @@ pub fn preempt(frame: *mut crate::arch::idt::TrapFrame) -> *mut crate::arch::idt
         // TTBR0 no longer references these tables. Keep the current exception
         // stack alive until another context has entered an exception.
         retired.address_space.lock().take();
+        retired.ports.lock().clear();
         scheduler.retired_contexts.push_back(retired);
     }
     let address = *next.stack_pointer.lock();
@@ -221,6 +257,58 @@ pub fn wake(pid: u64) {
 #[cfg(test)]
 mod preemption_tests {
     use super::*;
+    #[test]
+    fn cancelled_queued_display_backing_is_reaped_without_deadline() {
+        let mut scheduler = Scheduler::new();
+        let boot = Arc::new(Task::new(940, None));
+        let display = Arc::new(Task::user_process(&[1], 1024, 1025).unwrap());
+        scheduler.add_task(boot.clone());
+        scheduler.add_task(display.clone());
+        assert_eq!(scheduler.next_task().unwrap().pid, boot.pid);
+        display.set_exit_code(-125);
+        scheduler.expire_due(0);
+        assert!(display.address_space.lock().is_none());
+        assert!(scheduler.ready_queue.is_empty());
+        assert_eq!(scheduler.current_task().unwrap().pid, boot.pid);
+    }
+    #[test]
+    fn execution_budget_expires_running_blocked_and_ready_private_tasks() {
+        let mut scheduler = Scheduler::new();
+        let running = Arc::new(Task::user_process(&[1], 1, 2).unwrap());
+        let blocked = Arc::new(Task::user_process(&[1], 1, 2).unwrap());
+        let ready = Arc::new(Task::user_process(&[1], 1, 2).unwrap());
+        let kernel = Arc::new(Task::new(810, None));
+        for task in [&running, &blocked, &ready, &kernel] {
+            *task.execution_deadline.lock() = Some(100);
+        }
+        for task in [&blocked, &ready] {
+            task.ports.lock().push(super::super::ipc::Port {
+                endpoint: super::super::ipc::Endpoint::new(),
+                send: true,
+                receive: true,
+            });
+        }
+        scheduler.add_task(running.clone());
+        scheduler.add_task(blocked.clone());
+        scheduler.add_task(ready.clone());
+        scheduler.add_task(kernel.clone());
+        scheduler.next_task();
+        blocked.set_state(TaskState::Blocked);
+        scheduler.blocked_queue.push_back(blocked.clone());
+        scheduler.ready_queue.retain(|task| task.pid != blocked.pid);
+        scheduler.expire_due(99);
+        assert_eq!(running.state(), TaskState::Running);
+        scheduler.expire_due(100);
+        for task in [&running, &blocked, &ready] {
+            assert_eq!(task.exit_code(), Some(-110));
+        }
+        assert_eq!(scheduler.next_task().unwrap().pid, kernel.pid);
+        assert!(scheduler.blocked_queue.is_empty());
+        assert!(blocked.address_space.lock().is_none());
+        assert!(ready.address_space.lock().is_none());
+        assert!(blocked.ports.lock().is_empty());
+        assert!(ready.ports.lock().is_empty());
+    }
     #[test]
     fn retired_exception_stack_survives_until_next_context_entry() {
         let mut scheduler = Scheduler::new();
@@ -327,6 +415,20 @@ mod preemption_tests {
             "initial context must allow timer IRQs"
         );
     }
+
+    #[test]
+    fn user_task_starts_at_el0_with_private_aligned_stacks() {
+        let process = Task::user_process(&[0; 4], 2, 3).unwrap();
+        let address = *process.stack_pointer.lock() as usize;
+        let frame = unsafe { &*(address as *const crate::arch::idt::TrapFrame) };
+        assert_eq!(address % 16, 0);
+        assert_eq!(frame.elr, super::super::app_process::USER_BASE);
+        assert_eq!(frame.spsr & 15, 0);
+        assert_eq!(frame.spsr & 0x80, 0);
+        assert_eq!(frame.user_sp % 16, 0);
+        assert!(!process.kernel_context);
+        assert!(process.address_space.lock().is_some());
+    }
 }
 
 /// Fault recovery is restricted to explicitly prepared user contexts. An EL1
@@ -337,4 +439,9 @@ pub fn contain_user_fault() -> bool {
         return task.contain_user_fault();
     }
     false
+}
+
+/// Crash diagnostics must never wait for a lock held by the faulting code.
+pub fn try_current_task() -> Option<Arc<Task>> {
+    SCHEDULER.try_lock()?.current_task()
 }

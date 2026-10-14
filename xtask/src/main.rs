@@ -25,6 +25,8 @@ enum Commands {
         #[arg(long)]
         debug_shell: bool,
     },
+    /// Rebuilds and packages protected executables without building the kernel
+    Processes { #[arg(long)] release: bool },
     /// Builds then launches alloyOS in QEMU (aarch64 virt)
     Run {
         #[arg(long)]
@@ -255,21 +257,53 @@ fn get_cobaltfs_image_path(workspace_root: &Path, release: bool) -> PathBuf {
 /// Formats a fresh 4 MiB CobaltFS (ext2-compatible) disk image in pure Rust so
 /// no external `mkfs.ext2` binary is required on macOS.
 fn ensure_cobaltfs_image(path: &Path) -> Result<()> {
+    // Interrupted migration packaging is rolled back before retrying.
+    let backup=path.with_extension("pre-process-backup.img");
+    let pending=path.with_extension("migration-pending");
+    if pending.exists() {
+        if !backup.exists() { return Err(anyhow!("migration recovery backup missing")); }
+        std::fs::rename(&backup,path)?;
+        std::fs::remove_file(&pending)?;
+    }
     if path.exists() {
-        return image::copy_tree(path, &get_workspace_root()?.join("apps"), "/apps");
+        if std::fs::metadata(path)?.len() >= 32*1024*1024 {
+            return image::copy_tree(path, &get_workspace_root()?.join("apps"), "/apps");
+        }
+        if backup.exists(){return Err(anyhow!("Volume migration backup already exists: {}",backup.display()))}
+        let nonce=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
+        let staging=path.with_extension(format!("migration-{}-{nonce}",std::process::id()));
+        let replacement=path.with_extension(format!("replacement-{}-{nonce}",std::process::id()));
+        let prepared=(|| -> Result<()> {
+            image::export_tree(path,&staging)?;
+            ensure_cobaltfs_image(&replacement)?;
+            image::copy_tree(&replacement,&staging,"/")?;
+            image::copy_tree(&replacement,&get_workspace_root()?.join("apps"),"/apps")?;
+            std::fs::copy(path,&backup)?;
+            std::fs::write(&pending,b"pending executable packaging")?;
+            std::fs::rename(&replacement,path)?;
+            Ok(())
+        })();
+        let _=std::fs::remove_dir_all(&staging);
+        let _=std::fs::remove_file(&replacement);
+        if prepared.is_err() {
+            if pending.exists() { let _=std::fs::remove_file(&pending); }
+            // Active source is unchanged until the final atomic rename.
+            let _=std::fs::remove_file(&backup);
+        }
+        return prepared;
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     println!(
-        "[xtask] Formatting new 4 MiB CobaltFS volume at {}...",
+        "[xtask] Formatting new 32 MiB CobaltFS volume at {}...",
         path.display()
     );
 
-    let bs = 1024usize;
-    let total_blocks = 4096u32; // 4 MiB
+    let bs = 4096usize;
+    let total_blocks = 8192u32; // 32 MiB
     let inodes_count = 256u32; // 256 * 128B = 32 KiB = 32 blocks (blocks 5..37)
-    let reserved_blocks = 38u32; // 0:boot, 1:SB, 2:BGD, 3:bmap, 4:imap, 5..37:itable, 37:root dir
+    let reserved_blocks = 13u32; // 0:boot, 1:SB, 2:BGD, 3:bmap, 4:imap, 5..37:itable, 37:root dir
     let mut img = vec![0u8; bs * total_blocks as usize];
 
     let w16 = |b: &mut [u8], o: usize, v: u16| {
@@ -289,8 +323,8 @@ fn ensure_cobaltfs_image(path: &Path) -> Result<()> {
         w32(sb, 4, total_blocks);
         w32(sb, 12, total_blocks - reserved_blocks);
         w32(sb, 16, inodes_count - 11);
-        w32(sb, 20, 1); // first_data_block = 1
-        w32(sb, 24, 0); // log_block_size = 0 (1024 B)
+        w32(sb, 20, 0); // first_data_block = 1
+        w32(sb, 24, 2); // log_block_size = 0 (1024 B)
         w32(sb, 32, total_blocks);
         w32(sb, 40, inodes_count);
         w16(sb, 56, 0xEF53); // COBALTFS_MAGIC
@@ -299,10 +333,10 @@ fn ensure_cobaltfs_image(path: &Path) -> Result<()> {
 
     // Block Group Descriptor at Block 2 (offset 2048)
     {
-        let bgd = &mut img[2048..2048 + 32];
-        w32(bgd, 0, 3); // block_bitmap = 3
-        w32(bgd, 4, 4); // inode_bitmap = 4
-        w32(bgd, 8, 5); // inode_table = 5
+        let bgd = &mut img[bs..bs + 32];
+        w32(bgd, 0, 2); // block_bitmap = 3
+        w32(bgd, 4, 3); // inode_bitmap = 4
+        w32(bgd, 8, 4); // inode_table = 5
         w16(bgd, 12, (total_blocks - reserved_blocks) as u16);
         w16(bgd, 14, (inodes_count - 11) as u16);
         w16(bgd, 16, 1); // used_dirs_count = 1 (root)
@@ -310,27 +344,27 @@ fn ensure_cobaltfs_image(path: &Path) -> Result<()> {
 
     // Block bitmap at Block 3 (offset 3072): mark blocks 0..reserved_blocks used
     for b in 0..reserved_blocks as usize {
-        img[3072 + b / 8] |= 1u8 << (b % 8);
+        img[2*bs + b / 8] |= 1u8 << (b % 8);
     }
 
     // Inode bitmap at Block 4 (offset 4096): mark inodes 1..=11 used
-    img[4096] = 0xFF;
-    img[4097] = 0b0000_0111;
+    img[3*bs] = 0xFF;
+    img[3*bs+1] = 0b0000_0111;
 
     // Root inode (ino 2 -> index 1 in inode table at Block 5, offset 5120 + 128)
     {
-        let root_off = 5120 + 128;
+        let root_off = 4*bs + 128;
         let ino = &mut img[root_off..root_off + 128];
         w16(ino, 0, 0x4000 | 0o755); // S_IFDIR | 0755
         w32(ino, 4, bs as u32); // size_lo = 1024
         w16(ino, 26, 2); // links_count = 2
-        w32(ino, 28, 2); // blocks_512 = 2
-        w32(ino, 40, 37); // block[0] = 37
+        w32(ino, 28, 8); // blocks_512 = 2
+        w32(ino, 40, 12); // block[0] = 37
     }
 
     // Root directory data block at Block 37: "." and ".."
     {
-        let dir = &mut img[37 * bs..38 * bs];
+        let dir = &mut img[12 * bs..13 * bs];
         w32(dir, 0, 2);
         w16(dir, 4, 12);
         dir[6] = 1;
@@ -380,23 +414,7 @@ fn build_crates_mode(release: bool, debug_shell: bool, forge: bool) -> Result<Pa
         return Err(anyhow!("Kernel compilation failed with status {}", status));
     }
 
-    println!("[xtask] Building userland crate...");
-    let mut user_cmd = Command::new("cargo");
-    user_cmd
-        .current_dir(&workspace_root)
-        .arg("build")
-        .arg("--package")
-        .arg("alloyos-user");
-    if release {
-        user_cmd.arg("--release");
-    }
-    let status = user_cmd
-        .status()
-        .context("Failed to run cargo build for user")?;
-    if !status.success() {
-        return Err(anyhow!("Userland compilation failed with status {}", status));
-    }
-
+    build_processes(&workspace_root, release)?;
     let kernel_bin = get_disk_image_path(&workspace_root, release);
     if !kernel_bin.exists() {
         return Err(anyhow!(
@@ -411,8 +429,39 @@ fn build_crates_mode(release: bool, debug_shell: bool, forge: bool) -> Result<Pa
 
     let cobalt_image = get_cobaltfs_image_path(&workspace_root, release);
     ensure_cobaltfs_image(&cobalt_image)?;
+    package_processes(&workspace_root, release, &cobalt_image)?;
 
     Ok(kernel_bin)
+}
+
+fn build_processes(root: &Path, _release: bool) -> Result<()> {
+    for (package, binary, features) in [("alloyos-ferrofluid", "ferrofluid", "executable"), ("alloyos-user", "app-runner", "")] {
+        let mut cmd=Command::new("cargo");cmd.current_dir(root).args(["rustc", "-p",package,"--bin",binary,"--target","aarch64-unknown-none"]);
+        if !features.is_empty(){cmd.args(["--features",features]);} cmd.arg("--release");
+        if binary=="app-runner" {cmd.args(["--", "-C", "strip=debuginfo", "-C", "link-arg=-Tcrates/alloyos-ferrofluid/process.ld"]);} else {cmd.args(["--", "-C", "strip=debuginfo"]);}
+        if !cmd.status()?.success(){return Err(anyhow!("{binary} executable build failed"))}
+    } Ok(())
+}
+fn package_processes(root:&Path, release:bool, disk:&Path)->Result<()> {
+    let result=package_processes_inner(root,release,disk);
+    let pending=disk.with_extension("migration-pending");
+    if pending.exists() {
+        if result.is_err() {
+            let backup=disk.with_extension("pre-process-backup.img");
+            std::fs::rename(&backup,disk).with_context(|| "failed to restore migration backup after packaging failure")?;
+        }
+        std::fs::remove_file(pending)?;
+    }
+    result
+}
+fn package_processes_inner(root:&Path, _release:bool, disk:&Path)->Result<()> {
+    let profile="release";
+    let staging=root.join("target").join("process-package");
+    std::fs::create_dir_all(staging.join("system"))?;std::fs::create_dir_all(staging.join("bin"))?;
+    for (binary,dir) in [("ferrofluid","system"),("app-runner","bin")] {
+      std::fs::copy(root.join("target/aarch64-unknown-none").join(profile).join(binary),staging.join(dir).join(binary))?;
+    }
+    image::copy_tree(disk,&staging,"/")
 }
 
 fn attach_cloud_credentials(command: &mut Command, root: &Path, mut env_names: Vec<String>, mut files: Vec<PathBuf>) -> Result<Option<alloyos_dev_harness::credentials::BootCredentials>> {
@@ -553,13 +602,13 @@ fn run_e2e_tests(kernel_image: &Path, _overall_timeout: Duration) -> Result<()> 
     println!("[xtask] [TEST 2/10] e2e_memory_init...");
     harness
         .expect_output(
-            "[mm] Frame allocator and 64 MiB kernel heap online.",
+            "[mm] Frame allocator and 160 MiB kernel heap online.",
             Duration::from_secs(10),
         )
         .context("e2e_memory_init failed")?;
     harness
         .expect_output(
-            "[splash] Static alloyOS logotype visible",
+            "[splash] Kernel startup indicator presented",
             Duration::from_secs(10),
         )
         .context("e2e_splash_init failed")?;
@@ -769,6 +818,10 @@ fn main() -> Result<()> {
             let image = build_crates(release, debug_shell)?;
             println!("[xtask] Kernel built: {}", image.display());
             Ok(())
+        }
+        Commands::Processes { release } => {
+            let root=get_workspace_root()?;build_processes(&root,release)?;
+            let disk=get_cobaltfs_image_path(&root,release);ensure_cobaltfs_image(&disk)?;package_processes(&root,release,&disk)
         }
         Commands::Run { release, debug_shell, model_image, memory, auth_env, auth_file } => run_qemu(release, debug_shell, model_image, memory, auth_env, auth_file),
         Commands::Test {

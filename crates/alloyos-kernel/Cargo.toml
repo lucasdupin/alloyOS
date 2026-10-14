@@ -9,7 +9,6 @@ linked_list_allocator = "0.10"
 bitflags = "2"
 alloyos-proto = { path = "../alloyos-proto" }
 alloyos-user = { path = "../alloyos-user" }
-alloyos-ferrofluid = { path = "../alloyos-ferrofluid" }
 alloyos-js = { path = "../alloyos-js" }
 alloyos-mcp = { path = "../alloyos-mcp" }
 alloyos-forge = { path = "../alloyos-forge" }
@@ -26,6 +25,9 @@ default = []
 host-tests = []
 debug-shell = []
 forge = []
+crash-selftest = []
+process-selftest = []
+process-runtime-selftest = []
 
 [lib]
 name = "alloyos_kernel"

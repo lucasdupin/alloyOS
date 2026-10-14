@@ -17,13 +17,27 @@ text and bold (700) headings.
 The current display uses 1206x2622 physical pixels at a fixed 3x scale, configured
 via `alloyos-proto::display` in `build.rs`; the adapter rejects other scale factors to avoid mismatched glyphs.
 
-All Slint calls run on the boot/UI execution context. The runtime uses
-`unsafe-single-threaded` for `no_std`; never call it from an interrupt or another
-task, move it into a shared driver static, or add an unsafe `Send` implementation.
-Input and timers remain local, and submitting via Return or Send queues a message
-for the owner. The current kernel bridge displays submissions locally; cloud AI
-requests, streaming updates, and agent view commands are not connected yet.
-The loop polls at up to 60 Hz until timer and input interrupt wakeups are available.
+All Slint calls run on the UI thread of the protected `/system/ferrofluid` EL0
+executable, with a private address space. The runtime uses `unsafe-single-threaded`
+for `no_std`; never call it from an interrupt or another task, move it into a
+shared driver static, or add an unsafe `Send` implementation. Kernel drivers
+retain hardware ownership and expose authorized input, monotonic time and bounded
+frame presentation syscalls. The kernel does not link Slint or Ferrofluid.
+
+The Welder host owns conversation and dashboard state. Bounded display IPC carries
+submissions, replies, streaming text, model selection, tiles and actions. A display
+fault or expired execution lease retires its process; the supervisor reloads its
+retained validated ELF and restores the host’s current state with bounded retry/backoff.
+The loop polls at up to 60 Hz until input interrupt wakeups are available.
+
+Rebuild/package UI code, fonts and assets with `cargo xtask processes --release`;
+this leaves the kernel executable unchanged when the shared ABI is unchanged.
+Enter `/display restart` in the composer to restart Ferrofluid without rebooting.
+The supervisor retains the validated executable bytes for restart, avoiding a
+large contiguous filesystem-read allocation after normal UI/app activity.
+Stop the guest before updating its CobaltFS image, then launch it again to load the
+new display executable. A complete build is `cargo xtask build --release`. Protected executables use
+optimized, stripped builds even when the kernel uses the default debug profile.
 
 The soft keyboard lives in the independent [`alloyos-keyboard`](../alloyos-keyboard/README.md)
 project. System UI imports its Slint component and supplies editor focus, boot
@@ -42,6 +56,12 @@ I/O only; shell output is never painted into System UI.
 ```sh
 # Boot System UI
 cargo run -p xtask -- run
+
+# Rebuild and package protected executables without building the kernel
+cargo xtask processes --release
+
+# Full process runtime and recovery acceptance
+python3 scripts/test-process-runtime.py
 
 # Serial debug shell (also selected by the existing shell E2E suite)
 cargo run -p xtask -- run --debug-shell

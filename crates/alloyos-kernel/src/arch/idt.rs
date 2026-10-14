@@ -99,6 +99,15 @@ pub static IDT: Lazy<InterruptDescriptorTable> = Lazy::new(create_idt);
 pub extern "C" fn rust_sync_exception_handler(tf: &mut TrapFrame) -> *mut TrapFrame {
     let ec = (tf.esr >> 26) & 0x3F;
     if ec == ESR_EC_SVC64 {
+        if tf.spsr & 0xf == 0 {
+            let ret = crate::syscall::protected::dispatch(tf.regs[8], tf.regs[0], tf.regs[1], tf.regs[2]);
+            tf.regs[0] = ret as u64;
+            if tf.regs[8] == alloyos_proto::SyscallNo::Yield as u64
+                || tf.regs[8] == alloyos_proto::SyscallNo::Exit as u64 {
+                return crate::task::scheduler::preempt(tf);
+            }
+            return tf;
+        }
         // AArch64 syscall ABI: x8 = syscall number, x0..x5 = args 1..6, return in x0
         let num = tf.regs[8];
         let a1 = tf.regs[0];
@@ -111,6 +120,7 @@ pub extern "C" fn rust_sync_exception_handler(tf: &mut TrapFrame) -> *mut TrapFr
         tf.regs[0] = ret as u64;
         return tf;
     }
+    crate::diagnostics::exception_report(tf);
     if tf.spsr & 0xf == 0 {
         if crate::task::scheduler::contain_user_fault() {
             return crate::task::scheduler::preempt(tf);
@@ -371,6 +381,14 @@ __irq_exception_stub:
     eret
 
 __unhandled_exception_stub:
+    msr daifset, #15
+    mrs x0, elr_el1
+    mrs x1, esr_el1
+    mrs x2, far_el1
+    mrs x3, spsr_el1
+    mov x4, x29
+    mov x5, x30
+    bl rust_unhandled_exception_handler
     wfe
     b __unhandled_exception_stub
 "#
@@ -392,4 +410,12 @@ pub fn init() {
             options(nomem, nostack)
         );
     }
+}
+
+/// Fatal FIQ/SError or unsupported exception entry. Preserve the fault context
+/// before calling Rust; these vectors must not park silently.
+#[no_mangle]
+pub extern "C" fn rust_unhandled_exception_handler(pc: u64, esr: u64, far: u64, spsr: u64, fp: u64, lr: u64) -> ! {
+    crate::drivers::serial::emergency_print(format_args!("[crash] unhandled-exception esr={esr:#018x} far={far:#018x} spsr={spsr:#018x} fp={fp:#018x} lr={lr:#018x}\n[crash] frame=0 pc={pc:#018x} kind=fault\n"));
+    panic!("unhandled AArch64 exception");
 }

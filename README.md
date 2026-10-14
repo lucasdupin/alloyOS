@@ -28,28 +28,40 @@ on CobaltFS to learn durable user facts, preferences, interests, and project con
 from conversation. Entries track their source and scope, with inferred observations
 kept separate from explicit statements. Welder automatically extracts durable context,
 filters credentials, and provides bounded retrieval into model turns. The user can
-inspect, correct, delete, or pause learning via `/knowledge` slash commands, natural-language
-requests, or the declarative `knowledge.profile` tile.
+inspect, correct, delete, or pause learning at any time using natural language or through
+the declarative `knowledge.profile` tile.
 
 Knowledge is user context; skills are supplied by applications under `/apps/`.
 There is no separate `/skills/` directory or profile skill. See
 [KNOWLEDGE.md](KNOWLEDGE.md) for the design, storage schema, and tool architecture.
 
-## Workspace Structure
+## Main Components
 
-| Crate | Description |
-|---|---|
-| [`crates/alloyos-kernel`](crates/alloyos-kernel) | Core `aarch64` kernel: ARMv8 MMU (`TTBR0_EL1`), `VBAR_EL1` exceptions, heap allocator, round-robin scheduler, syscalls (`svc #0`), PL011 UART, VirtIO-Blk/Net/GPU/Input, Hardware RNG, TCP/IP stack, VFS, and **CobaltFS** |
-| [`crates/alloyos-boot`](crates/alloyos-boot) | Boot configuration, physical memory map validation, and **Liquid Metal Drip** metaball/surface-tension splash engine |
-| [`crates/alloyos-proto`](crates/alloyos-proto) | Shared ABI/syscall definitions (`Socket`, `ShmGet`, `GetRandom`, `DirtyRect`, `InputEvent`) between kernel and userland |
-| [`crates/alloyos-user`](crates/alloyos-user) | Userland standard library (`liballoy`), TLS 1.3 + HTTPS SSE streaming client, and bring-up console |
-| [`crates/alloyos-ferrofluid`](crates/alloyos-ferrofluid) | **Ferrofluid System UI**: Slint window, bare-metal platform adapter, software rendering, Quicksand typography, and the agent capability gate |
-| [`crates/alloyos-keyboard`](crates/alloyos-keyboard) | Reusable soft keyboard: transparent keys, tap feedback, slide/scroll behavior, typed actions, liquid displacement, and a standalone preview |
-| [`crates/alloyos-js`](crates/alloyos-js) | Embedded `#![no_std]` JavaScript engine (`V8Isolate` / `JsRuntime`), `AlloyOS.*` bindings (zero shell access), and event/time scheduler (`scriptd`) |
-| [`crates/alloyos-mcp`](crates/alloyos-mcp) | Headless **Model Context Protocol (MCP)** developer app SDK, zero-UI capability sandbox, and filesystem-discovered JavaScript apps |
-| [`crates/alloyos-forge`](crates/alloyos-forge) | Model gateway, resident Gemma inference, cloud provider adapters, and model selection |
-| [`crates/alloyos-welder`](crates/alloyos-welder) | Agent orchestration, conversation and setup, shell-free native tools, local `/knowledge/` learning and retrieval, persistent console configuration, and agent-exclusive UI synthesis |
-| [`xtask`](xtask) | Build, QEMU (`-M virt -accel hvf`) runner, and headless E2E test harness |
+alloyOS is composed of modular components designed around capability security, agent orchestration, and headless application isolation:
+
+- **Bootloader** ([`crates/alloyos-boot`](crates/alloyos-boot)):
+  Initializes bare-metal hardware, validates physical memory layout, and runs the surface-tension liquid splash sequence before handing execution to the kernel.
+
+- **Display Server (`ferrofluidd`)** ([`crates/alloyos-ferrofluid`](crates/alloyos-ferrofluid)):
+  The agent-exclusive display server and compositor. It hosts the bare-metal Slint platform adapter, Quicksand typography, and the soft keyboard ([`crates/alloyos-keyboard`](crates/alloyos-keyboard)), rendering dynamic UI surfaces and cards synthesized by the agent with zero third-party pixel access.
+
+- **Welder** ([`crates/alloyos-welder`](crates/alloyos-welder)):
+  The primary OS agent orchestrator. Welder mediates user intent, coordinates MCP tools and schedules, synthesizes declarative UI tiles for Ferrofluid, and executes shell-free native capabilities.
+
+- **Always-On Knowledge System** ([`crates/alloyos-welder`](crates/alloyos-welder), [`KNOWLEDGE.md`](KNOWLEDGE.md)):
+  An integrated, background context engine that continuously learns durable user preferences, facts, and project context across conversations. Stored as structured Markdown on persistent CobaltFS, it automatically extracts memories, protects credentials, and injects relevant context into future turns. Users can review, adjust, or pause learning at any time in natural language.
+
+- **Forge** ([`crates/alloyos-forge`](crates/alloyos-forge)):
+  The unified model gateway. Forge bridges the operating system to intelligence, supporting resident local models (Gemma) and frontier cloud providers (Gemini, Claude, OpenAI) with streaming inference and on-the-fly model switching.
+
+- **MCP Apps with Isolation** ([`crates/alloyos-mcp`](crates/alloyos-mcp), [`crates/alloyos-js`](crates/alloyos-js)):
+  Headless third-party apps built on the Model Context Protocol (MCP). Every app runs in an isolated userland process with dedicated memory and capability boundaries, executing `#![no_std]` JavaScript (`V8Isolate` / `JsRuntime`) without shell or raw filesystem access. Apps export structured tools, resources, and declarative tiles rather than custom UI.
+
+- **MCP Apps through Package Manager** ([`apps/package-manager`](apps/package-manager), [`crates/alloyos-mcp`](crates/alloyos-mcp)):
+  Dynamic discovery, installation, and lifecycle management for ecosystem MCP packages (e.g. from Smithery). Packages are verified, installed into `/apps/` on CobaltFS, and registered into Welder's tool inventory at runtime without kernel reboots.
+
+- **Kernel & VFS** ([`crates/alloyos-kernel`](crates/alloyos-kernel), [`crates/alloyos-proto`](crates/alloyos-proto)):
+  The core `#![no_std]` `aarch64` kernel providing ARMv8 MMU translation (`TTBR0_EL1`), exception handling (`VBAR_EL1`), round-robin scheduling, capability-gated syscalls, VirtIO hardware drivers, and the VFS with persistent **CobaltFS**. Development, QEMU runner, and testing harness live in [`xtask`](xtask).
 
 ## Filesystem
 
@@ -74,8 +86,7 @@ In a terminal, the launcher guides you through build tools, optional Claude,
 Gemini, or OpenAI API credentials, Gemma access, and launch. Pasted keys are
 hidden; optional saved keys live in ignored `.secrets/` files with mode 600.
 Forge uses configured keys for Claude, Gemini, and OpenAI through the QEMU
-HTTPS bridge. In chat, select `/model claude`, `/model gemini`, or `/model openai`;
-`/model local` returns to Gemma. Gemini is the default; saved model selections are preserved. Requests go to the
+HTTPS bridge. In chat, you can ask to switch models (such as asking for Claude, Gemini, OpenAI, or local Gemma) in natural language, or tap the model name in the header. Gemini is the default; saved model selections are preserved. Requests go to the
 selected provider and may incur API charges. The launcher requires `curl` for
 certificate-verified HTTPS.
 

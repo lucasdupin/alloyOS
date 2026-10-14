@@ -9,6 +9,8 @@ import subprocess
 import tempfile
 import time
 
+MAX_HTTP_FRAME_BYTES = 4 * 1024 * 1024 + 16384  # Forge cloud::HTTP_FRAME_LIMIT
+
 MODELS = ('claude-sonnet-4-6', 'gemini-3.8-flash', 'gpt-4.1')
 
 
@@ -46,7 +48,7 @@ def main():
                     if not chunk:
                         raise RuntimeError('QEMU exited before its reply')
                     pending.extend(chunk)
-                    if len(pending) > 262144:
+                    if len(pending) > MAX_HTTP_FRAME_BYTES:
                         raise RuntimeError('UART frame exceeded bounds')
                     continue
                 raw, _, rest = pending.partition(b'\n')

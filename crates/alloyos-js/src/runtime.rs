@@ -799,7 +799,7 @@ impl JsIsolate {
                                 if args.is_empty() || args.len() > 2 {
                                     return Err(JsError::TypeError("AlloyOS.forge requires (prompt, options?)".to_string()));
                                 }
-                                let prompt = match &args[0] { JsValue::String(s) if !s.is_empty() && s.len() <= 8192 => s, _ => return Err(JsError::TypeError("Forge prompt must be a nonempty string of at most 8192 bytes".to_string())) };
+                                let prompt = match &args[0] { JsValue::String(s) if !s.is_empty() => s, _ => return Err(JsError::TypeError("Forge prompt must be a nonempty string".to_string())) };
                                 let mut model = None;
                                 let mut max_tokens = 128;
                                 if let Some(options) = args.get(1) {

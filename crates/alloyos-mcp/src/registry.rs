@@ -84,6 +84,7 @@ pub struct McpRegistry {
     package_revisions: BTreeMap<String, Option<ValidatedPackageRevision>>,
     runtime_files: Rc<RefCell<BTreeMap<String, String>>>,
     http_routes: Rc<RefCell<BTreeMap<String, String>>>,
+    http_client: Rc<RefCell<crate::transport::HttpClient>>,
 }
 
 impl Default for McpRegistry {
@@ -100,12 +101,14 @@ impl McpRegistry {
     }
 
     pub fn new() -> Self {
+        let http_routes = Rc::new(RefCell::new(BTreeMap::new()));
         Self {
             apps: BTreeMap::new(),
             package_inventory: PackageService::new(),
             package_revisions: BTreeMap::new(),
             runtime_files: Rc::new(RefCell::new(BTreeMap::new())),
-            http_routes: Rc::new(RefCell::new(BTreeMap::new())),
+            http_client: Rc::new(RefCell::new(crate::transport::HttpClient::new(http_routes.clone()))),
+            http_routes,
         }
     }
 
@@ -117,6 +120,14 @@ impl McpRegistry {
     /// Returns a shared reference to the HTTP routes map.
     pub fn http_routes(&self) -> Rc<RefCell<BTreeMap<String, String>>> {
         self.http_routes.clone()
+    }
+
+    pub fn http_client(&self) -> Rc<RefCell<crate::transport::HttpClient>> {
+        self.http_client.clone()
+    }
+
+    pub fn set_http_transport(&mut self, transport: Box<dyn crate::transport::HttpTransport>) {
+        self.http_client.borrow_mut().set_transport(transport);
     }
 
     /// Install OS validation results. Newly observed, invalid, deleted, or changed
@@ -270,19 +281,47 @@ impl McpRegistry {
         let vfs = self.runtime_files.clone();
         let mut count = 0;
         for app_id in app_ids {
+            // Preserve remote sessions across scans of unchanged packages.
+            if let Some(revision) = self.package_inventory.validated_revision(&app_id) {
+                if self.package_revisions.get(&app_id) == Some(&Some(revision))
+                    && self.apps.get(&app_id).is_some_and(|entry| entry.app.manifest().is_remote()) {
+                    count += 1;
+                    continue;
+                }
+            }
             // Invalid packages remain in inventory, but must never execute.
             self.unregister_app(&app_id);
             let Some(revision) = self.package_inventory.validated_revision(&app_id) else {
                 continue;
             };
-            let app = crate::apps::JsApp::from_package_files(
-                &app_id,
-                &snapshot.files,
-                scheduler.clone(),
-            )?
-            .with_vfs_files(vfs.clone())
-            .with_http_routes(self.http_routes.clone());
-            self.register_app(Box::new(app))?;
+            let manifest_path = format!("/apps/{}/{}.mcp", app_id, app_id);
+            let is_remote = snapshot
+                .files
+                .get(&manifest_path)
+                .and_then(|text| AppManifest::parse_in_folder(&app_id, text).ok())
+                .map(|m| m.is_remote())
+                .unwrap_or(false);
+
+            let app: Box<dyn McpApp> = if is_remote {
+                Box::new(
+                    crate::apps::RemoteMcpApp::from_package_files(
+                        &app_id,
+                        &snapshot.files,
+                    )?
+                    .with_http_client(self.http_client.clone()),
+                )
+            } else {
+                Box::new(
+                    crate::apps::JsApp::from_package_files(
+                        &app_id,
+                        &snapshot.files,
+                        scheduler.clone(),
+                    )?
+                    .with_vfs_files(vfs.clone())
+                    .with_http_routes(self.http_routes.clone()),
+                )
+            };
+            self.register_app(app)?;
             self.bind_package_revision(revision).map_err(|error| {
                 McpSandboxError::InvalidManifest {
                     app_id: app_id.clone(),

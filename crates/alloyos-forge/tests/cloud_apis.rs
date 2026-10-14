@@ -48,6 +48,49 @@ fn reply(provider: ApiProvider) -> Value {
         }
     }
 }
+
+#[test]
+fn large_cloud_context_reaches_each_provider_without_truncation() {
+    let prompt = "雪\"\n".repeat(30_000);
+    for provider in [
+        ApiProvider::Claude,
+        ApiProvider::Gemini,
+        ApiProvider::OpenAi,
+    ] {
+        let mut forge = Forge::new(0);
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        forge
+            .connect_api(
+                provider,
+                provider.default_model(),
+                "fixture-key",
+                Box::new(FixtureHttp {
+                    status: 200,
+                    response: reply(provider).to_string(),
+                    requests: captured.clone(),
+                    provider,
+                }),
+            )
+            .unwrap();
+        let output = forge
+            .generate(&GenerationRequest {
+                model: Some(provider.default_model().into()),
+                prompt: prompt.clone(),
+                max_tokens: 128,
+            })
+            .unwrap();
+        assert_eq!(output.text, "Hello 東京");
+        let requests = captured.lock().unwrap();
+        let body = &requests[0].1;
+        let sent = match provider {
+            ApiProvider::Claude => &body["messages"][0]["content"],
+            ApiProvider::Gemini => &body["contents"][0]["parts"][0]["text"],
+            ApiProvider::OpenAi => &body["input"],
+        };
+        assert_eq!(sent.as_str(), Some(prompt.as_str()));
+    }
+}
+
 #[test]
 fn all_apis_execute_through_forge_and_gateway_with_explicit_selection() {
     let forge = Rc::new(RefCell::new(Forge::new(0)));

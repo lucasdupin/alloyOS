@@ -25,6 +25,37 @@ pub use alloyos_forge::policy::{
     is_forbidden_shell_tool, validate_console_input_no_shell, SHELL_FREE_POLICY_MESSAGE,
 };
 
+fn required_string<'a>(value: &'a serde_json::Value, key: &str) -> Result<&'a str, String> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("missing or invalid '{}'", key))
+}
+
+fn validate_package_id(id: &str) -> Result<(), String> {
+    if id.is_empty()
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    {
+        return Err("app_id must be nonempty ASCII alphanumeric, underscore, or hyphen".into());
+    }
+    Ok(())
+}
+
+fn encode_url_component(text: &str) -> String {
+    let mut encoded = String::new();
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{:02X}", byte));
+        }
+    }
+    encoded
+}
+
 use crate::knowledge::{
     build_knowledge_tile, contains_secret_or_credential, extract_signals_from_user_turn,
     is_knowledge_path, merge_entry_into_list, normalize_topic_key, parse_knowledge_markdown,
@@ -418,6 +449,15 @@ impl NativeToolRegistry {
         self.mcp_registry.borrow_mut().register_http_response(url, body);
     }
 
+    /// GET using a host-supplied HTTP transport, or an explicitly registered fixture.
+    pub fn net_fetch(&self, url: &str) -> Result<String, String> {
+        self.mcp_registry.borrow().http_client().borrow_mut().get(url).map_err(|error| error.message)
+    }
+
+    pub fn set_http_transport(&mut self, transport: alloc::boxed::Box<dyn alloyos_mcp::transport::HttpTransport>) {
+        self.mcp_registry.borrow_mut().set_http_transport(transport);
+    }
+
     /// Returns a shared borrow of the embedded `ScriptScheduler` (managed by capability-authorized apps and OS tools).
     pub fn scheduler(&self) -> core::cell::Ref<'_, ScriptScheduler> {
         self.scheduler.borrow()
@@ -756,6 +796,51 @@ impl NativeToolRegistry {
                         false,
                     ),
                 ],
+            ),
+            ToolSpec::new(
+                "smithery_search",
+                "Search the Smithery.ai public registry for available third-party MCP servers.",
+                vec![ToolParameter::new(
+                    "query",
+                    "string",
+                    "Keyword or query string (e.g. 'github', 'weather', 'search')",
+                    true,
+                ), ToolParameter::new("page", "integer", "Page number, starting at 1", false),
+                ToolParameter::new("page_size", "integer", "Results per page, 1 to 100", false)],
+            ),
+            ToolSpec::new(
+                "smithery_install",
+                "Install a third-party MCP server from Smithery.ai into /apps/<app_id> on CobaltFS.",
+                vec![
+                    ToolParameter::new(
+                        "server",
+                        "string",
+                        "Exact Smithery qualified name (e.g. 'smithery/hello-world')",
+                        true,
+                    ),
+                    ToolParameter::new(
+                        "app_id",
+                        "string",
+                        "Target package ID under /apps/ (defaults to final server name component)",
+                        false,
+                    ),
+                    ToolParameter::new(
+                        "endpoint",
+                        "string",
+                        "Optional custom remote MCP endpoint URL override",
+                        false,
+                    ),
+                ],
+            ),
+            ToolSpec::new(
+                "smithery_uninstall",
+                "Uninstall an installed MCP application from /apps/<app_id> on CobaltFS.",
+                vec![ToolParameter::new(
+                    "app_id",
+                    "string",
+                    "Application package ID under /apps/ to remove",
+                    true,
+                )],
             ),
         ]
     }
@@ -1581,6 +1666,274 @@ impl NativeToolRegistry {
     }
 
     /// Executes a `ToolCall` against the native OS tool registry and updates `ui_synth` when applicable.
+    fn app_snapshot(&mut self) -> Result<alloyos_mcp::PackageSnapshot, String> {
+        if let Some(backend) = &self.vfs_backend {
+            backend.borrow_mut().package_snapshot()
+        } else {
+            Ok(alloyos_mcp::PackageSnapshot {
+                files: self
+                    .vfs_files
+                    .iter()
+                    .filter(|(path, _)| path.starts_with("/apps/"))
+                    .map(|(path, text)| (path.clone(), text.clone()))
+                    .collect(),
+                directories: Vec::new(),
+            })
+        }
+    }
+
+    fn smithery_search(&self, args: &serde_json::Value) -> Result<serde_json::Value, String> {
+        let query = required_string(args, "query")?;
+        let mut url = format!(
+            "https://api.smithery.ai/servers?q={}",
+            encode_url_component(query)
+        );
+        for (key, api_key, max) in [
+            ("page", "page", 9_007_199_254_740_991u64),
+            ("page_size", "pageSize", 100),
+        ] {
+            if let Some(value) = args.get(key) {
+                let number = value
+                    .as_u64()
+                    .filter(|number| *number >= 1 && *number <= max)
+                    .ok_or_else(|| format!("invalid {}", key))?;
+                url.push_str(&format!("&{}={}", api_key, number));
+            }
+        }
+        let response = self.net_fetch(&url)?;
+        let response: serde_json::Value =
+            serde_json::from_str(&response).map_err(|_| "invalid Smithery JSON response")?;
+        let servers = response
+            .get("servers")
+            .and_then(serde_json::Value::as_array)
+            .ok_or("Smithery response requires a servers array")?;
+        if response.get("error").is_some()
+            || servers.iter().any(|server| {
+                server
+                    .get("qualifiedName")
+                    .and_then(serde_json::Value::as_str)
+                    .is_none()
+            })
+        {
+            return Err("invalid Smithery search response".into());
+        }
+        Ok(
+            serde_json::json!({"ok":true,"query":query,"count":servers.len(),"servers":servers,"pagination":response.get("pagination")}),
+        )
+    }
+
+    fn smithery_install(&mut self, args: &serde_json::Value) -> Result<serde_json::Value, String> {
+        let server = required_string(args, "server")?.trim_start_matches('@');
+        if server.is_empty() || server.chars().any(char::is_control) {
+            return Err("invalid Smithery server identifier".into());
+        }
+        let app_id = match args.get("app_id") {
+            Some(value) => value.as_str().ok_or("app_id must be a string")?.to_string(),
+            None => server.rsplit('/').next().unwrap_or("").to_ascii_lowercase(),
+        };
+        validate_package_id(&app_id)?;
+        let root = format!("/apps/{}/", app_id);
+        let before = self.app_snapshot()?;
+        if before.files.keys().any(|path| path.starts_with(&root))
+            || before
+                .directories
+                .iter()
+                .any(|path| path == root.trim_end_matches('/') || path.starts_with(&root))
+        {
+            return Err(format!("package '{}' already exists", app_id));
+        }
+        let details = self.net_fetch(&format!(
+            "https://api.smithery.ai/servers/{}",
+            encode_url_component(server)
+        ))?;
+        let details: serde_json::Value =
+            serde_json::from_str(&details).map_err(|_| "invalid Smithery server details")?;
+        if details.get("error").is_some()
+            || details.get("remote").and_then(serde_json::Value::as_bool) != Some(true)
+            || details
+                .get("qualifiedName")
+                .and_then(serde_json::Value::as_str)
+                != Some(server)
+        {
+            return Err("server details do not describe the requested remote server".into());
+        }
+        let name = required_string(&details, "displayName")?;
+        let endpoint = if let Some(endpoint) = args.get("endpoint") {
+            endpoint.as_str().ok_or("endpoint must be a string")?
+        } else {
+            details
+                .get("connections")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|connections| {
+                    connections.iter().find(|connection| {
+                        connection.get("type").and_then(serde_json::Value::as_str) == Some("http")
+                    })
+                })
+                .and_then(|connection| connection.get("deploymentUrl"))
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| {
+                    details
+                        .get("deploymentUrl")
+                        .and_then(serde_json::Value::as_str)
+                })
+                .ok_or("server has no HTTP deployment URL")?
+        };
+        let tools = details
+            .get("tools")
+            .filter(|tools| tools.is_array())
+            .ok_or("server has no tool metadata; refusing to invent tools")?
+            .to_string();
+        alloyos_mcp::parse_remote_tools(&tools)?;
+        let manifest = alloyos_mcp::AppManifest::new_remote(
+            &app_id,
+            name,
+            "1.0.0",
+            vec![
+                alloyos_mcp::AppCapability::ExposeMcpTools,
+                alloyos_mcp::AppCapability::ExposeSkills,
+                alloyos_mcp::AppCapability::ScopedNetwork,
+            ],
+            endpoint,
+            Some("streamable-http".into()),
+        );
+        alloyos_mcp::validate_app_manifest(&manifest)
+            .map_err(|error| error.to_mcp_error().message)?;
+        let files = BTreeMap::from([
+            (format!("{}{}.mcp", root, app_id), manifest.to_mcp_config()),
+            (format!("{}tools.json", root), tools),
+            (
+                format!("{}SKILL.md", root),
+                format!(
+                    "# {}\n\n{}\n\nRemote MCP package from Smithery: `{}`.\n",
+                    name,
+                    details
+                        .get("description")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or(""),
+                    server
+                ),
+            ),
+        ]);
+        let mut candidate = alloyos_mcp::PackageService::new();
+        candidate.apply_snapshot(alloyos_mcp::PackageSnapshot {
+            files: files.clone(),
+            directories: Vec::new(),
+        });
+        if !candidate.status(&app_id).is_some_and(|status| status.ready) {
+            return Err("remote package failed validation".into());
+        }
+        // Manifest last: a partial install is never discoverable as ready.
+        let manifest_path = format!("{}{}.mcp", root, app_id);
+        let mut paths: Vec<_> = files
+            .keys()
+            .filter(|path| **path != manifest_path)
+            .cloned()
+            .collect();
+        paths.push(manifest_path);
+        let result = (|| {
+            for path in &paths {
+                self.write_vfs_raw(path, &files[path])?;
+            }
+            self.refresh_app_packages()?;
+            if self.mcp_registry.borrow().guard_for(&app_id).is_none() {
+                return Err("installed package was not registered".into());
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            let mut rollback_errors = Vec::new();
+            for path in &paths {
+                if let Err(error) = self.delete_vfs_raw(path) {
+                    rollback_errors.push(error);
+                }
+            }
+            if let Err(error) = self.refresh_app_packages() {
+                rollback_errors.push(error);
+            }
+            if !rollback_errors.is_empty() {
+                return Err(format!(
+                    "{}; rollback failed: {}",
+                    error,
+                    rollback_errors.join(", ")
+                ));
+            }
+            return Err(error);
+        }
+        Ok(
+            serde_json::json!({"ok":true,"app_id":app_id,"name":name,"server":server,"endpoint":endpoint,"path":root}),
+        )
+    }
+
+    fn smithery_uninstall(
+        &mut self,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let app_id = required_string(args, "app_id")?;
+        validate_package_id(app_id)?;
+        let root = format!("/apps/{}/", app_id);
+        let snapshot = self.app_snapshot()?;
+        let files: BTreeMap<_, _> = snapshot
+            .files
+            .into_iter()
+            .filter(|(path, _)| path.starts_with(&root))
+            .collect();
+        if files.is_empty() {
+            return Err(format!("package '{}' is not installed", app_id));
+        }
+        if files
+            .keys()
+            .any(|path| ScriptCapabilities::normalize_path(path) != *path)
+        {
+            return Err("package contains noncanonical paths".into());
+        }
+        let mut directories: BTreeSet<String> = snapshot
+            .directories
+            .into_iter()
+            .filter(|path| path.starts_with(&root))
+            .collect();
+        directories.insert(root.trim_end_matches('/').into());
+        for path in files.keys() {
+            let mut parent = path.as_str();
+            while let Some((directory, _)) = parent.rsplit_once('/') {
+                if directory.len() < root.len() {
+                    break;
+                }
+                directories.insert(directory.into());
+                parent = directory;
+            }
+        }
+        let result = (|| {
+            for path in files.keys() {
+                self.delete_vfs_raw(path)?;
+            }
+            for directory in directories.iter().rev() {
+                self.delete_vfs_raw(directory)?;
+            }
+            self.refresh_app_packages()?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            let mut rollback_errors = Vec::new();
+            for (path, text) in &files {
+                if let Err(error) = self.write_vfs_raw(path, text) {
+                    rollback_errors.push(error);
+                }
+            }
+            if let Err(error) = self.refresh_app_packages() {
+                rollback_errors.push(error);
+            }
+            if !rollback_errors.is_empty() {
+                return Err(format!(
+                    "{}; rollback failed: {}",
+                    error,
+                    rollback_errors.join(", ")
+                ));
+            }
+            return Err(error);
+        }
+        Ok(serde_json::json!({"ok":true,"app_id":app_id,"deleted_files":files.len()}))
+    }
+
     pub fn execute_tool(
         &mut self,
         call: &ToolCall,
@@ -1922,18 +2275,24 @@ impl NativeToolRegistry {
                     McpCaller::Welder
                 };
 
-                let full_tool_name = if raw_tool.contains('.') {
+                let full_tool_name = if raw_tool.starts_with(&format!("{}.", app_id)) {
                     raw_tool.clone()
                 } else {
                     format!("{}.{}", app_id, raw_tool)
                 };
 
-                let raw_args_str = extract_json_string_field(&call.arguments_json, "args")
-                    .unwrap_or_else(|| call.arguments_json.clone());
+                let outer_args: serde_json::Value = serde_json::from_str(&call.arguments_json)
+                    .map_err(|_| AiError::InvalidToolArguments("invalid JSON arguments".into()))?;
+                let raw_args_str = match outer_args.get("args") {
+                    Some(serde_json::Value::String(args)) => args.clone(),
+                    Some(serde_json::Value::Object(args)) => serde_json::Value::Object(args.clone()).to_string(),
+                    Some(_) => return Err(AiError::InvalidToolArguments("MCP args must be a JSON string or object".into())),
+                    None => call.arguments_json.clone(),
+                };
                 let args_map = alloyos_mcp::McpValue::from_json(&raw_args_str)
-                    .ok()
-                    .and_then(|v| v.as_map().cloned())
-                    .unwrap_or_default();
+                    .map_err(|error| AiError::InvalidToolArguments(error.message))?
+                    .as_map().cloned()
+                    .ok_or_else(|| AiError::InvalidToolArguments("MCP args must be a JSON object".into()))?;
 
                 let mcp_result = self
                     .mcp_registry
@@ -2218,6 +2577,20 @@ impl NativeToolRegistry {
                     output_json: payload,
                     synthesized_view: Some(view),
                 })
+            }
+            "smithery_search" | "smithery_install" | "smithery_uninstall" => {
+                let args: serde_json::Value = serde_json::from_str(&call.arguments_json)
+                    .map_err(|_| AiError::InvalidToolArguments("invalid JSON arguments".into()))?;
+                if !args.is_object() { return Err(AiError::InvalidToolArguments("arguments must be an object".into())); }
+                let payload = match call.name.as_str() {
+                    "smithery_search" => self.smithery_search(&args),
+                    "smithery_install" => self.smithery_install(&args),
+                    _ => self.smithery_uninstall(&args),
+                }.map_err(AiError::InvalidToolArguments)?.to_string();
+                let view = ui_synth.synthesize_from_mcp_output_with_tile(
+                    &UiCallerOrigin::AiAgent, "package-manager", &call.name, &payload, None,
+                )?;
+                Ok(ToolExecutionOutput { tool_name: call.name.clone(), output_json: payload, synthesized_view: Some(view) })
             }
             other => Err(AiError::UnknownTool(other.to_string())),
         }

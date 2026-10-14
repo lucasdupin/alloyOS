@@ -10,8 +10,10 @@ use core::task::Poll;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+// Responses remain bounded independently of larger conversation requests.
 pub const HTTP_BODY_LIMIT: usize = 65536;
-pub const HTTP_FRAME_LIMIT: usize = 262144;
+pub const HTTP_REQUEST_BODY_LIMIT: usize = 1024 * 1024;
+pub const HTTP_FRAME_LIMIT: usize = 4 * HTTP_REQUEST_BODY_LIMIT + 16384;
 pub const CLAUDE_MODEL: &str = "claude-sonnet-4-6";
 pub const GEMINI_MODEL: &str = "gemini-3.8-flash";
 pub const OPENAI_MODEL: &str = "gpt-4.1";
@@ -151,7 +153,7 @@ impl ApiTransport {
             }
         };
         let body = body.to_string();
-        if body.len() > HTTP_BODY_LIMIT {
+        if body.len() > HTTP_REQUEST_BODY_LIMIT {
             return Err(ForgeError::InvalidRequest);
         }
         Ok(HttpRequest { url, headers, body })

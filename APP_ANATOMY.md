@@ -8,13 +8,15 @@ files to a time display and a Refresh action.
 **Implementation status:** app discovery and JavaScript execution are implemented.
 App packages are copied from the repository's `apps/` tree into the CobaltFS disk
 image by the image build. The OS lists `/apps/` at runtime, validates each package,
-and loads its `main.js`. App identities, source files, and package lists are never
+and loads its `main.js` for local apps. Remote MCP packages use an endpoint instead.
+App identities, source files, and package lists are never
 embedded in Rust. An empty `/apps/` exposes no apps.
 
 ## How your app runs
 
 The kernel, CobaltFS, Forge, Welder, Ferrofluid, and the MCP app host are Rust OS
-services. **All apps are JavaScript packages on disk.**
+services. **Local apps are JavaScript packages on disk.** Remote MCP packages store
+their endpoint and schemas on disk and execute on the remote server.
 
 `alloyos-mcp` owns app execution through `alloyos-js`. Welder invokes the MCP host;
 it does not import `alloyos-js`, create app isolates, or execute app source itself.
@@ -45,6 +47,36 @@ not stop Welder, Ferrofluid, or another app.
 **Not implemented yet:** today's app registry executes app implementations inside
 the host. Process isolation is required migration work tracked in
 [Roadmap Phase 7](ROADMAP.md#phase-7-headless-mcp-apps-skills-declarative-tiles--tasks-app).
+
+## Remote MCP packages and Smithery lookup
+
+Welder exposes `smithery_search`, `smithery_install`, and `smithery_uninstall`.
+Search accepts a query and optional `page` and `page_size`, forwards them to
+Smithery, and returns its results and pagination. Empty results stay empty;
+unavailable transport, authentication errors, and malformed responses fail explicitly.
+
+Install takes the exact Smithery qualified name, uses its deployment URL and tool
+schemas, validates the package, and refuses to overwrite an existing package.
+It creates `<app_id>.mcp`, `tools.json`, and `SKILL.md` under `/apps/<app_id>/`.
+Remote manifests declare `endpoint`, `transport = streamable-http`, and
+`ScopedNetwork`; they can omit `main.js`. Supplied JavaScript still undergoes the
+normal source-size and parsing checks. Remote apps expose headless capabilities;
+they do not render local Tiles.
+
+**Transport status:** the host must install an `alloyos_mcp::transport::HttpTransport`
+through `NativeToolRegistry::set_http_transport`. The kernel currently does not
+wire this driver. Without one, only explicitly registered test fixtures work.
+The driver owns bounded HTTP I/O and credentials, including Smithery's required
+API key; credentials do not belong in package manifests. This interface does not
+implement OAuth or a cooperative kernel network driver.
+
+The MCP client initializes the server, retains session headers, sends JSON-RPC
+POSTs to its endpoint, and checks response IDs. It handles JSON and completed SSE
+responses and retains all tool content, structured results, and `isError`. Remote
+resource aliases use `mcp://<app_id>/resources/<index>`; the current OS resource
+interface accepts one text content block and reports unsupported shapes explicitly.
+Installation and removal roll back file changes when storage or registration
+fails, and report rollback failures instead of reporting success.
 
 ## 1. Create the Clock package
 

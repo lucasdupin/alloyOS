@@ -14,8 +14,10 @@ curl -X POST http://127.0.0.1:7070/v1/generate \
 ```
 
 `model` is optional in generation requests; Forge selects its default when omitted.
-Prompts are bounded to 8192 UTF-8 bytes; generation is bounded to 256 tokens.
-HTTP bodies are bounded to 32768 bytes, headers to 8192 bytes. Serial framing is
+There is no fixed prompt-byte limit; the selected backend enforces its context
+window. Generation is bounded to 256 tokens. HTTP request bodies are bounded to
+1 MiB, headers to 8192 bytes. The cloud relay accepts request bodies up to 1 MiB
+and uses a larger envelope for JSON escaping and hex encoding. Serial framing is
 `FORGE1`, request id, operation and tab-separated arguments; prompts and responses
 use hex-encoded UTF-8. Replies are correlated by request id and bounded by
 `--timeout` seconds (default 120). HTTP reads/writes time out after five seconds.

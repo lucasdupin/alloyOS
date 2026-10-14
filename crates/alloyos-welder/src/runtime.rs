@@ -787,7 +787,19 @@ impl AgentRuntime {
         self.turn_tool_calls += response.tool_calls.len();
         self.history.push(Message::assistant_with_tools(&response.text, response.tool_calls.clone()));
         for call in &response.tool_calls {
-            let output = self.tool_registry.execute_tool(call, &mut self.ui_synthesizer)?;
+            let output = match self.tool_registry.execute_tool(call, &mut self.ui_synthesizer) {
+                Ok(output) => output,
+                Err(error @ (AiError::InvalidToolArguments(_) | AiError::UnknownTool(_))) => {
+                    // Complete the tool exchange so the model can repair a bad
+                    // call and the next user turn never inherits a dangling call.
+                    ToolExecutionOutput {
+                        tool_name: call.name.clone(),
+                        output_json: serde_json::json!({"ok":false,"error":error.to_string()}).to_string(),
+                        synthesized_view: None,
+                    }
+                }
+                Err(error) => return Err(error),
+            };
             let model_output = if call.name == "mcp_list_tools" {
                 // Discovery needs schemas, not every rendered tile and full skill body.
                 // Keep the complete result for the UI, and a compact inventory for the model.
@@ -1014,6 +1026,69 @@ mod tests {
     use super::*;
     use crate::{ProviderToolCall as ToolCall, ToolSpec, UiCallerOrigin, ViewKind};
     use alloyos_forge::provider::TokenUsage;
+    #[test]
+    fn invalid_generated_script_is_returned_to_model_and_next_turn_can_continue() {
+        use alloc::boxed::Box;
+        use alloyos_forge::{
+            ForgeError, Generation, GenerationRequest, InferenceBackend, DEFAULT_MODEL,
+        };
+        struct Model {
+            step: usize,
+        }
+        impl InferenceBackend for Model {
+            fn resident_bytes(&self) -> u64 {
+                0
+            }
+            fn generate(&mut self, request: &GenerationRequest) -> Result<Generation, ForgeError> {
+                let text = match self.step {
+                    0 => serde_json::json!({"kind":"tools","calls":[{"name":"script_create","arguments":{"path":"/tmp/get_time.js","source":"console.log(new Date());"}}]}).to_string(),
+                    1 => {
+                        assert!(request.prompt.contains("JavaScript syntax error"));
+                        assert!(request.prompt.contains("tool: {\"error\":"));
+                        assert!(request.prompt.contains("restricted subset"));
+                        r#"{"kind":"final","text":"Wall-clock time is unavailable."}"#.into()
+                    }
+                    2 => {
+                        assert!(request.prompt.contains("Is Gmail MCP available?"));
+                        r#"{"kind":"final","text":"Need to check the app registry."}"#.into()
+                    }
+                    _ => panic!("unexpected additional generation"),
+                };
+                self.step += 1;
+                Ok(Generation {
+                    model: DEFAULT_MODEL.into(),
+                    text,
+                    generated_tokens: 20,
+                })
+            }
+        }
+        let mut runtime = AgentRuntime::new();
+        let forge = Rc::new(RefCell::new(Forge::new(0)));
+        forge
+            .borrow_mut()
+            .attach(DEFAULT_MODEL, Box::new(Model { step: 0 }))
+            .unwrap();
+        runtime.gateway.set_forge(forge);
+        runtime.switch_provider("local").unwrap();
+        assert!(runtime
+            .start_console_input("What time is it?")
+            .unwrap()
+            .is_none());
+        let output = loop {
+            if let Poll::Ready(output) = runtime.poll_console_reply() {
+                break output.unwrap();
+            }
+        };
+        assert_eq!(output.response_text, "Wall-clock time is unavailable.");
+        assert_eq!(output.tool_outputs.len(), 1);
+        assert!(output.tool_outputs[0].output_json.contains("\"ok\":false"));
+        assert!(runtime.tool_registry.vfs_read("/tmp/get_time.js").is_none());
+        let output = runtime
+            .handle_console_input("Is Gmail MCP available?", &mut |_| {})
+            .unwrap();
+        assert_eq!(output.response_text, "Need to check the app registry.");
+    }
+
     #[test]
     fn console_local_tool_loop_discovers_filesystem_apps_before_invoking_them() {
         use alloc::boxed::Box;
@@ -1947,6 +2022,97 @@ mod tests {
             .expect("/apps inspect broken-app should succeed");
         assert!(out_single.response_text.contains("[broken-app]"));
         assert!(!out_single.response_text.contains("[sample_scheduler]"));
+    }
+
+    #[test]
+    fn smithery_search_install_remote_tool_call_and_uninstall_lifecycle() {
+        let mut runtime = AgentRuntime::with_vfs_backend(crate::SharedMapVfsBackend::shared());
+        let mut ui = AgentUiSynthesizer::new();
+
+        runtime.tool_registry.register_http_response(
+            "https://api.smithery.ai/servers?q=github",
+            r#"{"servers":[{"qualifiedName":"smithery-ai/github","displayName":"GitHub MCP"}]}"#,
+        );
+        runtime.tool_registry.register_http_response(
+            "https://api.smithery.ai/servers/smithery-ai%2Fgithub",
+            r#"{"qualifiedName":"smithery-ai/github","displayName":"GitHub MCP","remote":true,"deploymentUrl":"https://github.example/mcp","tools":[{"name":"create_issue","inputSchema":{"type":"object","properties":{"title":{"type":"string"}},"required":["title"]}}]}"#,
+        );
+        runtime.tool_registry.register_http_response(
+            "POST https://github.example/mcp initialize",
+            r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"1"}}}"#,
+        );
+        runtime.tool_registry.register_http_response("POST https://github.example/mcp notifications/initialized", "");
+        // 1. Search Smithery registry for 'github'
+        let search_call = ToolCall::new("s1", "smithery_search", r#"{"query":"github"}"#);
+        let search_out = runtime
+            .tool_registry
+            .execute_tool(&search_call, &mut ui)
+            .expect("smithery_search must succeed");
+        assert!(search_out.output_json.contains("smithery-ai/github"));
+        assert!(search_out.output_json.contains("GitHub MCP"));
+
+        // 2. Register mock HTTP response for the remote Smithery endpoint
+        runtime.tool_registry.register_http_response(
+            "POST https://github.example/mcp tools/call",
+            r#"{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"Issue #101 created: Support Smithery MCP"}]}}"#,
+        );
+
+        // 3. Install the 3P MCP server from Smithery
+        let install_call = ToolCall::new(
+            "i1",
+            "smithery_install",
+            r#"{"server":"@smithery-ai/github","app_id":"github"}"#,
+        );
+        let install_out = runtime
+            .tool_registry
+            .execute_tool(&install_call, &mut ui)
+            .expect("smithery_install must succeed");
+        assert!(install_out.output_json.contains(r#""ok":true"#));
+        assert!(install_out.output_json.contains("/apps/github/"));
+
+        // Verify files were created on CobaltFS
+        assert!(runtime.tool_registry.vfs_read("/apps/github/github.mcp").is_some());
+        assert!(runtime.tool_registry.vfs_read("/apps/github/tools.json").is_some());
+        assert!(runtime.tool_registry.vfs_read("/apps/github/SKILL.md").is_some());
+
+        // 4. mcp_list_tools now discovers the remote 3P app
+        let list_call = ToolCall::new("l1", "mcp_list_tools", "{}");
+        let list_out = runtime
+            .tool_registry
+            .execute_tool(&list_call, &mut ui)
+            .expect("mcp_list_tools must succeed");
+        assert!(list_out.output_json.contains("github.create_issue"));
+
+        // 5. Call a tool on the remote 3P app via mcp_call_tool
+        let call_tool = ToolCall::new(
+            "c1",
+            "mcp_call_tool",
+            r#"{"app":"github","tool":"create_issue","args":"{\"title\":\"Support Smithery MCP\"}"}"#,
+        );
+        let call_out = runtime
+            .tool_registry
+            .execute_tool(&call_tool, &mut ui)
+            .expect("mcp_call_tool on remote 3P app must succeed");
+        assert!(call_out.output_json.contains("Issue #101 created: Support Smithery MCP"));
+
+        // 6. Uninstall the 3P app
+        let uninstall_call = ToolCall::new(
+            "u1",
+            "smithery_uninstall",
+            r#"{"app_id":"github"}"#,
+        );
+        let uninstall_out = runtime
+            .tool_registry
+            .execute_tool(&uninstall_call, &mut ui)
+            .expect("smithery_uninstall must succeed");
+        assert!(uninstall_out.output_json.contains(r#""ok":true"#));
+
+        // 7. Verify mcp_list_tools no longer lists github
+        let list_out2 = runtime
+            .tool_registry
+            .execute_tool(&list_call, &mut ui)
+            .expect("mcp_list_tools must succeed");
+        assert!(!list_out2.output_json.contains("github.create_issue"));
     }
 
 }

@@ -5,8 +5,9 @@ use std::collections::BTreeMap;
 
 use alloyos_mcp::{
     mcp_map, methods, validate_app_manifest, AppCapability, AppManifest, McpCaller, McpError,
-    McpRegistry, McpRequest, McpResponse, McpSandboxError, McpValue, RuntimeCapabilityGuard,
-    ERR_METHOD_NOT_FOUND, ERR_RESOURCE_NOT_FOUND, ERR_SANDBOX_VIOLATION,
+    McpRegistry, McpRequest, McpResponse, McpSandboxError, McpValue, PackageService,
+    PackageSnapshot, RuntimeCapabilityGuard, ERR_METHOD_NOT_FOUND, ERR_RESOURCE_NOT_FOUND,
+    ERR_SANDBOX_VIOLATION,
 };
 
 #[test]
@@ -511,3 +512,49 @@ fn calc_memory_and_weather_tools_execute() {
     assert_eq!(w_map["condition"].as_str(), Some("Clear"));
 }
 
+#[test]
+fn remote_package_validates_and_executes_with_explicit_transport_fixtures() {
+    let mut snapshot = PackageSnapshot::default();
+    snapshot.files.insert(
+        "/apps/github/github.mcp".to_string(),
+        "app_id = github\nname = GitHub MCP\nversion = 1.0.0\nendpoint = https://server.smithery.ai/@smithery-ai/github/mcp\ntransport = remote\ncapabilities = ExposeMcpTools, ScopedNetwork\n".to_string(),
+    );
+    snapshot.files.insert(
+        "/apps/github/tools.json".to_string(),
+        r#"[{"name":"create_issue","description":"Create a GitHub issue","params":[{"name":"title","type":"string","required":true,"description":"Issue title"}]}]"#.to_string(),
+    );
+    snapshot.files.insert(
+        "/apps/github/SKILL.md".to_string(),
+        "# GitHub Skill\nUse `github.create_issue` to open issues.\n".to_string(),
+    );
+
+    let mut service = PackageService::new();
+    let changes = service.apply_snapshot(snapshot.clone());
+    assert_eq!(changes.len(), 1);
+    let status = service.status("github").expect("github package status");
+    assert!(status.ready, "remote package must be ready without main.js: {:?}", status.diagnostics);
+
+    let mut registry = McpRegistry::new();
+    registry.register_http_response(
+        "POST https://server.smithery.ai/@smithery-ai/github/mcp initialize",
+        r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"1"}}}"#,
+    );
+    registry.register_http_response(
+        "POST https://server.smithery.ai/@smithery-ai/github/mcp notifications/initialized", "",
+    );
+    registry.register_http_response(
+        "POST https://server.smithery.ai/@smithery-ai/github/mcp tools/call",
+        r#"{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"Issue #42 created: Bug in auth"}]}}"#,
+    );
+
+    let registered_count = registry
+        .discover_and_register_packages(&snapshot, None)
+        .expect("discover packages");
+    assert_eq!(registered_count, 1);
+    assert_eq!(registry.app_count(), 1);
+
+    let mut args = BTreeMap::new();
+    args.insert("title".to_string(), McpValue::Text("Bug in auth".to_string()));
+    let res = registry.call_tool("github.create_issue", &args).expect("remote tool call succeeds");
+    assert!(res.to_json().contains("Issue #42 created: Bug in auth"));
+}

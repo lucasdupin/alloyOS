@@ -147,7 +147,8 @@ fn validate_package(id: &str, files: &BTreeMap<String, String>, revision: u64) -
     }
     let entry = format!("{}main.js", root);
     let mut entry_parsed = false;
-    // Parse every JS file, not just main.js: nested modules are part of this revision.
+    // Remote packages may omit main.js, but every supplied module still has the
+    // same parse and size limits as a local package.
     for (path, source) in files.iter().filter(|(path, _)| path.ends_with(".js")) {
         if source.len() > alloyos_js::app::MAX_APP_SOURCE_BYTES {
             status.diagnostics.push(PackageDiagnostic { path: path.clone(), message: "JavaScript source exceeds 256 KiB".into() });
@@ -158,18 +159,26 @@ fn validate_package(id: &str, files: &BTreeMap<String, String>, revision: u64) -
             Err(error) => status.diagnostics.push(PackageDiagnostic { path: path.clone(), message: error.to_string() }),
         }
     }
-    if !files.contains_key(&entry) {
-        status.diagnostics.push(PackageDiagnostic { path: entry.clone(), message: "missing required main.js".into() });
-    }
-    if entry_parsed {
-        let required: Vec<_> = [
-            (AppCapability::ExposeMcpTools, AppHandler::CallTool),
-            (AppCapability::ExposeMcpResources, AppHandler::ReadResource),
-            (AppCapability::ExposeMcpPrompts, AppHandler::GetPrompt),
-            (AppCapability::ExposeTiles, AppHandler::RenderTile),
-        ].into_iter().filter_map(|(capability, handler)| manifest.has_capability(&capability).then_some(handler)).collect();
-        if let Err(error) = validate_app_handlers(&files[&entry], &required) {
-            status.diagnostics.push(PackageDiagnostic { path: entry.clone(), message: error.to_string() });
+    if manifest.is_remote() {
+        if let Err(error) = crate::RemoteMcpApp::from_package_files(id, files) {
+            let message = error.to_mcp_error().message;
+            let file = if message.contains("resources.json") { "resources.json" } else if message.contains("prompts.json") { "prompts.json" } else { "tools.json" };
+            status.diagnostics.push(PackageDiagnostic { path: format!("{}{}", root, file), message });
+        }
+    } else {
+        if !files.contains_key(&entry) {
+            status.diagnostics.push(PackageDiagnostic { path: entry.clone(), message: "missing required main.js".into() });
+        }
+        if entry_parsed {
+            let required: Vec<_> = [
+                (AppCapability::ExposeMcpTools, AppHandler::CallTool),
+                (AppCapability::ExposeMcpResources, AppHandler::ReadResource),
+                (AppCapability::ExposeMcpPrompts, AppHandler::GetPrompt),
+                (AppCapability::ExposeTiles, AppHandler::RenderTile),
+            ].into_iter().filter_map(|(capability, handler)| manifest.has_capability(&capability).then_some(handler)).collect();
+            if let Err(error) = validate_app_handlers(&files[&entry], &required) {
+                status.diagnostics.push(PackageDiagnostic { path: entry.clone(), message: error.to_string() });
+            }
         }
     }
     if manifest.has_capability(&AppCapability::ExposeSkills) && !files.contains_key(&format!("{}SKILL.md", root)) {

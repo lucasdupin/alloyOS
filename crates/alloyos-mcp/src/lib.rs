@@ -16,8 +16,11 @@ pub mod protocol;
 pub mod packages;
 pub mod registry;
 pub mod sandbox;
+pub mod transport;
+mod remote;
 
-pub use apps::JsApp;
+pub use apps::{JsApp, RemoteMcpApp};
+pub use remote::parse_remote_tools;
 pub use protocol::{
     mcp_map, methods, tool_text_result, AppSkill, AppTile, McpError, McpParamSpec, McpPrompt,
     McpRequest, McpResource, McpResourceContent, McpResponse, McpTool, McpValue, TileAction,

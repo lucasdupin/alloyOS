@@ -540,6 +540,22 @@ mod forge_tests {
     use super::*;
     use alloc::{boxed::Box,string::ToString};
     #[test]
+    fn forge_binding_passes_large_prompts_to_the_host() {
+        let prompt = "x".repeat(20_000);
+        let mut host = VirtualHostEnv::new();
+        let expected = prompt.clone();
+        host.set_forge_handler(Box::new(move |prompt, _, _| {
+            assert_eq!(prompt, expected);
+            Ok("accepted".to_string())
+        }));
+        let source = alloc::format!("AlloyOS.forge('{}');", prompt);
+        assert_eq!(
+            JsRuntime::new().eval_with_host(&source, &mut host).unwrap(),
+            JsValue::String("accepted".to_string())
+        );
+    }
+
+    #[test]
     fn local_forge_capability_is_opt_in_and_options_are_validated() {
         let mut rt=JsRuntime::new();
         let mut host=VirtualHostEnv::new();

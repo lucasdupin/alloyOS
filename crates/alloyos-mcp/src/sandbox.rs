@@ -225,6 +225,8 @@ pub struct AppManifest {
     pub name: String,
     pub version: String,
     pub declared_capabilities: Vec<AppCapability>,
+    pub endpoint: Option<String>,
+    pub transport: Option<String>,
 }
 
 impl AppManifest {
@@ -239,7 +241,42 @@ impl AppManifest {
             name: name.into(),
             version: version.into(),
             declared_capabilities,
+            endpoint: None,
+            transport: None,
         }
+    }
+
+    pub fn new_remote(
+        app_id: impl Into<String>,
+        name: impl Into<String>,
+        version: impl Into<String>,
+        declared_capabilities: Vec<AppCapability>,
+        endpoint: impl Into<String>,
+        transport: Option<String>,
+    ) -> Self {
+        Self {
+            app_id: app_id.into(),
+            name: name.into(),
+            version: version.into(),
+            declared_capabilities,
+            endpoint: Some(endpoint.into()),
+            transport,
+        }
+    }
+
+    /// Returns true if this application connects to a remote 3P MCP server.
+    pub fn is_remote(&self) -> bool {
+        self.endpoint.is_some()
+    }
+
+    pub fn with_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.endpoint = Some(endpoint.into());
+        self
+    }
+
+    pub fn with_transport(mut self, transport: impl Into<String>) -> Self {
+        self.transport = Some(transport.into());
+        self
     }
 
     /// Returns true if the manifest explicitly declares the given capability.
@@ -269,6 +306,8 @@ impl AppManifest {
         let mut name: Option<String> = None;
         let mut version: Option<String> = None;
         let mut capabilities: Vec<AppCapability> = Vec::new();
+        let mut endpoint: Option<String> = None;
+        let mut transport: Option<String> = None;
 
         for (line_idx, raw_line) in config_text.lines().enumerate() {
             let line = raw_line.trim();
@@ -288,6 +327,8 @@ impl AppManifest {
                 "app_id" | "folder" => app_id = Some(val.to_string()),
                 "name" => name = Some(val.to_string()),
                 "version" => version = Some(val.to_string()),
+                "endpoint" | "url" => endpoint = Some(val.to_string()),
+                "transport" | "kind" => transport = Some(val.to_string()),
                 // Obsolete: every package uses main.js; accept legacy manifests.
                 "entrypoint" => {}
                 "capabilities" => {
@@ -340,6 +381,8 @@ impl AppManifest {
             name,
             version,
             declared_capabilities: capabilities,
+            endpoint,
+            transport,
         })
     }
 
@@ -350,13 +393,20 @@ impl AppManifest {
             .iter()
             .map(|c| c.to_manifest_token())
             .collect();
-        format!(
+        let mut out = format!(
             "app_id = {}\nname = {}\nversion = {}\ncapabilities = {}\n",
             self.app_id,
             self.name,
             self.version,
             caps.join(", ")
-        )
+        );
+        if let Some(ref ep) = self.endpoint {
+            out.push_str(&format!("endpoint = {}\n", ep));
+        }
+        if let Some(ref tr) = self.transport {
+            out.push_str(&format!("transport = {}\n", tr));
+        }
+        out
     }
 }
 
@@ -407,17 +457,17 @@ pub fn validate_app_manifest(manifest: &AppManifest) -> Result<(), McpSandboxErr
         });
     }
 
-    if manifest.name.trim().is_empty() {
+    if manifest.name.trim().is_empty() || manifest.name.chars().any(char::is_control) {
         return Err(McpSandboxError::InvalidManifest {
             app_id: manifest.app_id.clone(),
-            reason: "name must not be empty".to_string(),
+            reason: "name must be nonempty and contain no control characters".to_string(),
         });
     }
 
-    if manifest.version.trim().is_empty() {
+    if manifest.version.trim().is_empty() || manifest.version.chars().any(char::is_control) {
         return Err(McpSandboxError::InvalidManifest {
             app_id: manifest.app_id.clone(),
-            reason: "version must not be empty".to_string(),
+            reason: "version must be nonempty and contain no control characters".to_string(),
         });
     }
 
@@ -497,7 +547,78 @@ pub fn validate_app_manifest(manifest: &AppManifest) -> Result<(), McpSandboxErr
         }
     }
 
+    if let Some(ref ep) = manifest.endpoint {
+        if !valid_http_endpoint(ep) {
+            return Err(McpSandboxError::InvalidManifest {
+                app_id: manifest.app_id.clone(),
+                reason: format!("remote endpoint must be a valid HTTP or HTTPS URL: '{}'", ep),
+            });
+        }
+        if !manifest.has_capability(&AppCapability::ScopedNetwork) {
+            return Err(McpSandboxError::MissingCapability {
+                app_id: manifest.app_id.clone(),
+                capability: AppCapability::ScopedNetwork,
+            });
+        }
+    }
+
+    if manifest.transport.as_deref().is_some_and(|transport| !matches!(transport, "remote" | "http" | "streamable-http")) || (manifest.transport.is_some() && manifest.endpoint.is_none()) {
+        return Err(McpSandboxError::InvalidManifest { app_id: manifest.app_id.clone(), reason: "transport requires a remote endpoint and must be remote, http, or streamable-http".into() });
+    }
+    if manifest.is_remote() && manifest.has_capability(&AppCapability::ExposeTiles) {
+        return Err(McpSandboxError::InvalidManifest { app_id: manifest.app_id.clone(), reason: "remote MCP does not support local tiles".into() });
+    }
+
     Ok(())
+}
+
+fn valid_http_endpoint(url: &str) -> bool {
+    let Some(rest) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    if url
+        .bytes()
+        .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+        || url.contains(['\\', '#'])
+    {
+        return false;
+    }
+    let authority = rest.split(['/', '?']).next().unwrap_or("");
+    if authority.is_empty() || authority.contains('@') {
+        return false;
+    }
+    let (host, port) = if authority.starts_with('[') {
+        let Some(end) = authority.find(']') else {
+            return false;
+        };
+        let host = &authority[1..end];
+        if host.parse::<core::net::Ipv6Addr>().is_err() {
+            return false;
+        }
+        let tail = &authority[end + 1..];
+        if tail.is_empty() {
+            (host, None)
+        } else if let Some(port) = tail.strip_prefix(':') {
+            (host, Some(port))
+        } else {
+            return false;
+        }
+    } else {
+        let (host, port) = authority
+            .split_once(':')
+            .map_or((authority, None), |(host, port)| (host, Some(port)));
+        if !host
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+        {
+            return false;
+        }
+        (host, port)
+    };
+    !host.is_empty() && port.is_none_or(|port| port.parse::<u16>().is_ok_and(|port| port > 0))
 }
 
 /// Runtime capability guard that enforces Zero App-Owned UI, manifest-declared scheduler access,

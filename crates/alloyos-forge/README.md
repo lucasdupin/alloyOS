@@ -44,7 +44,7 @@ Gemma is the initial model, identified by `gemma-2-2b-it`.
 
 ## Wire protocol
 
-Single UTF-8 lines with tab-separated fields, at most 32768 bytes:
+Single UTF-8 lines with tab-separated fields, at most 2 MiB + 1024 bytes:
 
 ```
 FORGE1\t<ID>\tstatus
@@ -54,8 +54,12 @@ FORGE1\t<ID>\tok\t<HEX_UTF8_TEXT>
 FORGE1\t<ID>\terror\t<CODE>\t<HEX_UTF8_MESSAGE>
 ```
 
-`-` chooses the resident default model. Prompt limit is 8192 UTF-8 bytes; output
-limit is 256 tokens. Hex encoding prevents embedded newlines/tabs corrupting UART
+`-` chooses the resident default model. There is no shared prompt-byte/context
+limit or automatic history trimming. Each model backend enforces its token and
+memory limits; output remains limited to 256 tokens. Cloud API request bodies
+are bounded to 1 MiB and response bodies to 64 KiB. The native guest TLS driver
+retains its separate 64 KiB request bound; the host HTTPS relay supports 1 MiB.
+Hex encoding prevents embedded newlines/tabs corrupting UART
 frames. Status/models text is JSON with `default_model` and `models` entries
 containing `id`, `state`, and `weight_bytes`. Ready is only reported after an
 executable backend attaches successfully.

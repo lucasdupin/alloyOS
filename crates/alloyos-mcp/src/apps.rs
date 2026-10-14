@@ -14,23 +14,29 @@ use crate::protocol::{
 use crate::registry::McpApp;
 use crate::sandbox::{AppCapability, AppManifest, McpSandboxError, RuntimeCapabilityGuard};
 
-pub fn mcp_to_js_value(val: &McpValue) -> alloyos_js::JsValue {
-    match val {
+pub fn mcp_to_js_value(val: &McpValue) -> Result<alloyos_js::JsValue, McpError> {
+    Ok(match val {
         McpValue::Null => alloyos_js::JsValue::Null,
         McpValue::Bool(b) => alloyos_js::JsValue::Bool(*b),
         McpValue::Int(n) => alloyos_js::JsValue::Number(*n),
+        McpValue::Number(_) => {
+            return Err(McpError::invalid_params(
+                "local JavaScript apps support only i64 numbers",
+            ))
+        }
         McpValue::Text(s) => alloyos_js::JsValue::String(s.clone()),
-        McpValue::Array(items) => {
-            alloyos_js::JsValue::Array(items.iter().map(mcp_to_js_value).collect())
-        }
-        McpValue::Map(map) => {
-            let mut obj = BTreeMap::new();
-            for (k, v) in map {
-                obj.insert(k.clone(), mcp_to_js_value(v));
-            }
-            alloyos_js::JsValue::Object(obj)
-        }
-    }
+        McpValue::Array(items) => alloyos_js::JsValue::Array(
+            items
+                .iter()
+                .map(mcp_to_js_value)
+                .collect::<Result<_, _>>()?,
+        ),
+        McpValue::Map(map) => alloyos_js::JsValue::Object(
+            map.iter()
+                .map(|(key, value)| Ok((key.clone(), mcp_to_js_value(value)?)))
+                .collect::<Result<_, McpError>>()?,
+        ),
+    })
 }
 
 pub fn parse_tools_from_json(json: &str) -> Vec<McpTool> {
@@ -455,7 +461,7 @@ impl McpApp for JsApp {
         let mut host = self.make_host();
         let mut js_args_map = BTreeMap::new();
         for (k, v) in args {
-            js_args_map.insert(k.clone(), mcp_to_js_value(v));
+            js_args_map.insert(k.clone(), mcp_to_js_value(v)?);
         }
 
         let js_args = [
@@ -571,3 +577,5 @@ impl McpApp for JsApp {
             .map_err(|e| McpError::internal_error(format!("invalid tile json: {}", e)))
     }
 }
+
+pub use crate::remote::RemoteMcpApp;

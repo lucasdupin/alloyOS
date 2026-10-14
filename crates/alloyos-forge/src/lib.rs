@@ -10,9 +10,8 @@ use alloc::{
 use core::{fmt, task::Poll};
 
 pub const DEFAULT_MODEL: &str = "gemma-2-2b-it";
-pub const MAX_PROMPT_BYTES: usize = 8192;
 pub const MAX_OUTPUT_TOKENS: u32 = 256;
-pub const MAX_FRAME_BYTES: usize = 32768;
+pub const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024 + 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ForgeError {
@@ -85,7 +84,6 @@ pub struct GenerationRequest {
 impl GenerationRequest {
     pub fn validate(&self) -> Result<(), ForgeError> {
         if self.prompt.is_empty()
-            || self.prompt.len() > MAX_PROMPT_BYTES
             || self.max_tokens == 0
             || self.max_tokens > MAX_OUTPUT_TOKENS
         {

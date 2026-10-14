@@ -1,7 +1,7 @@
 //! QEMU HTTPS relay. Forge supplies requests; this module verifies destinations
 //! and executes certificate-verified HTTPS without printing headers or payloads.
 use alloyos_forge::{
-    cloud::{HttpRequest, HttpResponse, HTTP_BODY_LIMIT, HTTP_FRAME_LIMIT},
+    cloud::{HttpRequest, HttpResponse, HTTP_BODY_LIMIT, HTTP_FRAME_LIMIT, HTTP_REQUEST_BODY_LIMIT},
     protocol::{decode_hex, encode_hex},
 };
 use std::{
@@ -24,7 +24,7 @@ pub fn allowed(request: &HttpRequest) -> bool {
                         .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
             });
     valid_url
-        && request.body.len() <= HTTP_BODY_LIMIT
+        && request.body.len() <= HTTP_REQUEST_BODY_LIMIT
         && request.headers.len() <= 4
         && request.headers.iter().all(|(name, value)| {
             matches!(
@@ -369,6 +369,30 @@ mod tests {
         assert!(!failure.contains("fixture-secret"));
         assert!(failure.contains("https_transport_failed"));
     }
+
+    #[test]
+    fn relay_preserves_large_context_across_json_and_hex_framing() {
+        let mut outbound = request();
+        outbound.body = serde_json::json!({"input":"雪\"\n".repeat(30_000)}).to_string();
+        assert!(outbound.body.len() > 65536);
+        let frame = format!(
+            "FORGEHTTP1\t42\tpost\t{}\n",
+            encode_hex(&serde_json::to_string(&outbound).unwrap())
+        );
+        assert!(frame.len() > 262144);
+        let reply = relay(&frame, |request| {
+            assert_eq!(request.body, outbound.body);
+            Ok(HttpResponse {
+                status: 200,
+                body: "{}".into(),
+            })
+        })
+        .unwrap();
+        assert!(reply.starts_with("FORGEHTTP1\t42\tok\t"));
+        outbound.body = "x".repeat(HTTP_REQUEST_BODY_LIMIT + 1);
+        assert!(!allowed(&outbound));
+    }
+
     #[test]
     fn curl_uses_private_stdin_config_and_verified_https() {
         let config = config(&request(), std::time::Duration::from_secs(45)).unwrap();

@@ -35,7 +35,8 @@ impl Default for Limits {
         Self {
             max_steps: 8,
             max_tool_calls: 8,
-            max_transcript_bytes: 8192,
+            // Callers can opt into a transcript budget; the default has no byte cap.
+            max_transcript_bytes: usize::MAX,
             max_tokens: 128,
         }
     }
@@ -149,7 +150,6 @@ impl Welder {
             || limits.max_steps > 16
             || limits.max_tool_calls > 32
             || limits.max_transcript_bytes == 0
-            || limits.max_transcript_bytes > 8192
             || limits.max_tokens == 0
             || limits.max_tokens > 256
         {
@@ -385,6 +385,30 @@ mod tests {
         assert_eq!(t.count, 1);
         assert!(w.allow_tool("exec").is_err());
     }
+    #[test]
+    fn default_transcript_has_no_eight_kib_cap_and_explicit_budgets_still_apply() {
+        let prompt = "x".repeat(20_000);
+        let mut tools = Tools { count: 0 };
+        let mut model = backend(vec![Ok(AgentStep::Final("done".into()))]);
+        assert_eq!(
+            Welder::local_default()
+                .run(&prompt, false, &mut model, &mut tools)
+                .unwrap()
+                .text,
+            "done"
+        );
+        let limits = Limits {
+            max_transcript_bytes: 16_384,
+            ..Limits::default()
+        };
+        let mut bounded = Welder::new(RoutePolicy::default(), limits).unwrap();
+        let mut model = backend(vec![Ok(AgentStep::Final("done".into()))]);
+        assert_eq!(
+            bounded.run(&prompt, false, &mut model, &mut tools),
+            Err(WelderError::InvalidRequest)
+        );
+    }
+
     #[test]
     fn denies_batch_before_any_effect_and_bounds_steps() {
         let mut w = Welder::local_default();

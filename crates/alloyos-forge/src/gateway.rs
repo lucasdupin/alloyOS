@@ -234,26 +234,7 @@ impl ModelGateway {
                 "A reply is already pending".into(),
             ));
         }
-        let mut prompt = String::new();
-        if !tools.is_empty() {
-            prompt.push_str("system: Use OS tools to obtain live facts. Discover available apps with mcp_list_tools before invoking their tools or resources. Never invent app identifiers or print code instead of a tool call. Reply with exactly one JSON object: {\"kind\":\"tools\",\"calls\":[{\"name\":\"mcp_list_tools\",\"arguments\":{}}]} to use tools, or {\"kind\":\"final\",\"text\":\"your answer\"} after reading results. Available tools:\n");
-            for tool in tools {
-                prompt.push_str(&format!("{}:", tool.name));
-                for parameter in &tool.parameters {
-                    prompt.push_str(&format!(" {}:{}{}", parameter.name, parameter.param_type, if parameter.required { " (required)" } else { "" }));
-                }
-                prompt.push('\n');
-            }
-        }
-        for message in messages {
-            prompt.push_str(message.role.as_str());
-            prompt.push_str(": ");
-            prompt.push_str(&message.content);
-            for call in &message.tool_calls {
-                prompt.push_str(&format!("\nrequested tool {} {}", call.name, call.arguments_json));
-            }
-            prompt.push('\n');
-        }
+        let prompt = chat_prompt(messages, tools);
         let job = self
             .forge
             .borrow_mut()
@@ -622,11 +603,101 @@ fn build_tool_calls_response(
     Ok(Response::new(String::new(), requested, model, usage))
 }
 
+/// Serialize the complete conversation; each backend enforces its own context limits.
+fn chat_prompt(messages: &[Message], tools: &[ToolSpec]) -> String {
+    let mut prefix = String::new();
+    if !tools.is_empty() {
+        prefix.push_str("system: Use OS tools to obtain live facts. Discover available apps with mcp_list_tools before invoking their tools or resources. Never invent app identifiers or print code instead of a tool call. Reply with exactly one JSON object: {\"kind\":\"tools\",\"calls\":[{\"name\":\"mcp_list_tools\",\"arguments\":{}}]} to use tools, or {\"kind\":\"final\",\"text\":\"your answer\"} after reading results. JavaScript is a restricted subset: new, Date, Intl, Node, and browser globals are unavailable. Use declared OS bindings and discovered apps. Do not infer wall-clock time from uptime. Treat tool errors as feedback and correct the call. Available tools:\n");
+        for tool in tools {
+            prefix.push_str(&format!("{}:", tool.name));
+            for parameter in &tool.parameters {
+                prefix.push_str(&format!(
+                    " {}:{}{}",
+                    parameter.name,
+                    parameter.param_type,
+                    if parameter.required {
+                        " (required)"
+                    } else {
+                        ""
+                    }
+                ));
+            }
+            prefix.push('\n');
+        }
+    }
+
+    for message in messages {
+        prefix.push_str(message.role.as_str());
+        prefix.push_str(": ");
+        prefix.push_str(&message.content);
+        for call in &message.tool_calls {
+            prefix.push_str(&format!(
+                "\nrequested tool {} {}",
+                call.name, call.arguments_json
+            ));
+        }
+        prefix.push('\n');
+    }
+    prefix
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{CloudModel, CloudTransport, ForgeError, Generation};
     use alloc::boxed::Box;
+
+    #[test]
+    fn cloud_conversations_preserve_history_beyond_eight_kib() {
+        struct Transport;
+        impl CloudTransport for Transport {
+            fn generate(
+                &mut self,
+                model: &CloudModel,
+                request: &GenerationRequest,
+            ) -> Result<Generation, ForgeError> {
+                request.validate()?;
+                assert!(request.prompt.contains("system: Keep system instructions"));
+                assert!(request.prompt.contains("user: Is Gmail MCP available?"));
+                assert!(request.prompt.contains("requested tool mcp_list_tools"));
+                assert!(request.prompt.contains("tool: {\"ok\":true}"));
+                assert!(request.prompt.contains("old large turn"));
+                assert!(request.prompt.len() > 8192);
+                Ok(Generation {
+                    model: model.id.clone(),
+                    text: r#"{"kind":"final","text":"Checked available apps."}"#.into(),
+                    generated_tokens: 10,
+                })
+            }
+        }
+        let mut forge = Forge::new(0);
+        let cloud =
+            CloudModel::new("claude-sonnet-4-6", "claude", "bounded", "test-credential").unwrap();
+        forge.register_cloud(&cloud).unwrap();
+        forge.attach_cloud(cloud, Box::new(Transport)).unwrap();
+        let mut gateway = ModelGateway::new();
+        gateway.set_forge(Rc::new(RefCell::new(forge)));
+        gateway.switch_provider("claude").unwrap();
+        let messages = [
+            Message::system("Keep system instructions"),
+            Message::user(format!("old large turn {}", "雪".repeat(4000))),
+            Message::assistant("Earlier answer"),
+            Message::user("Is Gmail MCP available?"),
+            Message::assistant_with_tools(
+                "",
+                alloc::vec![ToolCall::new("list", "mcp_list_tools", "{}")],
+            ),
+            Message::tool_result("list", r#"{"ok":true}"#),
+        ];
+        let response = gateway
+            .chat(
+                &messages,
+                &[ToolSpec::new("mcp_list_tools", "Discover apps", Vec::new())],
+                &mut |_| {},
+            )
+            .unwrap();
+        assert_eq!(response.text, "Checked available apps.");
+    }
 
     #[test]
     fn tool_protocol_validates_requests_and_keeps_code_out_of_chat() {

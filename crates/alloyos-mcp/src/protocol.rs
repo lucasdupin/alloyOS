@@ -47,6 +47,8 @@ pub struct McpTool {
     pub name: String,
     pub description: String,
     pub parameters: Vec<McpParamSpec>,
+    /// Original remote JSON Schema, including nested properties and constraints.
+    pub input_schema: Option<McpValue>,
 }
 
 impl McpTool {
@@ -59,6 +61,7 @@ impl McpTool {
             name: name.into(),
             description: description.into(),
             parameters,
+            input_schema: None,
         }
     }
 
@@ -73,6 +76,9 @@ impl McpTool {
             "parameters".to_string(),
             McpValue::Array(self.parameters.iter().map(|p| p.to_mcp_value()).collect()),
         );
+        if let Some(schema) = &self.input_schema {
+            map.insert("inputSchema".to_string(), schema.clone());
+        }
         McpValue::Map(map)
     }
 }
@@ -355,6 +361,8 @@ pub enum McpValue {
     Null,
     Bool(bool),
     Int(i64),
+    /// JSON numbers outside the local JS integer range retain their exact value.
+    Number(serde_json::Number),
     Text(String),
     Array(Vec<McpValue>),
     Map(BTreeMap<String, McpValue>),
@@ -409,6 +417,7 @@ impl McpValue {
             McpValue::Bool(true) => out.push_str("true"),
             McpValue::Bool(false) => out.push_str("false"),
             McpValue::Int(n) => out.push_str(&n.to_string()),
+            McpValue::Number(number) => out.push_str(&number.to_string()),
             McpValue::Text(s) => write_escaped_json_string(s, out),
             McpValue::Array(items) => {
                 out.push('[');
@@ -437,13 +446,9 @@ impl McpValue {
 
     /// Parse a JSON string into an `McpValue`.
     pub fn from_json(input: &str) -> Result<Self, McpError> {
-        let mut parser = JsonParser::new(input.as_bytes());
-        let val = parser.parse_value()?;
-        parser.skip_whitespace();
-        if parser.pos != parser.bytes.len() {
-            return Err(McpError::parse_error("trailing characters after JSON value"));
-        }
-        Ok(val)
+        let value = serde_json::from_str::<serde_json::Value>(input)
+            .map_err(|error| McpError::parse_error(format!("invalid JSON: {}", error)))?;
+        Ok(Self::from_json_value(value))
     }
 }
 
@@ -465,185 +470,24 @@ fn write_escaped_json_string(s: &str, out: &mut String) {
     out.push('"');
 }
 
-struct JsonParser<'a> {
-    bytes: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> JsonParser<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, pos: 0 }
-    }
-
-    fn skip_whitespace(&mut self) {
-        while self.pos < self.bytes.len() {
-            match self.bytes[self.pos] {
-                b' ' | b'\t' | b'\n' | b'\r' => self.pos += 1,
-                _ => break,
+impl McpValue {
+    fn from_json_value(value: serde_json::Value) -> Self {
+        match value {
+            serde_json::Value::Null => Self::Null,
+            serde_json::Value::Bool(value) => Self::Bool(value),
+            serde_json::Value::Number(value) => {
+                value.as_i64().map(Self::Int).unwrap_or(Self::Number(value))
             }
-        }
-    }
-
-    fn peek(&mut self) -> Option<u8> {
-        self.skip_whitespace();
-        self.bytes.get(self.pos).copied()
-    }
-
-    fn parse_value(&mut self) -> Result<McpValue, McpError> {
-        let b = self
-            .peek()
-            .ok_or_else(|| McpError::parse_error("unexpected end of JSON input"))?;
-        match b {
-            b'n' => self.parse_null(),
-            b't' | b'f' => self.parse_bool(),
-            b'"' => self.parse_string().map(McpValue::Text),
-            b'[' => self.parse_array(),
-            b'{' => self.parse_object(),
-            b'-' | b'0'..=b'9' => self.parse_int(),
-            _ => Err(McpError::parse_error("unexpected token in JSON")),
-        }
-    }
-
-    fn parse_null(&mut self) -> Result<McpValue, McpError> {
-        if self.bytes[self.pos..].starts_with(b"null") {
-            self.pos += 4;
-            Ok(McpValue::Null)
-        } else {
-            Err(McpError::parse_error("invalid literal, expected null"))
-        }
-    }
-
-    fn parse_bool(&mut self) -> Result<McpValue, McpError> {
-        if self.bytes[self.pos..].starts_with(b"true") {
-            self.pos += 4;
-            Ok(McpValue::Bool(true))
-        } else if self.bytes[self.pos..].starts_with(b"false") {
-            self.pos += 5;
-            Ok(McpValue::Bool(false))
-        } else {
-            Err(McpError::parse_error("invalid boolean literal"))
-        }
-    }
-
-    fn parse_int(&mut self) -> Result<McpValue, McpError> {
-        let start = self.pos;
-        if self.bytes.get(self.pos) == Some(&b'-') {
-            self.pos += 1;
-        }
-        let digits_start = self.pos;
-        while self.pos < self.bytes.len() && self.bytes[self.pos].is_ascii_digit() {
-            self.pos += 1;
-        }
-        if self.pos == digits_start {
-            return Err(McpError::parse_error("expected digits in integer"));
-        }
-        let s = core::str::from_utf8(&self.bytes[start..self.pos])
-            .map_err(|_| McpError::parse_error("invalid utf-8 in integer"))?;
-        let val = s
-            .parse::<i64>()
-            .map_err(|_| McpError::parse_error("integer overflow or invalid number"))?;
-        Ok(McpValue::Int(val))
-    }
-
-    fn parse_string(&mut self) -> Result<String, McpError> {
-        self.skip_whitespace();
-        if self.bytes.get(self.pos) != Some(&b'"') {
-            return Err(McpError::parse_error("expected '\"' to start string"));
-        }
-        self.pos += 1;
-        let mut out = Vec::new();
-        while self.pos < self.bytes.len() {
-            let b = self.bytes[self.pos];
-            self.pos += 1;
-            match b {
-                b'"' => {
-                    return String::from_utf8(out)
-                        .map_err(|_| McpError::parse_error("invalid UTF-8 in JSON string"));
-                }
-                b'\\' => {
-                    if self.pos >= self.bytes.len() {
-                        return Err(McpError::parse_error("unterminated escape sequence"));
-                    }
-                    let esc = self.bytes[self.pos];
-                    self.pos += 1;
-                    match esc {
-                        b'"' => out.push(b'"'),
-                        b'\\' => out.push(b'\\'),
-                        b'/' => out.push(b'/'),
-                        b'n' => out.push(b'\n'),
-                        b'r' => out.push(b'\r'),
-                        b't' => out.push(b'\t'),
-                        b'u' => {
-                            if self.pos + 4 > self.bytes.len() {
-                                return Err(McpError::parse_error("incomplete unicode escape"));
-                            }
-                            let hex = core::str::from_utf8(&self.bytes[self.pos..self.pos + 4])
-                                .map_err(|_| McpError::parse_error("invalid unicode hex"))?;
-                            let code = u32::from_str_radix(hex, 16)
-                                .map_err(|_| McpError::parse_error("invalid unicode hex digits"))?;
-                            let ch = char::from_u32(code)
-                                .ok_or_else(|| McpError::parse_error("invalid unicode scalar"))?;
-                            let mut buf = [0u8; 4];
-                            out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
-                            self.pos += 4;
-                        }
-                        _ => return Err(McpError::parse_error("unsupported escape character")),
-                    }
-                }
-                other => out.push(other),
+            serde_json::Value::String(value) => Self::Text(value),
+            serde_json::Value::Array(values) => {
+                Self::Array(values.into_iter().map(Self::from_json_value).collect())
             }
-        }
-        Err(McpError::parse_error("unterminated JSON string"))
-    }
-
-    fn parse_array(&mut self) -> Result<McpValue, McpError> {
-        self.pos += 1; // consume '['
-        let mut items = Vec::new();
-        if self.peek() == Some(b']') {
-            self.pos += 1;
-            return Ok(McpValue::Array(items));
-        }
-        loop {
-            let val = self.parse_value()?;
-            items.push(val);
-            match self.peek() {
-                Some(b',') => {
-                    self.pos += 1;
-                }
-                Some(b']') => {
-                    self.pos += 1;
-                    return Ok(McpValue::Array(items));
-                }
-                _ => return Err(McpError::parse_error("expected ',' or ']' in array")),
-            }
-        }
-    }
-
-    fn parse_object(&mut self) -> Result<McpValue, McpError> {
-        self.pos += 1; // consume '{'
-        let mut map = BTreeMap::new();
-        if self.peek() == Some(b'}') {
-            self.pos += 1;
-            return Ok(McpValue::Map(map));
-        }
-        loop {
-            let key = self.parse_string()?;
-            if self.peek() != Some(b':') {
-                return Err(McpError::parse_error("expected ':' after object key"));
-            }
-            self.pos += 1;
-            let val = self.parse_value()?;
-            map.insert(key, val);
-            match self.peek() {
-                Some(b',') => {
-                    self.pos += 1;
-                }
-                Some(b'}') => {
-                    self.pos += 1;
-                    return Ok(McpValue::Map(map));
-                }
-                _ => return Err(McpError::parse_error("expected ',' or '}' in object")),
-            }
+            serde_json::Value::Object(values) => Self::Map(
+                values
+                    .into_iter()
+                    .map(|(key, value)| (key, Self::from_json_value(value)))
+                    .collect(),
+            ),
         }
     }
 }

@@ -11,7 +11,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-const LIMIT: usize = 32768;
+const LIMIT: usize = alloyos_forge::cloud::HTTP_REQUEST_BODY_LIMIT;
 static STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 #[cfg(unix)]
 extern "C" fn stop_signal(_: i32) {
@@ -171,8 +171,8 @@ fn operation(method: &str, path: &str, body: &[u8]) -> Result<String, String> {
         ("POST", "/v1/generate") => {
             let req: Generate =
                 serde_json::from_slice(body).map_err(|_| "invalid generate JSON".to_string())?;
-            if req.prompt.is_empty() || req.prompt.len() > 8192 {
-                return Err("prompt must contain 1..8192 UTF-8 bytes".into());
+            if req.prompt.is_empty() {
+                return Err("prompt must not be empty".into());
             }
             let tokens = req.max_tokens.unwrap_or(128);
             if tokens == 0 || tokens > 256 {
@@ -370,6 +370,21 @@ mod tests {
         )
         .is_err());
     }
+    #[test]
+    fn large_generation_context_roundtrips_through_guest_protocol() {
+        let prompt = "雪".repeat(10_000);
+        let body = serde_json::json!({"prompt":prompt}).to_string();
+        let operation = operation("POST", "/v1/generate", body.as_bytes()).unwrap();
+        let frame = format!("FORGE1\t1\t{operation}\n");
+        let request = alloyos_forge::protocol::Request::parse(&frame).unwrap();
+        match request.command {
+            alloyos_forge::protocol::Command::Generate(request) => {
+                assert_eq!(request.prompt, prompt)
+            }
+            _ => panic!("expected generation request"),
+        }
+    }
+
     #[test]
     fn unicode_roundtrip() {
         assert_eq!(unhex(&hex("Olá".as_bytes())).unwrap(), "Olá");

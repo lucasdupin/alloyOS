@@ -188,9 +188,24 @@ fn system_ui_screenshots() {
             actions: Vec::new(),
         });
     }
+    cards.push(AppTile {
+        tile_id: "fixture_e.analytics".into(),
+        title: "Analytics".into(),
+        subtitle: String::new(),
+        refresh_resource_uri: None,
+        items: vec![TileItem {
+            id: "value".into(),
+            title: "94% target reached".into(),
+            subtitle: String::new(),
+            badge: String::new(),
+            status: String::new(),
+        }],
+        actions: Vec::new(),
+    });
     let item = cards[2].items[0].clone();
-    cards[2].items.push(item.clone());
-    cards[2].items.push(item);
+    for _ in 0..8 {
+        cards[2].items.push(item.clone());
+    }
     ui.set_tiles(&cards);
     ui.restore_dashboard(
         &cards
@@ -225,7 +240,7 @@ fn system_ui_screenshots() {
     pointer(&mut ui, InputEventKind::PointerButtonDown, 880, 380);
     pointer(&mut ui, InputEventKind::PointerButtonUp, 880, 380);
     ui.render(Duration::from_millis(6520));
-    assert!(ui.pixels() != open.as_slice(), "drawer tile menus respond to pointer input");
+    assert!(ui.pixels() != open.as_slice(), "drawer tile pin button responds to pointer input");
     snapshot(&mut suite, "tile-menu", &ui);
     let chat_offset = ui.chat_scroll_offset();
     let menu = ui.pixels().to_vec();

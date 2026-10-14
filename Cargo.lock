@@ -76,6 +76,7 @@ name = "alloyos-kernel"
 version = "0.1.0"
 dependencies = [
  "alloyos-boot",
+ "alloyos-ferrofluid",
  "alloyos-forge",
  "alloyos-js",
  "alloyos-mcp",

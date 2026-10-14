@@ -85,28 +85,10 @@ window backend, JVM, browser, or host font access in the bare-metal runtime.
 See [Slint's upstream license](https://github.com/slint-ui/slint/blob/v1.18.1/LICENSE.md)
 for distribution terms; Quicksand's OFL is included in `assets/fonts` at the workspace root.
 
-The workspace centers on one ordered conversation containing text and app tiles.
-Pinned tiles live in a left-edge drawer with an independent vertical scroll.
-Drag the edge handle to pull it out; release snaps it open or closed. Pull its
-exposed boundary left, tap the backdrop, use its close button, or press Escape
-to dismiss it. The keyboard releases focus when an edge pull starts.
-
-The drawer rotates the keyboard's liquid displacement field onto the horizontal
-axis, including inverse-mapped input and restoration of the warped damage band.
-While visible, scanout captures the pristine workspace with the drawer omitted,
-builds a downsampled separable backdrop blur, and slightly fades the whole
-chat scene into the workspace background. The drawer has no background or
-border; sharp pinned tiles float above the blurred, liquid-transformed chat. Blur never samples a previous blurred frame. A settled
-sidebar does not schedule continuous redraws. The blurred backdrop is cached
-during pulls and scrolling; chat changes, pending replies, and keyboard motion
-refresh it.
-
-Tile management (pin, unpin, move to top, and resource refresh) lives under the
-**…** menu, while app actions remain visible. Tap the model name in the header to change models. The standalone transcript and tile inputs remain compatibility
-fallbacks when no ordered chat items exist.
-
-Tap the model name in the header to switch models. Model changes are disabled
-while a reply is pending.
+The workspace centers on an ordered conversation containing text and app tiles.
+Pinned tiles live in a left-edge drawer that can be pulled open or dismissed at any time.
+Tiles can be pinned to keep them accessible in the drawer while conversation actions
+remain interactive. Tap the model name in the header to switch models (disabled while a reply is pending).
 
 Chat text and streaming transcripts support a small Markdown subset on the
 `no_std` runtime: ATX headings (`#` through `######`), unordered lists, ordered

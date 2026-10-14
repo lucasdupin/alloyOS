@@ -18,6 +18,7 @@ serde_json = { version = "1", default-features = false, features = ["alloc"] }
 
 [dev-dependencies]
 alloyos-boot = { path = "../alloyos-boot" }
+alloyos-ferrofluid = { path = "../alloyos-ferrofluid" }
 png = "=0.18.1"
 
 [features]

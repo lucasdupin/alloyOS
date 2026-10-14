@@ -61,10 +61,12 @@ component AlloyButton inherits FocusScope {
     in property <string> text;
     in property <string> button-label: root.text;
     in property <bool> flat: false;
+    in property <image> icon;
+    in property <bool> icon-only: false;
     callback clicked();
     height: 36px;
     vertical-stretch: 0;
-    min-width: min(label.preferred-width + 24px, 100px);
+    min-width: root.icon-only ? 32px : min(label.preferred-width + 24px, 100px);
     key-pressed(event) => {
         if (root.enabled && (event.text == " " || event.text == Key.Return)) {
             root.clicked();
@@ -79,11 +81,21 @@ component AlloyButton inherits FocusScope {
         border-color: root.has-focus ? AlloyPalette.silver : AlloyPalette.border;
         opacity: root.enabled ? 1 : 0.45;
         label := Text {
+            visible: !root.icon-only;
             text: root.text;
             overflow: elide;
             color: root.flat ? (touch.pressed ? AlloyPalette.silver : AlloyPalette.text) : touch.pressed ? AlloyPalette.obsidian : AlloyPalette.text;
             horizontal-alignment: center;
             vertical-alignment: center;
+        }
+        if root.icon-only: Image {
+            source: root.icon;
+            width: 18px;
+            height: 18px;
+            image-fit: contain;
+            opacity: touch.pressed ? 0.7 : 1.0;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
         }
         touch := TouchArea {
             enabled: root.enabled;
@@ -214,7 +226,6 @@ component TileCard inherits Rectangle {
     in property <TileView> tile;
     in property <bool> pinned;
     in property <bool> pending;
-    property <bool> menu-open: false;
     callback action(string);
     callback pin();
     callback move();
@@ -233,7 +244,17 @@ component TileCard inherits Rectangle {
         spacing: 10px;
         HorizontalBox {
             Text { text: root.tile.title; color: AlloyPalette.text; font-size: 20px; font-weight: 700; wrap: word-wrap; horizontal-stretch: 1; min-width: 0px; }
-            AlloyButton { text: root.menu-open ? "×" : "..."; button-label: root.menu-open ? "Close tile menu" : "More tile options"; min-width: 32px; max-width: 32px; horizontal-stretch: 0; clicked => { root.menu-open = !root.menu-open; } }
+            AlloyButton {
+                flat: true;
+                icon-only: true;
+                icon: root.pinned ? @image-url("icons/pin-active.svg") : @image-url("icons/pin.svg");
+                button-label: root.pinned ? "Unpin tile" : "Pin tile";
+                min-width: 32px;
+                max-width: 32px;
+                height: 32px;
+                horizontal-stretch: 0;
+                clicked => { root.pin(); }
+            }
         }
         if root.tile.subtitle != "": Text { text: root.tile.subtitle; color: AlloyPalette.muted; wrap: word-wrap; }
         for item in root.tile.items: VerticalBox {
@@ -252,11 +273,6 @@ component TileCard inherits Rectangle {
                 enabled: !root.pending;
                 clicked => { root.action(action.id); }
             }
-        }
-        if root.menu-open: VerticalBox {
-            AlloyButton { height: 26px; text: root.pinned ? "Unpin" : "Pin"; clicked => { root.pin(); root.menu-open = false; } }
-            if root.pinned: AlloyButton { height: 26px; text: "Move to top"; clicked => { root.move(); root.menu-open = false; } }
-            if root.tile.refreshable: AlloyButton { height: 26px; text: "Refresh"; enabled: !root.pending; clicked => { root.refresh(); root.menu-open = false; } }
         }
     }
 }

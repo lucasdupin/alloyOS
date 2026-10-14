@@ -40,6 +40,7 @@ pub trait HttpTransport {
     fn poll_request(&mut self) -> Poll<Result<HttpResponse, String>> {
         Poll::Ready(Err("no pending HTTP request".into()))
     }
+    fn cancel_request(&mut self) {}
 }
 
 pub struct HttpClient {
@@ -122,6 +123,9 @@ impl HttpClient {
             Some(transport) => transport.poll_request().map(Self::check_response),
             None => Poll::Ready(Err(McpError::internal_error("no pending HTTP transport"))),
         }
+    }
+    pub fn cancel_get(&mut self) {
+        if let Some(transport) = &mut self.transport { transport.cancel_request(); }
     }
     fn check_response(response: Result<HttpResponse, String>) -> Result<HttpResponse, McpError> {
         let response = response.map_err(McpError::internal_error)?;

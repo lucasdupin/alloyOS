@@ -8,6 +8,7 @@ pub mod forge;
 pub mod forge_https;
 pub mod mcp_https;
 pub mod system_ui;
+pub mod voice;
 pub mod virtio_blk;
 pub mod virtio_gpu;
 pub mod virtio_input;

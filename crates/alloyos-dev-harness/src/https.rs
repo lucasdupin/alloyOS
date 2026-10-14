@@ -226,6 +226,22 @@ pub fn relay(
     })
 }
 
+/// One bounded worker keeps slow HTTPS out of the device/control pump.
+fn relay_worker(execute: impl Fn(&str)->Option<String> + Send + 'static)
+ -> (std::sync::mpsc::SyncSender<String>, std::sync::mpsc::Receiver<String>) {
+    let (requests_tx, requests_rx)=std::sync::mpsc::sync_channel::<String>(4);
+    let (replies_tx, replies_rx)=std::sync::mpsc::sync_channel::<String>(4);
+    std::thread::spawn(move || { while let Ok(line)=requests_rx.recv() {
+        if let Some(reply)=execute(&line) { if replies_tx.send(reply).is_err(){break;} }
+    }});
+    (requests_tx,replies_rx)
+}
+fn relay_busy(line:&str)->String {
+    let mut fields=line.split('\t'); let prefix=fields.next().unwrap_or("FORGEHTTP1");
+    let id=fields.next().and_then(|s|s.parse::<u64>().ok()).unwrap_or(0);
+    format!("{prefix}\t{id}\terror\thost_relay_busy\n")
+}
+
 /// Interactive UI runner with a private serial pipe dedicated to Forge.
 /// The serial debug shell uses the ordinary inherited-terminal path instead.
 pub fn run_ui(command: &mut Command) -> Result<(), String> {
@@ -238,50 +254,87 @@ pub fn run_ui(command: &mut Command) -> Result<(), String> {
         .map_err(|_| "QEMU launch failed")?;
     let mut input = child.stdin.take().unwrap();
     let output = child.stdout.take().unwrap();
+    let (lines_tx, lines_rx) = std::sync::mpsc::sync_channel(32);
     let reader = std::thread::spawn(move || {
         use std::io::BufRead;
         let mut reader = std::io::BufReader::new(output);
         loop {
-            let mut bytes = Vec::new();
-            if reader
-                .by_ref()
-                .take((HTTP_FRAME_LIMIT + 1) as u64)
-                .read_until(b'\n', &mut bytes)
-                .unwrap_or(0)
-                == 0
-            {
-                break;
-            }
-            if bytes.len() > HTTP_FRAME_LIMIT {
-                break;
-            }
-            let Ok(line) = String::from_utf8(bytes) else {
-                break;
-            };
-            crate::crash::record(&line);
-            if let Some(reply) = registry_relay(&line).or_else(|| relay(&line, post)) {
-                if input
-                    .write_all(reply.as_bytes())
-                    .and_then(|_| input.flush())
-                    .is_err()
-                {
-                    break;
-                }
-            } else if !line.starts_with("FORGEHTTP1") && !line.starts_with("MCPHTTP1") {
-                print!("{line}");
-            }
+            let mut bytes=Vec::new();
+            if reader.by_ref().take((HTTP_FRAME_LIMIT+1) as u64).read_until(b'\n', &mut bytes).unwrap_or(0)==0 || bytes.len()>HTTP_FRAME_LIMIT {break;}
+            let Ok(line)=String::from_utf8(bytes) else {break;};
+            if lines_tx.send(line).is_err(){break;}
         }
     });
+    let helper=std::env::var_os("ALLOYOS_VOICE_HELPER").map(std::path::PathBuf::from)
+        .unwrap_or_else(||std::path::PathBuf::from("target/alloyos-voice-helper"));
+    let mut voice=crate::voice::HostVoice::launch(&helper).ok();
+    let mut active_voice=0;
+    let (http_requests,http_replies)=relay_worker(|line|registry_relay(line).or_else(||relay(line,post)));
     let status = loop {
         if crate::STOP.load(std::sync::atomic::Ordering::Relaxed) {
             let _ = child.kill();
             break child.wait().map_err(|_| "QEMU wait failed")?;
         }
-        if let Some(status) = child.try_wait().map_err(|_| "QEMU wait failed")? {
-            break status;
+        if let Some(status) = child.try_wait().map_err(|_| "QEMU wait failed")? { break status; }
+        if let Ok(reply)=http_replies.try_recv() {
+            input.write_all(reply.as_bytes()).and_then(|_|input.flush()).map_err(|_|"guest pipe closed")?;
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        if let Some(bridge)=voice.as_ref() {
+            match bridge.try_event() {
+                Ok(Some(event))=>{let json=serde_json::to_string(&event).map_err(|_|"invalid voice event")?;
+                    let frame=format!("VOICE1\t{}\t{}\n",event.session(),encode_hex(&json));
+                    input.write_all(frame.as_bytes()).and_then(|_|input.flush()).map_err(|_|"voice guest pipe closed")?;
+                },Err(_)=>{voice=None;
+                    if active_voice!=0 {
+                        let event=crate::voice::HostEvent::Error{session:active_voice,message:"voice host disconnected".into()};
+                        let json=serde_json::to_string(&event).map_err(|_|"invalid voice event")?;
+                        let frame=format!("VOICE1\t{active_voice}\t{}\n",encode_hex(&json));
+                        input.write_all(frame.as_bytes()).and_then(|_|input.flush()).map_err(|_|"guest pipe closed")?;
+                        active_voice=0;
+                    }
+                },_=>{}
+            }
+        }
+        let line=match lines_rx.recv_timeout(std::time::Duration::from_millis(5)) {
+            Ok(line)=>line,Err(std::sync::mpsc::RecvTimeoutError::Timeout)=>continue,Err(_)=>continue,
+        };
+        if line.starts_with("VOICE1\t") {
+            if let Some((session,command))=crate::voice::parse_guest_frame(&line) {
+                if matches!(&command,crate::voice::HostCommand::Stop{..}) {
+                    voice=None;active_voice=0;
+                    let event=crate::voice::HostEvent::Stopped{session};
+                    let json=serde_json::to_string(&event).map_err(|_|"invalid voice event")?;
+                    let frame=format!("VOICE1\t{session}\t{}\n",encode_hex(&json));
+                    input.write_all(frame.as_bytes()).and_then(|_|input.flush()).map_err(|_|"guest pipe closed")?;
+                    continue;
+                }
+                if matches!(&command,crate::voice::HostCommand::Start{..}) {
+                    active_voice=session;
+                    if voice.is_none(){voice=crate::voice::HostVoice::launch(&helper).ok();}
+                }
+                let result=voice.as_mut().ok_or("voice helper unavailable".to_string()).and_then(|v|v.command(&command));
+                if result.is_err() {
+                    voice=None;
+                    let event=crate::voice::HostEvent::Error{session,message:"voice host unavailable".into()};
+                    let json=serde_json::to_string(&event).map_err(|_|"invalid voice error")?;
+                    let frame=format!("VOICE1\t{session}\t{}\n",encode_hex(&json));
+                    input.write_all(frame.as_bytes()).and_then(|_|input.flush()).map_err(|_|"voice guest pipe closed")?;
+                }
+            }
+            continue;
+        }
+        crate::crash::record(&line);
+        if line.starts_with("FORGEHTTP1\t") || line.starts_with("MCPHTTP1\t") {
+            if http_requests.try_send(line.clone()).is_err() {
+                let reply=relay_busy(&line);
+                input.write_all(reply.as_bytes()).and_then(|_|input.flush()).map_err(|_|"guest pipe closed")?;
+            }
+        } else {print!("{line}");}
     };
+    drop(http_requests);
+    drop(http_replies);
+    drop(lines_rx);
+    drop(voice);
     let _ = reader.join();
     if crate::STOP.load(std::sync::atomic::Ordering::Relaxed) {
         return Ok(());
@@ -457,5 +510,29 @@ mod tests {
         assert!(config.contains("max-time = 45.000"));
         assert!(!config.contains("insecure"));
         assert!(!config.contains("location"));
+    }
+}
+
+#[cfg(test)]
+mod voice_relay_tests {
+    use super::*;
+    #[test]
+    fn slow_http_is_off_thread_and_bounded() {
+        let (gate_tx,gate_rx)=std::sync::mpsc::channel();
+        let gate=std::sync::Mutex::new(gate_rx);
+        let (requests,replies)=relay_worker(move|_|{gate.lock().unwrap().recv().unwrap();Some("done".into())});
+        requests.try_send("first".into()).unwrap();
+        let deadline=std::time::Instant::now()+std::time::Duration::from_millis(100);
+        let mut saturated=false;
+        for _ in 0..10 {if requests.try_send("next".into()).is_err(){saturated=true;break;}}
+        assert!(saturated);assert!(std::time::Instant::now()<deadline);
+        assert!(matches!(replies.try_recv(),Err(std::sync::mpsc::TryRecvError::Empty)));
+        gate_tx.send(()).unwrap();assert_eq!(replies.recv_timeout(std::time::Duration::from_secs(1)).unwrap(),"done");
+        // Release remaining work before tearing down the worker.
+        for _ in 0..4 {let _=gate_tx.send(());}
+    }
+    #[test]
+    fn saturation_reply_does_not_expose_request() {
+        assert_eq!(relay_busy("FORGEHTTP1\t7\tpost\tsecret"),"FORGEHTTP1\t7\terror\thost_relay_busy\n");
     }
 }

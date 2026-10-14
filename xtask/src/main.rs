@@ -569,6 +569,20 @@ fn run_qemu(release: bool, debug_shell: bool, model_image: Option<PathBuf>, memo
         let status=qemu.status().context("Failed to execute qemu-system-aarch64")?;
         if !status.success() { return Err(anyhow!("QEMU exited with an error")); }
     } else {
+        #[cfg(target_os = "macos")]
+        if std::env::var_os("ALLOYOS_VOICE_HELPER").is_none() {
+            let helper=workspace_root.join("target/alloyos-voice-helper");
+            let helper_time=std::fs::metadata(&helper).and_then(|m|m.modified()).ok();
+            let stale=["scripts/audio/VoiceHelper.m","scripts/audio/Info.plist","scripts/audio/build.sh"].iter().any(|source| {
+                let time=std::fs::metadata(workspace_root.join(source)).and_then(|m|m.modified()).ok();
+                helper_time.is_none() || time.zip(helper_time).is_some_and(|(source,built)| source>built)
+            });
+            if stale {
+                let status=Command::new("sh").arg(workspace_root.join("scripts/audio/build.sh")).status();
+                if !matches!(status,Ok(s) if s.success()) {eprintln!("Voice helper unavailable; text chat remains available.");}
+            }
+            std::env::set_var("ALLOYOS_VOICE_HELPER",helper);
+        }
         alloyos_dev_harness::https::run_ui(&mut qemu).map_err(|e|anyhow!(e))?;
     }
     Ok(())

@@ -1683,6 +1683,12 @@ impl NativeToolRegistry {
     }
 
     /// The UI polls network tools between frames, rather than blocking on HTTP.
+    pub fn cancel_pending_tool(&mut self, id: &str) {
+        if self.pending_service_search.as_ref().is_some_and(|(call,_)|call.id == id) {
+            self.pending_service_search = None;
+            self.mcp_registry.borrow().http_client().borrow_mut().cancel_get();
+        }
+    }
     pub fn poll_execute_tool(&mut self, call: &ToolCall, ui: &mut AgentUiSynthesizer) -> Poll<Result<ToolExecutionOutput, AiError>> {
         if call.name != "mcp_search_services" { return Poll::Ready(self.execute_tool(call, ui)); }
         let client = self.mcp_registry.borrow().http_client();

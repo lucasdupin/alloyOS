@@ -514,3 +514,5 @@ pub use gateway::{ActiveProvider, ModelGateway};
 mod provider_tests;
 
 pub mod cloud;
+
+pub mod voice;

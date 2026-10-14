@@ -5,6 +5,7 @@ use alloyos_mcp::transport::{HttpRequest, HttpResponse, HttpTransport};
 use super::{rng, serial::SERIAL1};
 
 pub static REQUEST_PENDING: AtomicBool = AtomicBool::new(false);
+pub static REQUEST_WRITING: AtomicBool = AtomicBool::new(false);
 struct Transfer { prefix: String, frame: String, sent: usize, line: Vec<u8>, started: u64 }
 #[derive(Default)]
 pub struct HostRegistryHttp { pending: Option<Transfer>, next: u64 }
@@ -12,6 +13,17 @@ impl Drop for HostRegistryHttp {
     fn drop(&mut self) { if self.pending.is_some() { REQUEST_PENDING.store(false, Ordering::Relaxed); } }
 }
 impl HttpTransport for HostRegistryHttp {
+    fn cancel_request(&mut self) {
+        // Preserve framing if cancellation lands midway through a UART line.
+        // A single delimiter lets the host reject the abandoned request.
+        if let Some(transfer) = self.pending.take() {
+            if transfer.sent > 0 && transfer.sent < transfer.frame.len() {
+                SERIAL1.lock().send(b'\n');
+            }
+        }
+        REQUEST_PENDING.store(false, Ordering::Relaxed);
+        REQUEST_WRITING.store(false, Ordering::Relaxed);
+    }
     fn request(&mut self, _: &HttpRequest) -> Result<HttpResponse, String> {
         Err("registry HTTP requires cooperative tool polling".into())
     }
@@ -33,13 +45,14 @@ impl HttpTransport for HostRegistryHttp {
         let now = rng::monotonic_time_ns();
         let mut result = None;
         if now.saturating_sub(transfer.started) > 90_000_000_000 { result = Some(Err("registry HTTP timeout".into())); }
-        if result.is_none() && !super::forge::rpc_output_pending() {
+        if result.is_none() && (!super::forge::rpc_output_pending() || REQUEST_WRITING.load(Ordering::Relaxed)) {
             let mut uart = SERIAL1.lock();
             for _ in 0..4096 {
                 if rng::monotonic_time_ns().saturating_sub(now) >= 1_000_000 { break; }
                 if transfer.sent == transfer.frame.len() { break; }
                 if !uart.try_send(transfer.frame.as_bytes()[transfer.sent]) { break; }
                 transfer.sent += 1;
+                REQUEST_WRITING.store(transfer.sent < transfer.frame.len(), Ordering::Relaxed);
             }
             if transfer.sent == transfer.frame.len() {
                 for _ in 0..4096 {
@@ -50,7 +63,7 @@ impl HttpTransport for HostRegistryHttp {
                         transfer.line.push(byte); continue;
                     }
                     let line = match String::from_utf8(core::mem::take(&mut transfer.line)) { Ok(line) => line, Err(_) => { result = Some(Err("invalid registry response encoding".into())); break; } };
-                    if line.starts_with("FORGE1\t") {
+                    if line.starts_with("FORGE1\t") || line.starts_with("VOICE1\t") {
                         #[cfg(all(target_arch="aarch64",target_os="none"))]
                         super::forge_https::defer_rpc(line);
                         continue;
@@ -69,6 +82,7 @@ impl HttpTransport for HostRegistryHttp {
         if let Some(result) = result {
             self.pending = None;
             REQUEST_PENDING.store(false, Ordering::Relaxed);
+            REQUEST_WRITING.store(false, Ordering::Relaxed);
             crate::serial_println!("[mcp-search] stage=response_received success={}", result.is_ok());
             Poll::Ready(result)
         } else { Poll::Pending }

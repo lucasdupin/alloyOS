@@ -356,6 +356,7 @@ pub fn take_deferred_rpc() -> Option<String> {
     DEFERRED_RPC.lock().pop_front()
 }
 pub fn defer_rpc(line: String) {
+    if line.starts_with("VOICE1\t") { crate::drivers::forge::defer_voice_frame(&line); return; }
     if line.len() <= alloyos_forge::MAX_FRAME_BYTES {
         let mut queue = DEFERRED_RPC.lock();
         if queue.len() < 8 { queue.push_back(line); }
@@ -496,7 +497,9 @@ impl HttpsClient for HostHttps {
                     }
                 }
             }
-            if text.starts_with("FORGE1\t") && text.len() <= alloyos_forge::MAX_FRAME_BYTES {
+            if text.starts_with("VOICE1\t") {
+                crate::drivers::forge::defer_voice_frame(text);
+            } else if text.starts_with("FORGE1\t") && text.len() <= alloyos_forge::MAX_FRAME_BYTES {
                 let mut deferred = DEFERRED_RPC.lock();
                 if deferred.len() < 8 {
                     deferred.push_back(String::from(text));

@@ -26,6 +26,15 @@ pub enum TileEvent {
 }
 #[derive(Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct State {
+    #[serde(default)]
+    pub voice_state: VoiceState,
+    /// Smoothed microphone RMS envelope, normalized to 0..=1000.
+    #[serde(default)]
+    pub voice_level: u16,
+    #[serde(default)]
+    pub voice_caption: String,
+    #[serde(default)]
+    pub voice_error: String,
     pub fault_probe: bool,
     pub booting: bool,
     pub pending: bool,
@@ -41,12 +50,25 @@ pub struct State {
 }
 #[derive(Serialize, Deserialize)]
 pub enum Event {
+    VoiceToggle,
+    VoiceMute,
     Submit(String),
     CycleModel,
     Dashboard(Vec<String>),
     Tile(TileEvent),
     Ready,
     Applied { revision: u64, digest: u64 },
+}
+
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VoiceState {
+    #[default]
+    Off,
+    Connecting,
+    Listening,
+    Responding,
+    Muted,
+    Error,
 }
 
 /// Stable digest of actual applied conversation and pin order for recovery ACKs.

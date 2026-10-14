@@ -139,3 +139,32 @@ cargo run --release -p alloyos-forge --example benchmark -- .local/models/gemma-
 
 `./run.sh` prefers an existing `q4_0.img`, with 4G guest RAM unless overridden.
 Without that image it retains the full-precision acquisition path.
+
+### Continuous voice
+
+`voice::LiveSession` is a `no_std` Gemini Live JSON protocol adapter, separate from
+ordinary HTTP/SSE generation. The host must provide a real authenticated WSS
+connection to `GEMINI_LIVE_ENDPOINT`; constructing a session does not open a
+socket or microphone. Credentials are never part of this adapter's events or
+setup JSON. `DEFAULT_LIVE_MODEL` follows the official WebSocket quickstart checked
+2026-10-14 and can be overridden by the caller.
+
+Create the session, drain `take_outbound()` into the socket and feed each server
+JSON message to `ingest(session_id, json)`. Only setup leaves before the server's
+`setupComplete`; seeded Gemini Content history waits for readiness. Capture is
+mono signed PCM16 little endian at 16 kHz (maximum 8192 bytes per frame); output
+is PCM16 at 24 kHz (maximum 32768 bytes). Use `poll_event()` for transcripts,
+audio, interruption, tool requests/cancellations, completed turns and failures.
+Audio is tagged with a monotonically increasing generation. On interruption,
+clear playback immediately and reject older generations. Turn completion alone
+must not clear audio already playing.
+
+Queues contain at most 64 items and JSON messages at most 128 KiB. Backpressure
+returns `ForgeError::Busy`; malformed messages are transactional. Muting drops
+pending capture and sends `audioStreamEnd`. Stopping clears queues and rejects
+late server/audio input; the caller must close the socket and device immediately.
+
+Wire fields and PCM requirements follow Google's primary documentation:
+<https://ai.google.dev/api/live> and
+<https://ai.google.dev/gemini-api/docs/live-api/get-started-websocket>.
+The unit tests exercise protocol fixtures, not device or live-account behavior.

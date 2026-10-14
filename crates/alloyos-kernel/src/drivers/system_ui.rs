@@ -40,6 +40,7 @@ pub fn run(
     let mut refresh_queue = VecDeque::new();
     let mut package_watcher = crate::fs::packages::PackageWatcher::default();
     let mut pending = false;
+    let mut voice = super::voice::Voice::default();
     let mut partial = String::new();
     let mut booting = forge.is_boot_loading();
     if !booting {
@@ -52,7 +53,36 @@ pub fn run(
         ui.poll();
         let frame_start = rng::monotonic_time_ns();
         forge.poll();
-        if !pending {
+        while ui.take_voice_toggle() { voice.toggle(&mut forge, &mut agent, pending, frame_start); }
+        while ui.take_voice_mute() { voice.mute(&mut forge); }
+        voice.poll(&mut forge, &mut agent, frame_start);
+        while let Some((user, assistant)) = voice.take_completed() {
+            if !user.is_empty() {
+                transcript.push_str(&alloc::format!("\n\nYou: {}", user));
+                chat_items.push(ChatItem::Text(alloc::format!("You: {}", user)));
+            }
+            if !assistant.is_empty() {
+                transcript.push_str(&alloc::format!("\n\nWelder: {}", assistant));
+                chat_items.push(ChatItem::Text(alloc::format!("Welder: {}", assistant)));
+            }
+            ui.set_transcript(&transcript);
+            ui.set_chat_items(&chat_items);
+            ui.set_available_tiles(&agent.synthesized_tiles());
+        }
+        while let Some(output) = voice.take_tool_output() {
+            if let Some(tile) = output.synthesized_view.and_then(|view|view.tile) {
+                if let Some(existing) = chat_tiles.iter_mut().find(|t|t.tile_id == tile.tile_id) {
+                    *existing = tile.clone();
+                } else { chat_tiles.push(tile.clone()); }
+                chat_items.push(ChatItem::Tile(tile));
+                ui.set_tiles(&chat_tiles);
+                ui.set_chat_items(&chat_items);
+            }
+            ui.set_available_tiles(&agent.synthesized_tiles());
+        }
+        ui.set_voice(voice.state, &voice.caption, &voice.error);
+        ui.set_voice_level(voice.level);
+        if !pending && !voice.active() {
             if let Some((id, input)) = forge.take_console_request() {
                 crate::serial_println!("[welder-e2e] stage=chat_started");
                 match agent.start_console_input(&input) {
@@ -77,6 +107,7 @@ pub fn run(
         }
         while ui.take_model_cycle() {
             if !pending {
+                voice.stop(&mut forge, &mut agent);
                 match agent.cycle_model() {
                     Ok(()) => {
                         ui.set_active_model(agent.active_model_id());
@@ -105,7 +136,7 @@ pub fn run(
             }
         }
         while let Some(event) = ui.take_tile_event() {
-            if pending {
+            if pending || voice.active() {
                 continue;
             }
             let result = match event {
@@ -220,7 +251,11 @@ pub fn run(
             }
         }
         if let Some(text) = if pending { None } else { ui.take_submission() } {
-            if text.trim()=="/display restart" {ui.request_restart();continue;}
+            if text.trim()=="/display restart" {voice.stop(&mut forge, &mut agent);ui.request_restart();continue;}
+            if voice.active() {
+                if let Err(error) = voice.send_text(&text) { ui.set_voice(voice.state, &voice.caption, error); }
+                continue;
+            }
             if transcript.len() > 16 * 1024 {
                 transcript.clear();
             }
@@ -266,7 +301,9 @@ pub fn run(
             ui.set_chat_items(&chat_items);
         }
         let elapsed = Duration::from_nanos(rng::monotonic_time_ns().saturating_sub(start));
-        let _ = crate::fs::automation::tick_kernel_automations(&mut agent, elapsed.as_millis() as u64);
+        if !voice.active() {
+            let _ = crate::fs::automation::tick_kernel_automations(&mut agent, elapsed.as_millis() as u64);
+        }
         let now_ms = elapsed.as_millis() as u64;
         if let Ok(changes) = package_watcher.poll(now_ms) {
             if !changes.is_empty() {
@@ -288,11 +325,11 @@ pub fn run(
                 }
             }
         }
-        if !pending && refresh_queue.is_empty() && now_ms.saturating_sub(last_dashboard_refresh) >= 5_000 {
+        if !pending && !voice.active() && refresh_queue.is_empty() && now_ms.saturating_sub(last_dashboard_refresh) >= 5_000 {
             last_dashboard_refresh = now_ms;
             refresh_queue.extend(ui.dashboard_state().pinned_ids().iter().cloned());
         }
-        if !pending {
+        if !pending && !voice.active() {
             if let Some(id) = refresh_queue.pop_front() {
                 // One card per frame keeps large dashboards from monopolizing
                 // rendering. Unpinned cards need no background refresh.

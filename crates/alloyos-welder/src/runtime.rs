@@ -30,6 +30,7 @@ pub struct ConsoleTurnOutput {
 /// shell-free native OS tools, and agent-exclusive Ferrofluid UI synthesis.
 #[derive(Clone, Debug)]
 pub struct AgentRuntime {
+    voice_model: String,
     gateway: ModelGateway,
     pinned_tile_ids: Vec<String>,
     turn_tool_calls: usize,
@@ -53,6 +54,7 @@ impl AgentRuntime {
 
     pub fn new() -> Self {
         let mut runtime = Self {
+            voice_model: alloyos_forge::voice::DEFAULT_LIVE_MODEL.into(),
             gateway: ModelGateway::new(),
             pinned_tile_ids: Vec::new(),
             turn_tool_calls: 0,
@@ -82,6 +84,7 @@ impl AgentRuntime {
     /// restoring any persisted `/etc/ai.conf`, `/scripts/*.js`, and `/etc/schedules.conf`.
     pub fn with_vfs_backend(backend: Rc<RefCell<dyn ToolVfsBackend>>) -> Self {
         let mut runtime = Self {
+            voice_model: alloyos_forge::voice::DEFAULT_LIVE_MODEL.into(),
             gateway: ModelGateway::new(),
             pinned_tile_ids: Vec::new(),
             turn_tool_calls: 0,
@@ -211,6 +214,7 @@ impl AgentRuntime {
     }
     pub fn serialize_config(&self) -> String {
         let mut conf = self.gateway.serialize_config();
+        conf.push_str(&format!("voice_model={}\n", self.voice_model));
         conf.push_str(&format!(
             "knowledge_learning_paused={}\n",
             self.tool_registry.is_knowledge_learning_paused()
@@ -231,6 +235,12 @@ impl AgentRuntime {
                 continue;
             }
             if let Some((k, v)) = line.split_once('=') {
+                if k.trim() == "voice_model" {
+                    let model = v.trim();
+                    if !model.is_empty() && model.len() <= 128 && model.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._/".contains(&b)) {
+                        self.voice_model = model.into();
+                    }
+                }
                 if k.trim() == "knowledge_learning_paused" {
                     let paused = matches!(
                         v.trim().to_ascii_lowercase().as_str(),
@@ -764,6 +774,48 @@ impl AgentRuntime {
     pub fn partial_console_reply(&self) -> Option<String> {
         self.gateway.partial_reply()
     }
+    pub fn voice_model(&self) -> &str { &self.voice_model }
+    /// Voice sessions share Welder's context and tools, but never start a second
+    /// text generation alongside a live model turn.
+    pub fn voice_context(&mut self) -> Result<Vec<Message>, AiError> {
+        if self.gateway.is_pending() || self.pending_tool_response.is_some() {
+            return Err(AiError::PolicyViolation("Wait for the current reply before starting voice".into()));
+        }
+        Ok(self.messages_with_knowledge_context(""))
+    }
+    pub fn record_voice_turn(&mut self, user: &str, assistant: &str) {
+        if !user.trim().is_empty() {
+            self.history.push(Message::user(user));
+            let report = self.tool_registry.learn_from_conversation_turn(user);
+            if report.has_changes() { self.refresh_knowledge_tile_if_present(); }
+        }
+        if !assistant.trim().is_empty() {
+            self.history.push(Message::assistant(assistant));
+        }
+    }
+    pub fn poll_voice_tool(&mut self, call: &alloyos_forge::provider::ToolCall) -> Poll<Result<ToolExecutionOutput, AiError>> {
+        if self.gateway.is_pending() || self.pending_tool_response.is_some() {
+            return Poll::Ready(Err(AiError::PolicyViolation("Text reply is still pending".into())));
+        }
+        self.poll_agent_tool(call)
+    }
+    fn poll_agent_tool(&mut self, call: &alloyos_forge::provider::ToolCall) -> Poll<Result<ToolExecutionOutput, AiError>> {
+        match self.tool_registry.poll_execute_tool(call, &mut self.ui_synthesizer) {
+            Poll::Ready(Err(error @ (AiError::InvalidToolArguments(_) | AiError::UnknownTool(_)))) => Poll::Ready(Ok(ToolExecutionOutput {
+                tool_name: call.name.clone(),
+                output_json: serde_json::json!({"ok":false,"error":error.to_string()}).to_string(),
+                synthesized_view: None,
+            })),
+            result => result,
+        }
+    }
+    /// Both model transports receive the same bounded app inventory representation.
+    pub fn tool_result_for_model(output: &ToolExecutionOutput) -> Result<String, AiError> {
+        if output.tool_name != "mcp_list_tools" { return Ok(output.output_json.clone()); }
+        let value: serde_json::Value = serde_json::from_str(&output.output_json)
+            .map_err(|_| AiError::ParseError("Invalid app inventory".into()))?;
+        Ok(format!("{{\"ok\":{},\"headless_mcp_apps\":{},\"tools\":{},\"resources\":{}}}", value["ok"], value["headless_mcp_apps"], value["tools"], value["resources"]))
+    }
     pub fn poll_console_reply(&mut self) -> Poll<Result<ConsoleTurnOutput, AiError>> {
         if self.pending_tool_response.is_some() {
             match self.poll_response_tools() {
@@ -810,23 +862,15 @@ impl AgentRuntime {
                 self.pending_tool_response = None;
                 return Poll::Ready(Ok(()));
             };
-            let output = match self.tool_registry.poll_execute_tool(&call, &mut self.ui_synthesizer) {
+            let output = match self.poll_agent_tool(&call) {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Ok(output)) => output,
-                Poll::Ready(Err(error @ (AiError::InvalidToolArguments(_) | AiError::UnknownTool(_)))) => ToolExecutionOutput {
-                    tool_name: call.name.clone(),
-                    output_json: serde_json::json!({"ok":false,"error":error.to_string()}).to_string(),
-                    synthesized_view: None,
-                },
                 Poll::Ready(Err(error)) => { self.pending_tool_response = None; return Poll::Ready(Err(error)); }
             };
-            let model_output = if call.name == "mcp_list_tools" {
-                let value: serde_json::Value = match serde_json::from_str(&output.output_json) {
-                    Ok(value) => value,
-                    Err(_) => { self.pending_tool_response = None; return Poll::Ready(Err(AiError::ParseError("Invalid app inventory".into()))); }
-                };
-                format!("{{\"ok\":{},\"headless_mcp_apps\":{},\"tools\":{},\"resources\":{}}}", value["ok"], value["headless_mcp_apps"], value["tools"], value["resources"])
-            } else { output.output_json.clone() };
+            let model_output = match Self::tool_result_for_model(&output) {
+                Ok(output) => output,
+                Err(error) => { self.pending_tool_response = None; return Poll::Ready(Err(error)); }
+            };
             self.history.push(Message::tool_result(&call.id, model_output));
             self.turn_tool_outputs.push(output);
             if let Some((_, index)) = &mut self.pending_tool_response { *index += 1; }

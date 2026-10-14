@@ -373,6 +373,23 @@ impl DisplayProxy {
     pub fn take_model_cycle(&self) -> bool {
         self.take(|e| matches!(e, Event::CycleModel)).is_some()
     }
+    pub fn take_voice_toggle(&self) -> bool {
+        self.take(|e| matches!(e, Event::VoiceToggle)).is_some()
+    }
+    pub fn take_voice_mute(&self) -> bool {
+        self.take(|e| matches!(e, Event::VoiceMute)).is_some()
+    }
+    pub fn set_voice(&self, status: alloyos_mcp::display::VoiceState, caption: &str, error: &str) {
+        let mut state = self.state.borrow_mut();
+        state.voice_state = status;
+        state.voice_caption = caption.into();
+        state.voice_error = error.into();
+        trim_text(&mut state.voice_caption, 8192);
+        trim_text(&mut state.voice_error, 512);
+    }
+    pub fn set_voice_level(&self, level: u16) {
+        self.state.borrow_mut().voice_level = level.min(1000);
+    }
     pub fn take_tile_event(&self) -> Option<TileEvent> {
         match self.take(|e| matches!(e, Event::Tile(_))) {
             Some(Event::Tile(e)) => Some(e),

@@ -474,6 +474,7 @@ mod tests {
 pub mod knowledge;
 pub mod session;
 pub mod runtime;
+pub mod voice;
 pub mod tools;
 pub mod ui_synth;
 pub use knowledge::{

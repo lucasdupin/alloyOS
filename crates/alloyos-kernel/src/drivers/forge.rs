@@ -17,6 +17,17 @@ pub mod forge_https;
 
 pub const MODEL_ADDRESS: usize = 0x8000_0000;
 pub const MAX_MODEL_BYTES: u64 = 14 * 1024 * 1024 * 1024;
+static DEFERRED_VOICE: spin::Mutex<VecDeque<(u64, String)>> = spin::Mutex::new(VecDeque::new());
+/// HTTPS transports pass unrelated voice frames here while owning UART reads.
+pub fn defer_voice_frame(line: &str) {
+    let Some(frame) = line.strip_prefix("VOICE1\t") else { return; };
+    let Some((id,payload)) = frame.trim_end().split_once('\t') else { return; };
+    if payload.len() > 256 * 1024 { return; }
+    if let (Ok(id), Ok(payload)) = (id.parse(), alloyos_forge::protocol::decode_hex(payload)) {
+        let mut queue = DEFERRED_VOICE.lock();
+        if queue.len() < 32 { queue.push_back((id,payload)); }
+    }
+}
 pub fn rpc_output_pending() -> bool {
     #[cfg(all(target_arch = "aarch64", target_os = "none"))]
     { super::forge_https::RPC_OUTPUT_PENDING.load(core::sync::atomic::Ordering::Relaxed) }
@@ -45,7 +56,9 @@ pub struct ForgeService {
     _auth: Option<BootAuth>,
     remote_pending: Option<(u64, u64)>,
     outgoing: VecDeque<u8>,
+    outgoing_line_started: bool,
     console_requests: VecDeque<(u64, String)>,
+    voice_events: VecDeque<(u64, String)>,
     ui_frames: u64,
     ui_input_events: u64,
     boot_error: Option<&'static str>,
@@ -62,7 +75,9 @@ impl ForgeService {
             _auth: None,
             remote_pending: None,
             outgoing: VecDeque::new(),
+            outgoing_line_started: false,
             console_requests: VecDeque::new(),
+            voice_events: VecDeque::new(),
             ui_frames: 0,
             ui_input_events: 0,
             boot_error: None,
@@ -274,6 +289,16 @@ impl ForgeService {
         }
         let bytes = core::mem::take(&mut self.incoming);
         let line = core::str::from_utf8(&bytes).ok()?;
+        if let Some(frame) = line.strip_prefix("VOICE1\t") {
+            if let Some((id, payload)) = frame.split_once('\t') {
+                if let (Ok(id), Ok(payload)) = (id.parse::<u64>(), alloyos_forge::protocol::decode_hex(payload)) {
+                    if payload.len() <= 128 * 1024 && self.voice_events.len() < 32 {
+                        self.voice_events.push_back((id, payload));
+                    }
+                }
+            }
+            return None;
+        }
         if !line.starts_with("FORGE1\t") {
             return None;
         }
@@ -335,6 +360,63 @@ impl ForgeService {
     pub fn note_ui_input(&mut self) {
         self.ui_input_events = self.ui_input_events.saturating_add(1);
     }
+}
+
+impl ForgeService {
+    pub fn take_voice_event(&mut self) -> Option<(u64, String)> {
+        self.voice_events.pop_front().or_else(||DEFERRED_VOICE.lock().pop_front())
+    }
+    pub fn voice_key(&self) -> Option<&str> {
+        self._auth.as_ref().and_then(|auth| auth.get("GEMINI_API_KEY"))
+    }
+    pub fn send_voice_command(&mut self, session: u64, command: &serde_json::Value) -> Result<(), &'static str> {
+        let json = command.to_string();
+        if json.len() > 128 * 1024 { return Err("Voice frame too large"); }
+        let frame = format!("VOICE1\t{session}\t{}\n", alloyos_forge::protocol::encode_hex(&json));
+        let control = matches!(command["op"].as_str(), Some("stop" | "interrupt"))
+            || (command["op"] == "mute" && command["muted"] == true);
+        if control {
+            // Finish the current partial UART line, then deliver stop/mute ahead
+            // of queued media. Never splice a command into another frame.
+            let bytes: Vec<u8> = self.outgoing.drain(..).collect();
+            let mut remaining = bytes.as_slice();
+            if self.outgoing_line_started {
+                let end = remaining.iter().position(|b| *b == b'\n').map(|i|i+1).unwrap_or(remaining.len());
+                self.outgoing.extend(remaining[..end].iter().copied());
+                remaining = &remaining[end..];
+            }
+            let mut retained = VecDeque::new();
+            for line in remaining.split_inclusive(|b| *b == b'\n') {
+                let must_precede = command["op"] == "mute" && core::str::from_utf8(line).ok().is_some_and(|line| {
+                    let fields: Vec<_> = line.trim_end().split('\t').collect();
+                    fields.len() == 3 && fields[0] == "VOICE1" && fields[1].parse::<u64>().ok() == Some(session)
+                        && alloyos_forge::protocol::decode_hex(fields[2]).ok().and_then(|s|serde_json::from_str::<serde_json::Value>(&s).ok()).is_some_and(|v|v["op"] == "start")
+                });
+                if must_precede { self.outgoing.extend(line.iter().copied()); continue; }
+                let discard = core::str::from_utf8(line).ok().and_then(|line| {
+                    let mut fields = line.trim_end().split('\t');
+                    if fields.next()? != "VOICE1" || fields.next()?.parse::<u64>().ok()? != session { return Some(false); }
+                    let payload = alloyos_forge::protocol::decode_hex(fields.next()?).ok()?;
+                    let queued: serde_json::Value = serde_json::from_str(&payload).ok()?;
+                    Some(match command["op"].as_str() {
+                        Some("stop") => true,
+                        Some("interrupt") => queued["op"] == "playback",
+                        Some("mute") => queued["op"] == "send" && queued["json"].as_str().and_then(|s|serde_json::from_str::<serde_json::Value>(s).ok()).is_some_and(|v|!v["realtimeInput"]["audio"].is_null()),
+                        _ => false,
+                    })
+                }).unwrap_or(false);
+                if !discard { retained.extend(line.iter().copied()); }
+            }
+            self.outgoing.extend(frame.bytes());
+            self.outgoing.extend(retained);
+            return Ok(());
+        }
+        if self.outgoing.len().saturating_add(frame.len()) > 512 * 1024 {
+            return Err("Voice transport queue full");
+        }
+        self.outgoing.extend(frame.bytes());
+        Ok(())
+    }
     pub fn take_console_request(&mut self) -> Option<(u64, String)> { self.console_requests.pop_front() }
     pub fn finish_console_request(&mut self, id: u64, result: Result<String, String>) {
         let frame = match result {
@@ -374,7 +456,7 @@ impl ForgeService {
                     }
                 }
             }
-            for _ in 0..1024 {
+            for _ in 0..16384 {
                 if super::rng::monotonic_time_ns().saturating_sub(tick_start) >= 1_000_000
                     || self.shared.borrow().pending_uses_transport()
                 {
@@ -389,7 +471,8 @@ impl ForgeService {
             }
         }
         let mut uart = SERIAL1.lock();
-        for _ in 0..1024 {
+        for _ in 0..16384 {
+            if super::mcp_https::REQUEST_WRITING.load(core::sync::atomic::Ordering::Relaxed) { break; }
             if super::rng::monotonic_time_ns().saturating_sub(tick_start) >= 1_000_000 {
                 break;
             }
@@ -400,6 +483,7 @@ impl ForgeService {
                 break;
             }
             self.outgoing.pop_front();
+            self.outgoing_line_started = byte != b'\n';
         }
         #[cfg(all(target_arch = "aarch64", target_os = "none"))]
         super::forge_https::RPC_OUTPUT_PENDING.store(
@@ -472,6 +556,39 @@ fn model_header(bytes: &[u8]) -> Option<(&str, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn voice_frames_are_isolated_bounded_and_do_not_become_console_input() {
+        let mut service = ForgeService::new();
+        let payload = serde_json::json!({"event":"ready"}).to_string();
+        let frame = format!("VOICE1\t42\t{}\n", alloyos_forge::protocol::encode_hex(&payload));
+        for _ in 0..40 {
+            for byte in frame.bytes() { assert!(service.feed(byte).is_none()); }
+        }
+        assert!(service.take_console_request().is_none());
+        for _ in 0..32 { assert_eq!(service.take_voice_event(), Some((42, payload.clone()))); }
+        assert!(service.take_voice_event().is_none());
+        for byte in b"VOICE1\t42\tNOTHEX\n" { service.feed(*byte); }
+        assert!(service.take_voice_event().is_none());
+        assert!(service.send_voice_command(42, &serde_json::json!({"op":"stop"})).is_ok());
+        service.outgoing.resize(512 * 1024, 0);
+        assert!(service.send_voice_command(42, &serde_json::json!({"op":"send","json":"{}"})).is_err());
+        assert!(service.send_voice_command(42, &serde_json::json!({"op":"stop"})).is_ok());
+    }
+    #[test]
+    fn voice_stop_overtakes_media_without_splicing_partial_uart_frames() {
+        let mut service = ForgeService::new();
+        service.outgoing.extend(b"partial\n".iter().copied());
+        service.outgoing_line_started = true;
+        service.send_voice_command(9,&serde_json::json!({"op":"playback","session":9,"pcm":"0000","generation":1})).unwrap();
+        service.send_voice_command(9,&serde_json::json!({"op":"stop","session":9})).unwrap();
+        let bytes: Vec<u8> = service.outgoing.iter().copied().collect();
+        let text = core::str::from_utf8(&bytes).unwrap();
+        let lines: Vec<_> = text.lines().collect();
+        assert_eq!(lines.len(),2);
+        assert_eq!(lines[0],"partial");
+        let json = alloyos_forge::protocol::decode_hex(lines[1].split('\t').nth(2).unwrap()).unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&json).unwrap()["op"],"stop");
+    }
     #[test]
     fn serial_status_and_missing_weights_are_real_errors() {
         let mut service = ForgeService::new();

@@ -2,6 +2,7 @@
 pub mod credentials;
 pub mod crash;
 pub mod https;
+pub mod voice;
 pub mod model_loader;
 use serde::Deserialize;
 use std::{

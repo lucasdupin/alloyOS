@@ -509,6 +509,18 @@ impl FerrofluidSystemUi {
         // Inverse-map touches through the same field used for presentation.
         let (x, y) = self.liquid.source(x, y);
         let position = LogicalPosition::new(x / self.scale, y / self.scale);
+        // Release composer focus without consuming the touch, so chat scrolling
+        // and tile actions still receive their normal pointer events.
+        let chat_top = self.ui.get_chat_top();
+        if event.kind == InputEventKind::PointerButtonDown && primary
+            && !self.ui.get_booting() && reveal < 1.0
+            && self.ui.get_keyboard_visible()
+            && position.x >= 0.0 && position.x < self.size.width as f32 / self.scale
+            && position.y >= chat_top
+            && position.y < chat_top + self.ui.get_chat_viewport_height()
+        {
+            self.ui.invoke_release_editor();
+        }
         let translated = match event.kind {
             InputEventKind::PointerMove => Some(WindowEvent::PointerMoved { position }),
             InputEventKind::PointerButtonDown | InputEventKind::PointerButtonUp => {
@@ -1369,6 +1381,14 @@ mod tests {
         ui.ui.invoke_soft_key("é".into());
         ui.ui.invoke_soft_key("return".into());
         assert_eq!(ui.take_submission().as_deref(), Some("é"));
+        // A chat tap dismisses the keyboard without clearing an unsent draft.
+        ui.ui.set_draft("Keep this draft".into());
+        for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
+            ui.handle_input(InputEvent { kind, code: 0x14a, x: 400, y: 1000 });
+        }
+        assert!(!ui.ui.get_keyboard_visible(), "chat tap releases editor focus");
+        assert_eq!(ui.ui.get_draft().as_str(), "Keep this draft");
+        ui.ui.set_draft("".into());
         // Hide removes focus, allowing a subsequent composer tap to reopen it.
         for kind in [
             InputEventKind::PointerButtonDown,

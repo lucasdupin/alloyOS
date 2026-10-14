@@ -34,3 +34,7 @@ strip = "none"
 
 [profile.test]
 opt-level = 1
+
+# Slint 1.18.1's Path sampling uses a std-only float method; see vendor patch note.
+[patch.crates-io]
+i-slint-core = { path = "vendor/i-slint-core-1.18.1" }

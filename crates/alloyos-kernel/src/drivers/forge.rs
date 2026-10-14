@@ -180,23 +180,15 @@ impl ForgeService {
                 self.boot_error = Some("Local model image has an unsupported model ID.");
                 return;
             }
-            let Some(total) = weights
-                .checked_add(IMAGE_HEADER_BYTES + 511)
-                .map(|n| n & !511)
-            else {
-                return;
-            };
-            if total as u64 > loading.disk.sectors.saturating_mul(512)
-                || total as u64 > MAX_MODEL_BYTES
-            {
+            let Some(total) = model_image_size(weights, loading.disk.sectors) else {
                 self.boot_error = Some("Local model image is truncated or too large.");
                 return;
-            }
+            };
             loading.weights = weights;
             loading.total = total;
             loading.offset = IMAGE_HEADER_BYTES;
         } else {
-            loading.offset += (loading.total - loading.offset).min(16 * 1024 * 1024);
+            loading.offset += model_read_chunk(loading.total, loading.offset).unwrap().2;
         }
         if loading.offset == loading.total {
             crate::serial_println!(
@@ -227,14 +219,8 @@ impl ForgeService {
             crate::serial_println!("[forge] Model initialization complete.");
             return;
         }
-        let length = (loading.total - loading.offset).min(16 * 1024 * 1024);
-        if unsafe {
-            loading.disk.start_read(
-                (loading.offset / 512) as u64,
-                MODEL_ADDRESS + loading.offset,
-                length,
-            )
-        }
+        let (sector, destination, length) = model_read_chunk(loading.total, loading.offset).unwrap();
+        if unsafe { loading.disk.start_read(sector, destination, length) }
         .is_err()
         {
             self.boot_error = Some("Could not read the local model disk.");
@@ -430,6 +416,33 @@ impl ForgeService {
     }
 }
 
+#[cfg(any(
+    test,
+    all(target_arch = "aarch64", target_os = "none", feature = "forge")
+))]
+fn model_image_size(weights: usize, disk_sectors: u64) -> Option<usize> {
+    if weights < 24 { return None; }
+    let total = weights.checked_add(IMAGE_HEADER_BYTES + 511)? & !511;
+    if total as u64 > MAX_MODEL_BYTES || (total / 512) as u64 > disk_sectors {
+        return None;
+    }
+    Some(total)
+}
+
+#[cfg(any(
+    test,
+    all(target_arch = "aarch64", target_os = "none", feature = "forge")
+))]
+fn model_read_chunk(total: usize, offset: usize) -> Option<(u64, usize, usize)> {
+    if total % 512 != 0 || offset % 512 != 0 { return None; }
+    let remaining = total.checked_sub(offset)?;
+    if remaining == 0 { return None; }
+    let length = remaining.min(16 * 1024 * 1024);
+    let destination = MODEL_ADDRESS.checked_add(offset)?;
+    destination.checked_add(length)?;
+    Some(((offset / 512) as u64, destination, length))
+}
+
 /// Reject malformed bounds/model IDs before forming a huge borrowed slice.
 #[cfg(any(
     test,
@@ -493,12 +506,57 @@ mod tests {
             .any(|b| service.feed(*b).is_some()));
     }
     #[test]
+    fn model_image_sizes_check_alignment_capacity_and_overflow() {
+        assert_eq!(model_image_size(24, 9), Some(4608));
+        assert_eq!(model_image_size(512, 9), Some(4608));
+        assert_eq!(model_image_size(513, 10), Some(5120));
+        assert_eq!(model_image_size(513, 9), None);
+        assert_eq!(model_image_size(23, u64::MAX), None);
+        assert_eq!(model_image_size(usize::MAX, u64::MAX), None);
+        let maximum = MAX_MODEL_BYTES as usize;
+        assert_eq!(model_image_size(maximum - IMAGE_HEADER_BYTES, u64::MAX), Some(maximum));
+        assert_eq!(model_image_size(maximum - IMAGE_HEADER_BYTES + 1, u64::MAX), None);
+        for boundary in [2usize << 30, 4usize << 30] {
+            assert_eq!(model_image_size(boundary + 1, u64::MAX), Some(boundary + 4608));
+        }
+    }
+
+    #[test]
+    fn model_transfer_offsets_remain_contiguous_across_large_boundaries() {
+        for weights in [24, (2usize << 30) + 512, (4usize << 30) + 512,
+            MAX_MODEL_BYTES as usize - IMAGE_HEADER_BYTES] {
+            let total = model_image_size(weights, u64::MAX).unwrap();
+            let mut offset = IMAGE_HEADER_BYTES;
+            while offset < total {
+                let (sector, destination, length) = model_read_chunk(total, offset).unwrap();
+                assert_eq!(sector * 512, offset as u64);
+                assert_eq!(destination, MODEL_ADDRESS + offset);
+                assert!(length > 0 && length <= 16 * 1024 * 1024);
+                assert_eq!(length % 512, 0);
+                offset += length;
+                assert!(offset <= total);
+            }
+            assert_eq!(offset, total);
+            assert_eq!(model_read_chunk(total, offset), None);
+        }
+        assert_eq!(model_read_chunk(512, 1024), None);
+        assert_eq!(model_read_chunk(513, 0), None);
+        assert_eq!(model_read_chunk(512, 1), None);
+        let overflowing_address = usize::MAX & !511;
+        assert_eq!(model_read_chunk(overflowing_address, overflowing_address - 512), None);
+    }
+
+    #[test]
     fn model_region_bounds_are_checked() {
         let mut header = [0; IMAGE_HEADER_BYTES];
         header[..8].copy_from_slice(b"FGMODEL1");
         header[8..16].copy_from_slice(&1024u64.to_le_bytes());
         header[48..61].copy_from_slice(DEFAULT_MODEL.as_bytes());
         assert_eq!(model_header(&header), Some((DEFAULT_MODEL, 1024)));
+        for size in [(2u64 << 30) + 1, (4u64 << 30) + 1, MAX_MODEL_BYTES] {
+            header[8..16].copy_from_slice(&size.to_le_bytes());
+            assert_eq!(model_header(&header), Some((DEFAULT_MODEL, size as usize)));
+        }
         header[8..16].copy_from_slice(&(MAX_MODEL_BYTES + 1).to_le_bytes());
         assert!(model_header(&header).is_none());
     }

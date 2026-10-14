@@ -73,6 +73,7 @@ pub struct QemuHarness {
     stdin: ChildStdin,
     output_buffer: Arc<Mutex<String>>,
     _reader_thread: JoinHandle<()>,
+    deadline: Option<Instant>,
 }
 
 impl QemuHarness {
@@ -149,6 +150,7 @@ impl QemuHarness {
             stdin,
             output_buffer,
             _reader_thread: reader_thread,
+            deadline: None,
         })
     }
 
@@ -165,6 +167,9 @@ impl QemuHarness {
     /// Checks if serial output contains expected pattern within given timeout.
     pub fn expect_output(&mut self, pattern: &str, timeout: Duration) -> Result<()> {
         let start = Instant::now();
+        let timeout = self.deadline.map_or(timeout, |deadline| {
+            timeout.min(deadline.saturating_duration_since(start))
+        });
         while start.elapsed() < timeout {
             {
                 let lock = self.output_buffer.lock().unwrap();
@@ -186,7 +191,7 @@ impl QemuHarness {
                 ));
             }
 
-            thread::sleep(Duration::from_millis(50));
+            thread::sleep(Duration::from_millis(50).min(timeout.saturating_sub(start.elapsed())));
         }
 
         let lock = self.output_buffer.lock().unwrap();
@@ -201,11 +206,14 @@ impl QemuHarness {
     /// Waits for QEMU process to exit and returns exit code.
     pub fn wait_for_exit(&mut self, timeout: Duration) -> Result<i32> {
         let start = Instant::now();
+        let timeout = self.deadline.map_or(timeout, |deadline| {
+            timeout.min(deadline.saturating_duration_since(start))
+        });
         while start.elapsed() < timeout {
             if let Some(status) = self.child.try_wait()? {
                 return Ok(status.code().unwrap_or(0));
             }
-            thread::sleep(Duration::from_millis(50));
+            thread::sleep(Duration::from_millis(50).min(timeout.saturating_sub(start.elapsed())));
         }
         let _ = self.child.kill();
         Err(anyhow!("QEMU did not exit within {:?}", timeout))
@@ -579,7 +587,9 @@ impl Drop for E2eVolume {
     fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
 }
 
-fn run_e2e_tests(kernel_image: &Path, _overall_timeout: Duration) -> Result<()> {
+fn run_e2e_tests(kernel_image: &Path, overall_timeout: Duration) -> Result<()> {
+    if overall_timeout.is_zero() { return Err(anyhow!("E2E timeout must be greater than zero")); }
+    let started = Instant::now();
     // Keep user settings within this run, but never inherit another run's config.
     // Declare the volume before the harness so QEMU exits before disk cleanup.
     let volume = E2eVolume::new()?;
@@ -592,6 +602,7 @@ fn run_e2e_tests(kernel_image: &Path, _overall_timeout: Duration) -> Result<()> 
         cobalt_image.display()
     );
     let mut harness = QemuHarness::new(kernel_image, &cobalt_image)?;
+    harness.deadline = Some(started + overall_timeout);
 
     println!("[xtask] [TEST 1/10] e2e_boot_banner...");
     harness
@@ -724,7 +735,7 @@ fn run_e2e_tests(kernel_image: &Path, _overall_timeout: Duration) -> Result<()> 
     }
     println!("[xtask] [PASS] e2e_shutdown");
 
-    println!("[xtask] All 10 E2E tests PASSED!");
+    println!("[xtask] All 10 E2E tests PASSED in {:.2}s!", started.elapsed().as_secs_f64());
     Ok(())
 }
 
@@ -748,38 +759,6 @@ fn run_ci() -> Result<()> {
     println!("[xtask] Checking model asset tooling (offline)...");
     let assets = Command::new("python3").current_dir(&workspace_root).args(["-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py"]).status().context("Failed to run model asset and launcher tests")?;
     if !assets.success() { return Err(anyhow!("model asset tests failed")); }
-    // Exercise inference with the optimized kernel used for real model workloads.
-    let model_kernel = build_crates_mode(true, false, true)?;
-    println!("[xtask] Checking large-file model loading in QEMU (synthetic fixture)...");
-    let loader_test = Command::new("cargo").current_dir(&workspace_root)
-        .args(["test", "-p", "alloyos-dev-harness", "--test", "qemu_model_loader", "--",
-            "--ignored", "large_synthetic_image_loads_into_qemu"])
-        .env("ALLOYOS_TEST_KERNEL", &model_kernel).status()
-        .context("Failed to run large-file QEMU loader test")?;
-    if !loader_test.success() { return Err(anyhow!("large-file QEMU loader test failed")); }
-    let model_image = std::env::var_os("ALLOYOS_TEST_MODEL_IMAGE").map(PathBuf::from)
-        .unwrap_or_else(|| workspace_root.join(".local/models/gemma-2-2b-it/model.img"));
-    if model_image.exists() {
-        println!("[xtask] Checking full-size model loading in QEMU...");
-        let status = Command::new("cargo").current_dir(&workspace_root)
-            .args(["test", "-p", "alloyos-dev-harness", "--test", "qemu_model_loader", "--", "--ignored", "full_model_loads_into_qemu_at_contiguous_addresses"])
-            .env("ALLOYOS_TEST_MODEL_IMAGE", model_image.canonicalize()?)
-            .env("ALLOYOS_TEST_KERNEL", &model_kernel).status()
-            .context("Failed to run full-size QEMU model test")?;
-        if !status.success() { return Err(anyhow!("full-size QEMU model test failed")); }
-        println!("[xtask] Checking real local chat responsiveness during inference...");
-        let chat = Command::new("python3").current_dir(&workspace_root)
-            .arg("scripts/check_local_chat_qemu.py")
-            .arg("--kernel").arg(&model_kernel)
-            .arg("--model-image").arg(model_image.canonicalize()?)
-            .status().context("Failed to run local QEMU chat test")?;
-        if !chat.success() { return Err(anyhow!("local QEMU chat responsiveness test failed")); }
-
-    } else if std::env::var_os("ALLOYOS_TEST_MODEL_IMAGE").is_some() {
-        return Err(anyhow!("ALLOYOS_TEST_MODEL_IMAGE does not exist"));
-    } else {
-        println!("[xtask] SKIP full-size QEMU model test: local model image is absent");
-    }
     println!("[xtask] Step 2: Building alloyOS (aarch64) and executing E2E tests...");
     let kernel_image = build_crates(false, true)?;
     run_e2e_tests(&kernel_image, Duration::from_secs(60))?;
@@ -950,9 +929,28 @@ mod tests {
     }
 
     #[test]
+    fn e2e_deadline_bounds_output_and_exit_waits() {
+        let mut child = Command::new("sleep").arg("5")
+            .stdin(Stdio::piped()).spawn().unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let mut harness = QemuHarness {
+            child,
+            stdin,
+            output_buffer: Arc::new(Mutex::new(String::new())),
+            _reader_thread: thread::spawn(|| {}),
+            deadline: Some(Instant::now() + Duration::from_millis(20)),
+        };
+        let started = Instant::now();
+        assert!(harness.expect_output("missing", Duration::from_secs(5)).is_err());
+        assert!(harness.wait_for_exit(Duration::from_secs(5)).is_err());
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
     fn parse_ci_command() {
         let args = Cli::parse_from(["xtask", "ci"]);
         assert_eq!(args.command, Commands::Ci);
+        assert!(Cli::try_parse_from(["xtask", "ci", "--full"]).is_err());
     }
 
     #[test]

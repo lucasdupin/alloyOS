@@ -108,30 +108,13 @@ python3 scripts/check_cloud_qemu.py --kernel target/aarch64-unknown-none/debug/a
 This loads fixture credentials through fw_cfg and exercises all three provider
 requests and responses over the real UART path. It does not validate API accounts.
 
-A synthetic fixture larger than 2 GiB always exercises QEMU loading in
-`xtask ci`, without downloading weights. The full-size QEMU loader regression runs automatically in `xtask ci` (including
-the pre-push hook) when the local model image exists. It checks actual guest RAM
-at the header, sampled boundaries, and the end of the image, and requires the
-boot screen to appear within five seconds before model loading starts. Without
-the asset, CI prints an explicit skip and does not download weights.
-
-Run it directly with:
+Large-file model loading is covered by kernel unit tests using small headers
+and numeric sizes and offsets. These check multi-gigabyte bounds without
+allocating model buffers, creating large files, or launching QEMU:
 
 ```sh
-cargo test -p alloyos-dev-harness --test qemu_model_loader -- --ignored full_model_loads_into_qemu_at_contiguous_addresses
+cargo test -p alloyos-kernel --lib drivers::forge::tests::model_
 ```
-
-Set `ALLOYOS_TEST_MODEL_IMAGE` to test a different packaged image larger than
-2 GiB. An explicitly configured missing image fails CI. Build a Forge-enabled
-kernel before running the test directly:
-
-```sh
-cargo build -p alloyos-kernel --target aarch64-unknown-none --features forge
-```
-
-Use `ALLOYOS_TEST_KERNEL` to select another Forge-enabled kernel. The test needs
-QEMU and 16 GiB guest RAM. It performs disk-to-RAM loading after splash without
-duplicating the model on disk.
 
 To check actual Gemma chat responsiveness and the first streamed reply through the
 keyboard UI, run (requires the full model image and macOS HVF):

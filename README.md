@@ -123,7 +123,11 @@ git config --local core.hooksPath .githooks
 Every push runs `cargo run --package xtask -- ci`: all workspace tests (including
 the keyboard UI tests), followed by the bare-metal build and headless QEMU E2E
 suite. A failure blocks the upload. This requires the same Rust and QEMU setup
-as the normal test suite.
+as the normal test suite. Large-file model loading is covered by unit tests for
+header sizes, sector alignment, disk bounds, and transfer offsets; CI does not
+load multi-gigabyte model fixtures or run real-model inference.
+
+The `test --timeout` option bounds the QEMU suite (default: 60 seconds).
 
 UI screenshot tests compare committed PNG baselines and generate visual diffs
 on failure. See [the screenshot test guide](tests/README.md) for running them

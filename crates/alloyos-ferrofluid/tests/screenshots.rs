@@ -288,5 +288,35 @@ fn system_ui_screenshots() {
     ui.render(Duration::from_millis(16208));
     assert!((ui.chat_scroll_offset() - reading_offset).abs() < 1.0,
         "refreshing unchanged chat items must preserve the reading position");
+    // Reproduce sending a follow-up with the keyboard after an embedded clock.
+    let mut clock_chat = vec![
+        alloyos_ferrofluid::ChatItem::Text("Welcome to alloyOS.\nYour workspace takes shape around what you need.\n\nAsk me about your apps, the time, or your plans.\n\nWelder: Your apps are ready.".into()),
+        alloyos_ferrofluid::ChatItem::Text("You: what time is it?".into()),
+        alloyos_ferrofluid::ChatItem::Text("Welder: Here is the current time from the Clock app.".into()),
+        alloyos_ferrofluid::ChatItem::Tile(registry.render_tile("sample_timer.now").unwrap()),
+    ];
+    ui.set_chat_items(&clock_chat);
+    ui.set_reply_pending(false);
+    for frame in 0..=60 { ui.render(Duration::from_millis(17000 + frame * 16)); }
+    snapshot(&mut suite, "clock-before-followup", &ui);
+    pointer(&mut ui, InputEventKind::PointerButtonDown, 300, 2500);
+    pointer(&mut ui, InputEventKind::PointerButtonUp, 300, 2500);
+    for frame in 0..=60 { ui.render(Duration::from_millis(18000 + frame * 16)); }
+    snapshot(&mut suite, "clock-keyboard-open", &ui);
+    pointer(&mut ui, InputEventKind::PointerButtonDown, 75, 2073);
+    pointer(&mut ui, InputEventKind::PointerButtonUp, 75, 2073);
+    pointer(&mut ui, InputEventKind::PointerButtonDown, 1080, 2530);
+    pointer(&mut ui, InputEventKind::PointerButtonUp, 1080, 2530);
+    let message = ui.take_submission().expect("keyboard must submit the follow-up");
+    clock_chat.push(alloyos_ferrofluid::ChatItem::Text(format!("You: {message}")));
+    ui.set_reply_pending(true);
+    ui.set_transcript("You: what time is it?\n\nWelder: Here is the current time.\n\nYou: q");
+    ui.set_tiles(&[registry.render_tile("sample_timer.now").unwrap()]);
+    ui.set_chat_items(&clock_chat);
+    for frame in 0..=60 { ui.render(Duration::from_millis(19000 + frame * 16)); }
+    snapshot(&mut suite, "clock-followup-pending", &ui);
+    assert!(ui.chat_content_bottom() <= ui.chat_viewport_height(),
+        "the rendered message and loading indicator must fit above the keyboard at the scroll limit");
+    assert!((ui.chat_scroll_offset() - ui.chat_scroll_maximum()).abs() < 1.0);
     suite.finish();
 }

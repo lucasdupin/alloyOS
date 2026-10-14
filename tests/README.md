@@ -28,6 +28,12 @@ press, release, symbols, and scroll dismissal. Baselines live in each crate's
 `tests/screenshots/` folder as RGB PNGs. Tests compare every pixel exactly.
 All cases in a suite are checked before the suite reports its failures.
 
+The clock follow-up captures open the keyboard after an embedded Clock card,
+type and send with the soft keys, and check that the new message and loading
+indicator remain above the composer. The assertion uses the rendered end of
+the conversation, so an underestimated scroll range cannot pass merely by
+reporting that its offset equals its maximum.
+
 On failure, inspect `target/screenshots/<crate>/`: `*.actual.png`,
 `*.expected.png`, and `*.diff.png`. Changed pixels are highlighted in pink;
 the failure message includes the changed pixel count and artifact path.

@@ -433,6 +433,12 @@ impl FerrofluidSystemUi {
     pub fn chat_scroll_maximum(&self) -> f32 {
         self.ui.get_scroll_maximum()
     }
+    pub fn chat_content_bottom(&self) -> f32 {
+        self.ui.get_chat_content_bottom()
+    }
+    pub fn chat_viewport_height(&self) -> f32 {
+        self.ui.get_chat_viewport_height()
+    }
     pub fn update_streaming_reply(&self, base_transcript: &str, partial_reply: &str) {
         self.backdrop_dirty.set(true);
         let mut combined = String::with_capacity(base_transcript.len() + 10 + partial_reply.len());
@@ -1102,9 +1108,37 @@ mod tests {
         }
         ui.ui.invoke_release_editor();
         ui.ui.set_sidebar_open(false);
-        ui.set_chat_items(&history);
+        // Cards must contribute their full height to the scroll range even
+        // when there are no text rows supplying layout constraints.
+        let cards: Vec<_> = history.iter().filter(|item| matches!(item, ChatItem::Tile(_))).cloned().collect();
+        ui.set_chat_items(&cards);
+        for frame in 0..=60 {
+            ui.render(Duration::from_millis(2000 + frame * 16));
+        }
+        let cards_maximum = ui.chat_scroll_maximum();
+        let mut doubled_cards = cards.clone();
+        doubled_cards.extend(cards);
+        ui.set_chat_items(&doubled_cards);
+        for frame in 0..=60 {
+            ui.render(Duration::from_millis(3000 + frame * 16));
+        }
+        assert!(ui.chat_scroll_maximum() - cards_maximum > 12.0 * 150.0,
+            "each additional card must contribute its rendered height to the scroll range");
+        let short_cards_maximum = ui.chat_scroll_maximum();
+        for card in &mut doubled_cards {
+            if let ChatItem::Tile(tile) = card {
+                tile.subtitle = "A long card detail that must remain reachable. ".repeat(30);
+            }
+        }
+        ui.set_chat_items(&doubled_cards);
         for frame in 0..=60 {
             ui.render(Duration::from_millis(4000 + frame * 16));
+        }
+        assert!(ui.chat_scroll_maximum() - short_cards_maximum > 24.0 * 400.0,
+            "growing card content must grow the scroll range by its full height");
+        ui.set_chat_items(&history);
+        for frame in 0..=60 {
+            ui.render(Duration::from_millis(5000 + frame * 16));
         }
         assert!(ui.chat_scroll_maximum() > 1000.0, "mixed content must overflow the viewport");
         assert!((ui.chat_scroll_offset() - ui.chat_scroll_maximum()).abs() < 1.0,
@@ -1113,7 +1147,7 @@ mod tests {
         let initial_pixels = ui.pixels().to_vec();
         let first_drag_down = initial_offset > ui.chat_scroll_maximum() * 0.5;
 
-        let mut now_ms = 4960;
+        let mut now_ms = 5960;
         let mut drag = |ui: &mut FerrofluidSystemUi, start_y: i32, positions: &[i32]| {
             ui.handle_input(InputEvent { kind: InputEventKind::PointerButtonDown, code: 0x110, x: 500, y: start_y });
             for &y in positions {

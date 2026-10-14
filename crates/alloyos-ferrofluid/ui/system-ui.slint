@@ -223,7 +223,9 @@ component TileCard inherits Rectangle {
     border-radius: 12px;
     border-width: 1px;
     border-color: AlloyPalette.border;
-    height: tile-content.preferred-height;
+    // Propagate the content size through the surrounding chat layouts so
+    // cards cannot be compressed below their contents in the scroll stream.
+    min-height: tile-content.preferred-height;
     tile-content := VerticalBox {
         width: parent.width;
         height: self.preferred-height;
@@ -398,6 +400,8 @@ export component SystemUi inherits Window {
     out property <length> chat-top: body.y + chat.y;
     out property <length> scroll-offset: -scroll.content-y;
     out property <length> scroll-maximum: max(0px, scroll.content-height - scroll.visible-height);
+    out property <length> chat-content-bottom: content-end.y + scroll.content-y;
+    out property <length> chat-viewport-height: scroll.visible-height;
     out property <bool> keyboard-visible: keyboard.shown;
     out property <length> keyboard-reveal: keyboard.reveal;
     if root.booting: Logotype {
@@ -463,7 +467,10 @@ export component SystemUi inherits Window {
                             height: parent.height;
                             mouse-drag-pan-enabled: true;
                             content-width: self.visible-width;
-                            content-height: max(self.visible-height, stream.preferred-height);
+                            // Nested rows can lay out taller than their preferred size
+                            // after wrapping at the available width. Measure the actual
+                            // end of the stream so the final row remains reachable.
+                            content-height: max(self.visible-height, content-end.y + 4px);
                             // Layout changes after streamed text, tiles, or the indicator
                             // appear always reveal the latest content.
                             changed content-height => {
@@ -486,7 +493,8 @@ export component SystemUi inherits Window {
                                 padding-left: 20px;
                                 padding-right: 20px;
                                 padding-top: 16px;
-                                padding-bottom: 20px;
+                                // The 16px gap before content-end completes the 20px inset.
+                                padding-bottom: 4px;
                                 spacing: 16px;
                                 if root.chat-items.length == 0: MarkdownText {
                                     text: root.transcript;
@@ -512,6 +520,7 @@ export component SystemUi inherits Window {
                                     }
                                 }
                                 if root.reply-pending: ThinkingIndicator { time-ms: root.loading-time-ms; }
+                                content-end := Rectangle { height: 0px; }
                             }
                         }
                     }

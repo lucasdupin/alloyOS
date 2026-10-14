@@ -262,7 +262,7 @@ fn gemini_3_8_flash_clock_tile_and_subsequent_chat_flow() {
         .filter(|s| !s.trim().is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            PathBuf::from("/Users/wagnerzaniboni/.gemini/antigravity/brain/7d45b892-0a74-4f86-b985-823599a03c09")
+            PathBuf::from("target/screenshots")
         });
     let screenshot1_path = artifact_dir.join("gemini_clock_tile_turn1.png");
     let rgb1: Vec<u8> = ui

@@ -146,7 +146,7 @@ fn verify_image(image: PathBuf, expect_ready: bool) {
     let splash_deadline = Duration::from_secs(5);
     loop {
         let log = fs::read_to_string(&serial.0).unwrap_or_default();
-        if log.contains("[splash] Static alloyOS logotype visible.") {
+        if log.contains("[splash] Kernel startup indicator presented") {
             assert!(
                 launch_time.elapsed() < splash_deadline,
                 "boot screen was delayed by model loading"
@@ -198,7 +198,7 @@ fn verify_image(image: PathBuf, expect_ready: bool) {
                 "unexpected model readiness: {log}"
             );
             let splash = log
-                .find("[splash] Static alloyOS logotype visible.")
+                .find("[splash] Kernel startup indicator presented")
                 .unwrap();
             let loading = log
                 .find("[forge] Model disk read started after splash.")

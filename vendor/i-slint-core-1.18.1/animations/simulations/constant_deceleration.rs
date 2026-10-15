@@ -6,6 +6,8 @@
 use crate::animations::simulations::{Direction, Parameter, Simulation};
 use crate::{Coord, animations::Instant};
 #[cfg(not(feature = "std"))]
+// Host floats provide these methods; bare-metal targets need the trait.
+#[cfg_attr(not(target_os = "none"), allow(unused_imports))]
 use num_traits::Float;
 
 #[cfg(test)]

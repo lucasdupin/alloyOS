@@ -7,6 +7,8 @@
 use crate::animations::simulations::assert_approx_eq;
 
 #[cfg(not(feature = "std"))]
+// Host floats provide these methods; bare-metal targets need the trait.
+#[cfg_attr(not(target_os = "none"), allow(unused_imports))]
 use num_traits::Float;
 
 /// Converts a springs configuration into the `(natural_frequency, damping_ratio)` pair

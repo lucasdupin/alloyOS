@@ -1473,6 +1473,8 @@ impl FitResult {
 }
 
 #[cfg(not(feature = "std"))]
+// Host floats have an inherent method; retain the fallback for bare metal.
+#[cfg_attr(not(target_os = "none"), allow(dead_code))]
 trait RemEuclid {
     fn rem_euclid(self, b: f32) -> f32;
 }

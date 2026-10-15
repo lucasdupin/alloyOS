@@ -13,6 +13,8 @@ use alloc::borrow::Cow;
 use euclid::default::{Point2D, Size2D};
 
 #[cfg(not(feature = "std"))]
+// Host floats provide these methods; bare-metal targets need the trait.
+#[cfg_attr(not(target_os = "none"), allow(unused_imports))]
 use num_traits::float::Float;
 
 /// A brush is a data structure that is used to describe how

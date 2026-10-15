@@ -8,7 +8,7 @@ name = "alloyos_ferrofluid"
 path = "src/lib.rs"
 
 [dependencies]
-alloyos-user = { path = "../alloyos-user" }
+alloyos-user = { path = "../alloyos-user", optional = true }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 libm = "0.2"
 alloyos-keyboard = { path = "../alloyos-keyboard" }
@@ -25,7 +25,7 @@ alloyos-js = { path = "../alloyos-js" }
 png = "=0.18.1"
 
 [features]
-executable = []
+executable = ["dep:alloyos-user"]
 
 [[bin]]
 name = "ferrofluid"

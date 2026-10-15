@@ -7,6 +7,8 @@
 use alloc::boxed::Box;
 use core::cell::Cell;
 #[cfg(not(feature = "std"))]
+// Host floats provide these methods; bare-metal targets need the trait.
+#[cfg_attr(not(target_os = "none"), allow(unused_imports))]
 use num_traits::Float;
 
 pub(crate) mod simulations;

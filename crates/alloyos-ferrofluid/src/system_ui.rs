@@ -329,7 +329,7 @@ impl FerrofluidSystemUi {
             previous_keyboard_reveal: 0.0,
             previous_chat_offset: 0.0,
             previous_blur_top: None,
-            top_blur: vec![slint::Rgb8Pixel::default(); width as usize * (40.0 * scale) as usize],
+            top_blur: vec![slint::Rgb8Pixel::default(); width as usize * (192.0 * scale) as usize],
         })
     }
 
@@ -753,6 +753,18 @@ impl FerrofluidSystemUi {
                 rect.x = 0;
                 rect.width = self.size.width;
             }
+            let bottom_top = (self.ui.get_bottom_fade_top().max(0.0) * self.scale) as u32;
+            let bottom_height = ((self.ui.get_bottom_fade_height() * self.scale) as u32)
+                .min(self.size.height.saturating_sub(bottom_top));
+            let bottom_dirty = !booting && !sidebar_active && bottom_height > 0
+                && rect.y < bottom_top + bottom_height && rect.y + rect.height > bottom_top;
+            if bottom_dirty {
+                let end = (rect.y + rect.height).max(bottom_top + bottom_height);
+                rect.y = rect.y.min(bottom_top);
+                rect.height = end - rect.y;
+                rect.x = 0;
+                rect.width = self.size.width;
+            }
             for y in rect.y..rect.y + rect.height {
                 for x in rect.x..rect.x + rect.width {
                     let i = y as usize * self.size.width as usize + x as usize;
@@ -775,6 +787,14 @@ impl FerrofluidSystemUi {
                     chat_top as usize,
                     (blur_bottom - chat_top) as usize,
                     (6.0 * self.scale) as usize,
+                    false,
+                );
+            }
+            if bottom_dirty {
+                blur_chat_top(
+                    &self.rgb, &mut self.top_blur, &mut self.argb,
+                    self.size.width as usize, bottom_top as usize, bottom_height as usize,
+                    (6.0 * self.scale) as usize, true,
                 );
             }
             damage = Some(rect);
@@ -917,6 +937,7 @@ fn blur_chat_top(
     top: usize,
     height: usize,
     radius: usize,
+    bottom: bool,
 ) {
     if height == 0 {
         return;
@@ -970,8 +991,14 @@ fn blur_chat_top(
                 start += 1;
             }
             let i = (top + y) * width + x;
+            // Floating controls occupy the central bar. Their Slint scrim is
+            // already behind them; keep their foreground pixels crisp.
+            if bottom && x.abs_diff(width / 2) < width * 3 / 8 {
+                continue;
+            }
             let p = rgb[i];
-            let strength = ((height - 1 - y) * 256 / height) as u32;
+            let distance = if bottom { y } else { height - 1 - y };
+            let strength = (distance * 256 / height) as u32;
             let n = (end - start) as u32;
             let channel = |original: u8, total: u32, background: u32| {
                 let blurred = (original as u32 * (256 - strength) + total / n * strength) / 256;
@@ -979,9 +1006,9 @@ fn blur_chat_top(
                 (blurred * (256 - strength) + background * strength) / 256
             };
             argb[i] = 0xff000000
-                | channel(p.r, sum[0], 10) << 16
-                | channel(p.g, sum[1], 10) << 8
-                | channel(p.b, sum[2], 12);
+                | channel(p.r, sum[0], if bottom { 11 } else { 10 }) << 16
+                | channel(p.g, sum[1], if bottom { 13 } else { 10 }) << 8
+                | channel(p.b, sum[2], if bottom { 16 } else { 12 });
         }
     }
 }

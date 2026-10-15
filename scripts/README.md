@@ -205,3 +205,10 @@ For user faults, pass the matching `ferrofluid` or `app-runner` ELF: all protect
 processes use overlapping virtual addresses. Keep that ELF when collecting logs;
 rebuilding can change addresses. Optimized/inlined calls may not have separate
 frames; source line lookup is not provided by this helper.
+
+Display recovery also emits a persisted `[crash] display-stopped` record with
+the PID, exit code, reason and monotonic uptime in nanoseconds. `fault` (-11)
+should have preceding exception/stack records; `execution-timeout` (-110) and
+`requested-restart` (-125) do not pass through the exception handler and have no
+fault stack. This distinguishes a crashed renderer from a deliberate restart
+or an expired execution budget even after the renderer recovers.

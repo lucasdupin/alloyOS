@@ -168,6 +168,27 @@ impl DisplayProxy {
             .as_ref()
             .is_some_and(|task| task.state() == TaskState::Zombie)
         {
+            if let Some(task) = self.task.as_ref() {
+                let code = task.exit_code();
+                let reason = match code {
+                    Some(-11) => "fault",
+                    Some(-110) => "execution-timeout",
+                    Some(-125) => "requested-restart",
+                    Some(0) => "normal-exit",
+                    Some(_) => "process-exit",
+                    None => "unknown",
+                };
+                // Persist this alongside fault frames in the harness crash log.
+                // A deadline or explicit restart never enters the fault handler,
+                // so it has no exception stack trace to report.
+                crate::serial_println!(
+                    "[crash] display-stopped pid={} exit_code={:?} reason={} uptime_ns={} action=restart",
+                    task.pid,
+                    code,
+                    reason,
+                    super::rng::monotonic_time_ns()
+                );
+            }
             SERVICE.lock().events.clear();
             self.events.borrow_mut().clear();
             self.task = None;

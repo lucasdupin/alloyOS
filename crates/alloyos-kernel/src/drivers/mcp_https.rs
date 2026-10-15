@@ -29,12 +29,22 @@ impl HttpTransport for HostRegistryHttp {
     }
     fn start_request(&mut self, request: &HttpRequest) -> Poll<Result<HttpResponse, String>> {
         if self.pending.is_some() { return Poll::Ready(Err("registry request already pending".into())); }
-        if request.method != "GET" || !request.headers.is_empty() || !request.body.is_empty() || !alloyos_mcp::transport::allowed_public_get(&request.url) {
-            return Poll::Ready(Err("only public MCP Registry and DuckDuckGo search are wired to this transport".into()));
-        }
+        let action = if request.method == "POST" {
+            if !alloyos_mcp::transport::allowed_public_post(&request.url) {
+                return Poll::Ready(Err("only Gemini endpoints are allowed for POST requests".into()));
+            }
+            "post"
+        } else if request.method == "GET" {
+            if !request.headers.is_empty() || !request.body.is_empty() || !alloyos_mcp::transport::allowed_public_get(&request.url) {
+                return Poll::Ready(Err("only public MCP Registry and DuckDuckGo search are wired to this transport".into()));
+            }
+            "get"
+        } else {
+            return Poll::Ready(Err("unsupported HTTP method".into()));
+        };
         self.next = self.next.saturating_add(1);
         let json = match serde_json::to_string(request) { Ok(json) => json, Err(_) => return Poll::Ready(Err("invalid registry HTTP request".into())) };
-        let frame = format!("MCPHTTP1\t{}\tget\t{}\n", self.next, alloyos_forge::protocol::encode_hex(&json));
+        let frame = format!("MCPHTTP1\t{}\t{}\t{}\n", self.next, action, alloyos_forge::protocol::encode_hex(&json));
         self.pending = Some(Transfer { prefix: format!("MCPHTTP1\t{}\t", self.next), frame, sent: 0, line: Vec::new(), started: rng::monotonic_time_ns() });
         REQUEST_PENDING.store(true, Ordering::Relaxed);
         crate::serial_println!("[mcp-search] stage=request_started");

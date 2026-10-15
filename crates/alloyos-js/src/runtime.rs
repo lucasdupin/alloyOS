@@ -894,6 +894,14 @@ impl JsIsolate {
                                 let s = first.to_js_string();
                                 Ok(Some(json_parse(&s)?))
                             }
+                            "tryParse" => {
+                                let first = args.first().unwrap_or(&JsValue::Undefined);
+                                let s = first.to_js_string();
+                                match json_parse(&s) {
+                                    Ok(val) => Ok(Some(val)),
+                                    Err(_) => Ok(Some(JsValue::Null)),
+                                }
+                            }
                             other => Err(JsError::TypeError(format!(
                                 "JSON.{} is not a function",
                                 other
@@ -1035,6 +1043,42 @@ impl JsIsolate {
                     .map_err(JsError::ForbiddenCapability)?;
                 let body = host.net_fetch(&url).map_err(JsError::HostError)?;
                 Ok(JsValue::String(body))
+            }
+            ("net", "post") => {
+                let url = args
+                    .first()
+                    .ok_or_else(|| {
+                        JsError::TypeError("AlloyOS.net.post requires a url argument".to_string())
+                    })?
+                    .to_js_string();
+                let body = args
+                    .get(1)
+                    .map(|v| v.to_js_string())
+                    .unwrap_or_default();
+                let mut headers = Vec::new();
+                if let Some(h_val) = args.get(2) {
+                    match h_val {
+                        JsValue::Object(map) => {
+                            for (k, v) in map {
+                                headers.push((k.clone(), v.to_js_string()));
+                            }
+                        }
+                        JsValue::Array(arr) => {
+                            for item in arr {
+                                if let JsValue::Array(pair) = item {
+                                    if pair.len() == 2 {
+                                        headers.push((pair[0].to_js_string(), pair[1].to_js_string()));
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                host.check_capability(&CapabilityRequest::NetPost(&url))
+                    .map_err(JsError::ForbiddenCapability)?;
+                let resp = host.net_post(&url, &body, &headers).map_err(JsError::HostError)?;
+                Ok(JsValue::String(resp))
             }
             // Pure conversion helpers: preferences are supplied by the calling app.
             // These bindings neither read nor persist system or app configuration.

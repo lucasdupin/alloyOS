@@ -128,6 +128,7 @@ pub fn dispatch_host(request: &str, host: &mut dyn AlloyOsHost) -> Result<String
                 "read" => C::FsRead(value),
                 "write" => C::FsWrite(value),
                 "fetch" => C::NetFetch(value),
+                "post" => C::NetPost(value),
                 "status" => C::SysStatus,
                 "notify" => C::UiNotify,
                 "forge" => C::ForgeGenerate,
@@ -164,6 +165,35 @@ pub fn dispatch_host(request: &str, host: &mut dyn AlloyOsHost) -> Result<String
             let p = arg(args, 0)?;
             host.check_capability(&C::NetFetch(p))?;
             JsValue::String(host.net_fetch(p)?)
+        }
+        "post" => {
+            let p = arg(args, 0)?;
+            let body = arg(args, 1)?;
+            host.check_capability(&C::NetPost(p))?;
+            let mut headers = Vec::new();
+            let parsed_headers = match args.get(2) {
+                Some(JsValue::Array(h_arr)) => Some(h_arr.clone()),
+                Some(JsValue::String(s)) => {
+                    if let Ok(JsValue::Array(h_arr)) = crate::json_parse(s) {
+                        Some(h_arr)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
+            if let Some(h_arr) = parsed_headers {
+                for item in h_arr {
+                    if let JsValue::Array(pair) = item {
+                        if pair.len() == 2 {
+                            if let (JsValue::String(k), JsValue::String(v)) = (&pair[0], &pair[1]) {
+                                headers.push((k.clone(), v.clone()));
+                            }
+                        }
+                    }
+                }
+            }
+            JsValue::String(host.net_post(p, body, &headers)?)
         }
         "status" => {
             host.check_capability(&C::SysStatus)?;
@@ -245,6 +275,7 @@ impl<F: Fn(&str) -> Result<String, String>> AlloyOsHost for ProcessHost<F> {
             C::FsRead(p) => ("read", *p),
             C::FsWrite(p) => ("write", *p),
             C::NetFetch(p) => ("fetch", *p),
+            C::NetPost(p) => ("post", *p),
             C::SysStatus => ("status", ""),
             C::UiNotify => ("notify", ""),
             C::ForgeGenerate => ("forge", ""),
@@ -281,6 +312,27 @@ impl<F: Fn(&str) -> Result<String, String>> AlloyOsHost for ProcessHost<F> {
     }
     fn net_fetch(&mut self, p: &str) -> Result<String, String> {
         let v = self.call("fetch", &[p])?;
+        text(&v).map(ToString::to_string)
+    }
+    fn net_post(
+        &mut self,
+        p: &str,
+        body: &str,
+        headers: &[(String, String)],
+    ) -> Result<String, String> {
+        let h_val = JsValue::Array(
+            headers
+                .iter()
+                .map(|(k, v)| {
+                    JsValue::Array(alloc::vec![
+                        JsValue::String(k.clone()),
+                        JsValue::String(v.clone()),
+                    ])
+                })
+                .collect(),
+        );
+        let wire_headers = crate::json_stringify(&h_val);
+        let v = self.call("post", &[p, body, &wire_headers])?;
         text(&v).map(ToString::to_string)
     }
     fn sys_status(&self) -> SystemStatus {
@@ -379,5 +431,15 @@ mod tests {
         assert_eq!(execute_request(&request, &mut host).unwrap().text, "hello");
         let request = encode_request(source, AppHandler::CallTool, &args, 50001).unwrap();
         assert!(execute_request(&request, &mut host).is_err());
+    }
+    #[test]
+    fn dispatch_host_net_post_round_trip() {
+        let mut host = crate::VirtualHostEnv::new();
+        host.register_http_post_response("https://api.test/echo", "echoed");
+        let wire = "[\"post\",\"https://api.test/echo\",\"body text\",[[\"Content-Type\",\"text/plain\"]]]";
+        assert_eq!(
+            dispatch_host(wire, &mut host).unwrap(),
+            "\"echoed\""
+        );
     }
 }

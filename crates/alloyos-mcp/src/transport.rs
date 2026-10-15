@@ -23,6 +23,29 @@ pub fn allowed_public_get(url: &str) -> bool {
     !query.is_empty() && query.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"%-_.!~*'()".contains(&byte))
 }
 
+pub fn allowed_gemini_url(url: &str) -> bool {
+    if url.len() > 8192 || url.bytes().any(|byte| byte.is_ascii_control()) { return false; }
+    url.strip_prefix("https://generativelanguage.googleapis.com/v1beta/models/")
+        .and_then(|s| s.strip_suffix(":generateContent"))
+        .is_some_and(|id| {
+            !id.is_empty()
+                && id.len() <= 128
+                && id.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+        })
+}
+
+pub fn allowed_public_post(url: &str) -> bool {
+    allowed_gemini_url(url)
+}
+
+pub fn allowed_public_request(request: &HttpRequest) -> bool {
+    match request.method {
+        "GET" => request.headers.is_empty() && request.body.is_empty() && allowed_public_get(&request.url),
+        "POST" => allowed_public_post(&request.url),
+        _ => false,
+    }
+}
+
 #[derive(serde::Serialize)]
 pub struct HttpRequest {
     pub method: &'static str,
@@ -78,18 +101,22 @@ impl HttpClient {
         } else {
             let routes = self.routes.borrow();
             let key = if request.method == "POST" {
-                let rpc = McpValue::from_json(&request.body)
-                    .map_err(|_| McpError::invalid_params("invalid RPC request"))?;
+                let rpc = McpValue::from_json(&request.body);
                 let method = rpc
-                    .as_map()
+                    .as_ref()
+                    .ok()
+                    .and_then(McpValue::as_map)
                     .and_then(|map| map.get("method"))
-                    .and_then(McpValue::as_str)
-                    .unwrap_or("");
-                format!("POST {} {}", request.url, method)
+                    .and_then(McpValue::as_str);
+                if let Some(method) = method {
+                    format!("POST {} {}", request.url, method)
+                } else {
+                    format!("POST {}", request.url)
+                }
             } else {
                 request.url.clone()
             };
-            let body = routes.get(&key).cloned().ok_or_else(|| {
+            let body = routes.get(&key).or_else(|| routes.get(&request.url)).cloned().ok_or_else(|| {
                 McpError::internal_error(
                     "HTTP transport unavailable and no matching test fixture registered",
                 )
@@ -134,6 +161,38 @@ impl HttpClient {
         }
     }
     pub fn cancel_get(&mut self) {
+        if let Some(transport) = &mut self.transport { transport.cancel_request(); }
+    }
+    pub fn post(&mut self, url: &str, body: &str, headers: &[(String, String)]) -> Result<HttpResponse, McpError> {
+        self.request(&HttpRequest {
+            method: "POST",
+            url: url.to_string(),
+            headers: headers.to_vec(),
+            body: body.to_string(),
+        })
+    }
+    pub fn start_post(&mut self, url: &str, body: &str, headers: &[(String, String)]) -> Poll<Result<HttpResponse, McpError>> {
+        if body.len() > MAX_HTTP_BODY_BYTES {
+            return Poll::Ready(Err(McpError::invalid_params("HTTP request body exceeds limit")));
+        }
+        let request = HttpRequest {
+            method: "POST",
+            url: url.into(),
+            headers: headers.to_vec(),
+            body: body.into(),
+        };
+        match &mut self.transport {
+            Some(transport) => transport.start_request(&request).map(Self::check_response),
+            None => Poll::Ready(self.request(&request)),
+        }
+    }
+    pub fn poll_post(&mut self) -> Poll<Result<HttpResponse, McpError>> {
+        match &mut self.transport {
+            Some(transport) => transport.poll_request().map(Self::check_response),
+            None => Poll::Ready(Err(McpError::internal_error("no pending HTTP transport"))),
+        }
+    }
+    pub fn cancel_post(&mut self) {
         if let Some(transport) = &mut self.transport { transport.cancel_request(); }
     }
     fn check_response(response: Result<HttpResponse, String>) -> Result<HttpResponse, McpError> {

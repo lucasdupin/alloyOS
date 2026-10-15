@@ -463,6 +463,11 @@ impl NativeToolRegistry {
         self.mcp_registry.borrow().http_client().borrow_mut().get(url).map_err(|error| error.message)
     }
 
+    /// POST using a host-supplied HTTP transport, or an explicitly registered fixture.
+    pub fn net_post(&self, url: &str, body: &str, headers: &[(String, String)]) -> Result<alloyos_mcp::transport::HttpResponse, String> {
+        self.mcp_registry.borrow().http_client().borrow_mut().post(url, body, headers).map_err(|error| error.message)
+    }
+
     pub fn set_http_transport(&mut self, transport: alloc::boxed::Box<dyn alloyos_mcp::transport::HttpTransport>) {
         self.mcp_registry.borrow_mut().set_http_transport(transport);
     }
@@ -2791,6 +2796,19 @@ impl<'a> AlloyOsHost for RegistryHostAdapter<'a> {
     }
 
     fn net_fetch(&mut self, url: &str) -> Result<String, String> {
+        if let Some(resp) = self.registry.http_routes.get(url) {
+            Ok(resp.clone())
+        } else {
+            Err(format!("HTTP 404 Not Found: {}", url))
+        }
+    }
+
+    fn net_post(
+        &mut self,
+        url: &str,
+        _body: &str,
+        _headers: &[(String, String)],
+    ) -> Result<String, String> {
         if let Some(resp) = self.registry.http_routes.get(url) {
             Ok(resp.clone())
         } else {

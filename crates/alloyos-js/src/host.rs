@@ -152,6 +152,7 @@ pub enum CapabilityRequest<'a> {
     FsRead(&'a str),
     FsWrite(&'a str),
     NetFetch(&'a str),
+    NetPost(&'a str),
     SysStatus,
     UiNotify,
     ForgeGenerate,
@@ -441,6 +442,26 @@ impl ScriptCapabilities {
                     ))
                 }
             }
+            CapabilityRequest::NetPost(url) => {
+                let Some(host) = Self::extract_url_domain(url) else {
+                    return Err(alloc::format!(
+                        "CapabilityDenied: Invalid URL '{}' for NetPost",
+                        url
+                    ));
+                };
+                if self
+                    .net_domains
+                    .iter()
+                    .any(|d| Self::domain_matches(d, &host))
+                {
+                    Ok(())
+                } else {
+                    Err(alloc::format!(
+                        "CapabilityDenied: NetPost not permitted for domain '{}'",
+                        host
+                    ))
+                }
+            }
             CapabilityRequest::SysStatus => {
                 if self.allow_sys_status {
                     Ok(())
@@ -505,6 +526,16 @@ pub trait AlloyOsHost {
 
     /// Performs an HTTP GET request via the network stack (`AlloyOS.net.fetch(url)`).
     fn net_fetch(&mut self, url: &str) -> Result<String, String>;
+
+    /// Performs an HTTP POST request via the network stack (`AlloyOS.net.post(url, body, headers)`).
+    fn net_post(
+        &mut self,
+        _url: &str,
+        _body: &str,
+        _headers: &[(String, String)],
+    ) -> Result<String, String> {
+        Err("HTTP POST is not supported by this host".to_string())
+    }
 
     /// Queries system uptime and memory statistics (`AlloyOS.sys.status()`).
     fn sys_status(&self) -> SystemStatus;
@@ -609,6 +640,16 @@ impl<'a, H: AlloyOsHost + ?Sized> AlloyOsHost for CapabilityScopedHost<'a, H> {
         self.inner.net_fetch(url)
     }
 
+    fn net_post(
+        &mut self,
+        url: &str,
+        body: &str,
+        headers: &[(String, String)],
+    ) -> Result<String, String> {
+        self.check_capability(&CapabilityRequest::NetPost(url))?;
+        self.inner.net_post(url, body, headers)
+    }
+
     fn sys_status(&self) -> SystemStatus {
         if self.check_capability(&CapabilityRequest::SysStatus).is_err() {
             return SystemStatus {
@@ -675,10 +716,12 @@ pub type ForgeHandler = dyn FnMut(&str, Option<&str>, u32) -> Result<String, Str
 pub struct VirtualHostEnv {
     pub files: BTreeMap<String, String>,
     pub http_routes: BTreeMap<String, String>,
+    pub http_post_routes: BTreeMap<String, String>,
     /// App hosts may suspend a missing GET and replay with its response. No
     /// filesystem changes from the suspended invocation may be committed.
     pub defer_network: bool,
     pub pending_fetch: Option<String>,
+    pub pending_post: Option<(String, String, Vec<(String, String)>)>,
     pub status: SystemStatus,
     pub notifications: Vec<String>,
     pub logs: Vec<String>,
@@ -714,8 +757,10 @@ impl VirtualHostEnv {
         Self {
             files: BTreeMap::new(),
             http_routes: BTreeMap::new(),
+            http_post_routes: BTreeMap::new(),
             defer_network: false,
             pending_fetch: None,
+            pending_post: None,
             status: SystemStatus::default(),
             notifications: Vec::new(),
             logs: Vec::new(),
@@ -742,6 +787,11 @@ impl VirtualHostEnv {
     /// Registers a mock HTTP response for `AlloyOS.net.fetch(url)`.
     pub fn register_http_response(&mut self, url: &str, body: &str) {
         self.http_routes.insert(url.to_string(), body.to_string());
+    }
+
+    /// Registers a mock HTTP response for `AlloyOS.net.post(url, ...)`.
+    pub fn register_http_post_response(&mut self, url: &str, body: &str) {
+        self.http_post_routes.insert(url.to_string(), body.to_string());
     }
 
     /// Normalizes a filesystem path so leading slashes are consistent.
@@ -828,6 +878,24 @@ impl AlloyOsHost for VirtualHostEnv {
         } else if self.defer_network {
             self.pending_fetch = Some(url.to_string());
             Err("HTTP GET suspended".into())
+        } else {
+            Err(alloc::format!("HTTP 404 Not Found: {}", url))
+        }
+    }
+
+    fn net_post(
+        &mut self,
+        url: &str,
+        body: &str,
+        headers: &[(String, String)],
+    ) -> Result<String, String> {
+        self.capabilities.check(&CapabilityRequest::NetPost(url))?;
+        let base_url = url.split('?').next().unwrap_or(url);
+        if let Some(resp) = self.http_post_routes.get(url).or_else(|| self.http_post_routes.get(base_url)).or_else(|| self.http_routes.get(url)).or_else(|| self.http_routes.get(base_url)) {
+            Ok(resp.clone())
+        } else if self.defer_network {
+            self.pending_post = Some((url.to_string(), body.to_string(), headers.to_vec()));
+            Err("HTTP POST suspended".into())
         } else {
             Err(alloc::format!("HTTP 404 Not Found: {}", url))
         }

@@ -169,15 +169,89 @@ pub fn registry_get(url: &str) -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({"status":status,"headers":[],"body":body}))
 }
 
+pub fn registry_post(url: &str, body: &str, headers: &[(String, String)]) -> Result<serde_json::Value, String> {
+    if !alloyos_mcp::transport::allowed_public_post(url) { return Err("registry destination rejected".into()); }
+    if body.len() > 1024 * 1024 || headers.len() > 8 { return Err("registry request too large".into()); }
+    for (name, value) in headers {
+        if value.len() > 4096 + 7 || value.bytes().any(|b| b.is_ascii_control()) || name.bytes().any(|b| b.is_ascii_control()) {
+            return Err("invalid registry header".into());
+        }
+    }
+    let mut config = format!(
+        "url = {}\nrequest = \"POST\"\nproto = \"=https\"\nconnect-timeout = 10\nmax-time = 45\nsilent\nwrite-out = \"\\n%{{http_code}}\"\n",
+        quote(url)
+    );
+    for (name, value) in headers {
+        config.push_str(&format!("header = {}\n", quote(&format!("{name}: {value}"))));
+    }
+    config.push_str(&format!("data = {}\n", quote(body)));
+
+    let mut child = Command::new("curl")
+        .args(["-q", "--config", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| "registry HTTP process failed")?;
+    let mut stdin = child.stdin.take().ok_or("registry stdin unavailable")?;
+    use std::io::Write;
+    stdin.write_all(config.as_bytes()).map_err(|_| "registry config write failed")?;
+    drop(stdin);
+    let mut bytes = Vec::new();
+    child
+        .stdout
+        .take()
+        .ok_or("registry stdout unavailable")?
+        .take(1024 * 1024 + 5)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "registry read failed")?;
+    if bytes.len() > 1024 * 1024 + 4 {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("registry response too large".into());
+    }
+    if !child.wait().map_err(|_| "registry wait failed")?.success() {
+        return Err("registry HTTPS failed".into());
+    }
+    let response = String::from_utf8(bytes).map_err(|_| "registry response encoding failed")?;
+    let (body_resp, status) = response.rsplit_once('\n').ok_or("registry status missing")?;
+    let status: u16 = status.parse().map_err(|_| "invalid registry status")?;
+    if std::env::var_os("ALLOYOS_TRACE_E2E").is_some() {
+        eprintln!("[mcp-post] stage=http_response status={status} body_bytes={}", body_resp.len());
+    }
+    Ok(serde_json::json!({"status": status, "headers": [], "body": body_resp}))
+}
+
 pub fn registry_relay(line: &str) -> Option<String> {
     if !line.starts_with("MCPHTTP1\t") { return None; }
     let fields: Vec<_> = line.trim_end_matches(['\r', '\n']).split('\t').collect();
     let id = fields.get(1).and_then(|id| id.parse::<u64>().ok()).unwrap_or(0);
     let result = (|| {
-        if fields.len() != 4 || fields[2] != "get" || line.len() > HTTP_FRAME_LIMIT { return Err("invalid registry frame".into()); }
+        if fields.len() != 4 || line.len() > HTTP_FRAME_LIMIT { return Err("invalid registry frame".into()); }
         let value: serde_json::Value = serde_json::from_str(&decode_hex(fields[3]).map_err(|_| "invalid registry hex")?).map_err(|_| "invalid registry JSON")?;
-        if value["method"] != "GET" || value["body"] != "" || value["headers"].as_array().is_none_or(|headers| !headers.is_empty()) { return Err("invalid registry HTTP method/headers".into()); }
-        registry_get(value["url"].as_str().ok_or("missing registry URL")?)
+        match fields[2] {
+            "get" => {
+                if value["method"] != "GET" || value["body"] != "" || value["headers"].as_array().is_none_or(|headers| !headers.is_empty()) { return Err("invalid registry HTTP method/headers".into()); }
+                registry_get(value["url"].as_str().ok_or("missing registry URL")?)
+            }
+            "post" => {
+                if value["method"] != "POST" { return Err("invalid registry HTTP method".into()); }
+                let url = value["url"].as_str().ok_or("missing registry URL")?;
+                let body = value["body"].as_str().unwrap_or("");
+                let headers: Vec<(String, String)> = value["headers"].as_array().map(|arr| {
+                    arr.iter().filter_map(|h| {
+                        if let Some(pair) = h.as_array() {
+                            if pair.len() == 2 {
+                                return Some((pair[0].as_str()?.to_string(), pair[1].as_str()?.to_string()));
+                            }
+                        }
+                        None
+                    }).collect()
+                }).unwrap_or_default();
+                registry_post(url, body, &headers)
+            }
+            _ => Err("unsupported registry HTTP command".into()),
+        }
     })();
     Some(match result {
         Ok(response) => format!("MCPHTTP1\t{id}\tok\t{}\n", encode_hex(&response.to_string())),
@@ -407,6 +481,16 @@ mod tests {
             let reply = registry_relay(&frame).unwrap();
             assert_eq!(reply, "MCPHTTP1\t9\terror\tregistry_https_failed\n");
             assert!(!reply.contains("fixture-secret"));
+        }
+        for value in [
+            serde_json::json!({"method":"POST","url":"https://example.com/api","headers":[],"body":"{}"}),
+            serde_json::json!({"method":"POST","url":"https://registry.modelcontextprotocol.io/v0.1/servers?search=gmail","headers":[],"body":"{}"}),
+            serde_json::json!({"method":"POST","url":"https://generativelanguage.googleapis.com/v1beta/models/../evil:generateContent","headers":[],"body":"{}"}),
+            serde_json::json!({"method":"POST","url":"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash:generateContent","headers":[["x-other\r\ninjected","val"]],"body":"{}"}),
+        ] {
+            let frame = format!("MCPHTTP1\t10\tpost\t{}\n", encode_hex(&value.to_string()));
+            let reply = registry_relay(&frame).unwrap();
+            assert_eq!(reply, "MCPHTTP1\t10\terror\tregistry_https_failed\n");
         }
     }
 

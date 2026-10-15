@@ -376,6 +376,15 @@ impl AlloyOsHost for KernelVfsBackend {
         Err(format!("Kernel net_fetch offline for URL: {}", url))
     }
 
+    fn net_post(
+        &mut self,
+        url: &str,
+        _body: &str,
+        _headers: &[(String, String)],
+    ) -> Result<String, String> {
+        Err(format!("Kernel net_post offline for URL: {}", url))
+    }
+
     fn sys_status(&self) -> SystemStatus {
         self.current_system_status()
     }

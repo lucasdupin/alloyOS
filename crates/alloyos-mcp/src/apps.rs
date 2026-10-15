@@ -274,6 +274,8 @@ pub struct JsApp {
     http_client: Option<Rc<RefCell<crate::transport::HttpClient>>>,
     pending_fetch: Option<(String, BTreeMap<String, McpValue>, String)>,
     fetched: BTreeMap<String, String>,
+    pending_post: Option<(String, BTreeMap<String, McpValue>, String, String, Vec<(String, String)>)>,
+    fetched_posts: BTreeMap<String, String>,
     uptime_ms: u64,
     wall_clock_ms: Option<u64>,
     tile_ids: Vec<String>,
@@ -304,6 +306,8 @@ impl JsApp {
             http_client: None,
             pending_fetch: None,
             fetched: BTreeMap::new(),
+            pending_post: None,
+            fetched_posts: BTreeMap::new(),
             uptime_ms: 0,
             wall_clock_ms: None,
             tile_ids: Vec::new(),
@@ -531,23 +535,45 @@ impl McpApp for JsApp {
                 Poll::Ready(Err(error)) => {
                     self.pending_fetch = None;
                     self.fetched.clear();
+                    self.pending_post = None;
+                    self.fetched_posts.clear();
                     return Poll::Ready(Err(error));
                 }
                 Poll::Ready(Ok(response)) => { self.fetched.insert(url.clone(), response.body); }
             }
             self.pending_fetch = None;
         }
+        if let Some((pending_name, pending_args, url, _, _)) = &self.pending_post {
+            if pending_name != name || pending_args != args {
+                return Poll::Ready(Err(McpError::invalid_params("another app tool invocation is pending")));
+            }
+            let response = client.borrow_mut().poll_post();
+            match response {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Err(error)) => {
+                    self.pending_fetch = None;
+                    self.fetched.clear();
+                    self.pending_post = None;
+                    self.fetched_posts.clear();
+                    return Poll::Ready(Err(error));
+                }
+                Poll::Ready(Ok(response)) => { self.fetched_posts.insert(url.clone(), response.body); }
+            }
+            self.pending_post = None;
+        }
         loop {
             let mut host = self.make_host();
             host.defer_network = true;
             host.http_routes.extend(self.fetched.clone());
+            host.http_post_routes.extend(self.fetched_posts.clone());
             let result = self.invoke_tool(name, args, &mut host);
             if let Some(url) = host.pending_fetch {
                 // All host-local mutations are discarded on suspension. Responses
                 // are invocation-local and never become a stale global HTTP cache.
-                if self.fetched.len() >= 4 {
+                if self.fetched.len() + self.fetched_posts.len() >= 4 {
                     self.fetched.clear();
-                    return Poll::Ready(Err(McpError::internal_error("app exceeded four HTTP GETs per invocation")));
+                    self.fetched_posts.clear();
+                    return Poll::Ready(Err(McpError::internal_error("app exceeded four HTTP requests per invocation")));
                 }
                 match client.borrow_mut().start_get(&url) {
                     Poll::Pending => {
@@ -557,6 +583,25 @@ impl McpApp for JsApp {
                     Poll::Ready(Ok(response)) => { self.fetched.insert(url, response.body); }
                     Poll::Ready(Err(error)) => {
                         self.fetched.clear();
+                        self.fetched_posts.clear();
+                        return Poll::Ready(Err(error));
+                    }
+                }
+            } else if let Some((url, body, headers)) = host.pending_post {
+                if self.fetched.len() + self.fetched_posts.len() >= 4 {
+                    self.fetched.clear();
+                    self.fetched_posts.clear();
+                    return Poll::Ready(Err(McpError::internal_error("app exceeded four HTTP requests per invocation")));
+                }
+                match client.borrow_mut().start_post(&url, &body, &headers) {
+                    Poll::Pending => {
+                        self.pending_post = Some((name.into(), args.clone(), url, body, headers));
+                        return Poll::Pending;
+                    }
+                    Poll::Ready(Ok(response)) => { self.fetched_posts.insert(url, response.body); }
+                    Poll::Ready(Err(error)) => {
+                        self.fetched.clear();
+                        self.fetched_posts.clear();
                         return Poll::Ready(Err(error));
                     }
                 }
@@ -564,6 +609,7 @@ impl McpApp for JsApp {
                 // Restore the original routes before syncing durable app state.
                 host.http_routes = self.http_routes.as_ref().map(|routes| routes.borrow().clone()).unwrap_or_default();
                 self.fetched.clear();
+                self.fetched_posts.clear();
                 if result.is_ok() { self.sync_host(host); }
                 return Poll::Ready(result);
             }
@@ -574,7 +620,11 @@ impl McpApp for JsApp {
         if self.pending_fetch.take().is_some() {
             if let Some(client) = &self.http_client { client.borrow_mut().cancel_get(); }
         }
+        if self.pending_post.take().is_some() {
+            if let Some(client) = &self.http_client { client.borrow_mut().cancel_post(); }
+        }
         self.fetched.clear();
+        self.fetched_posts.clear();
     }
 
     fn read_resource(&self, uri: &str) -> Result<McpResourceContent, McpError> {

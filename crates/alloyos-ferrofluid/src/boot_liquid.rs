@@ -10,6 +10,7 @@ pub struct BootLiquid {
     rows: Vec<f32>,
     columns: Vec<f32>,
     time: f32,
+    started_at: Option<Duration>,
     drops: [(f32, f32, f32); 4],
 }
 
@@ -21,6 +22,7 @@ impl BootLiquid {
             rows: vec![0.0; size.height as usize],
             columns: vec![0.0; size.width as usize],
             time: 0.0,
+            started_at: None,
             drops: [(0.0, 0.0, 0.0); 4],
         }
     }
@@ -39,18 +41,24 @@ impl BootLiquid {
     }
 
     pub fn advance(&mut self, elapsed: Duration) {
+        let started_at = *self.started_at.get_or_insert(elapsed);
+        let elapsed = elapsed.saturating_sub(started_at);
         // Reduce time before conversion to preserve sub-frame precision on long boots.
         let t = (elapsed.as_secs_f64() % 3600.0) as f32;
         self.time = t;
+        // Hand off from the kernel's pristine logo without a displacement jump.
+        // Smoothstep keeps both ends of the one-second ramp at zero velocity.
+        let progress = elapsed.as_secs_f32().min(1.0);
+        let strength = progress * progress * (3.0 - 2.0 * progress);
         let rect = self.bounds();
         for y in rect.y..rect.y + rect.height {
             let v = (y as f32 - self.size.height as f32 * 0.5) / self.scale;
-            self.rows[y as usize] = self.scale
+            self.rows[y as usize] = strength * self.scale
                 * (0.65 * libm::sinf(v * 0.13 + t * 0.7) + 0.25 * libm::sinf(v * 0.29 - t * 0.5));
         }
         for x in rect.x..rect.x + rect.width {
             let u = (x as f32 - self.size.width as f32 * 0.5) / self.scale;
-            self.columns[x as usize] = self.scale
+            self.columns[x as usize] = strength * self.scale
                 * (0.8 * libm::sinf(u * 0.09 - t * 0.6) + 0.3 * libm::sinf(u * 0.21 + t * 0.8));
         }
     }
@@ -150,6 +158,29 @@ impl BootLiquid {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_frame_is_pristine_even_after_process_startup_delay() {
+        let size = PhysicalSize::new(240, 240);
+        let scene: Vec<_> = (0..240 * 240)
+            .map(|i| {
+                let value = ((i * 37 + i / 240 * 19) % 256) as u8;
+                Rgb8Pixel { r: value, g: value, b: value }
+            })
+            .collect();
+        let mut liquid = BootLiquid::new(size, 1.0);
+        liquid.prepare_drops(&scene);
+        liquid.advance(Duration::from_secs(5));
+        for y in 0..size.height {
+            for x in 0..size.width {
+                assert_eq!(liquid.pixel(&scene, x, y), scene[(y * size.width + x) as usize]);
+            }
+        }
+        liquid.advance(Duration::from_millis(5016));
+        assert!(liquid.rows.iter().chain(&liquid.columns).all(|v| v.abs() < 0.002));
+        liquid.advance(Duration::from_secs(6));
+        assert!(liquid.rows.iter().chain(&liquid.columns).any(|v| v.abs() > 0.5));
+    }
 
     #[test]
     fn droplets_detach_fall_and_repaint_without_trails() {

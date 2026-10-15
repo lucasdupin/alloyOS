@@ -12,25 +12,31 @@ use alloyos_mcp::{
     AppTile,
 };
 use core::cell::RefCell;
-/// Minimal kernel-owned startup bars; no font, assets or Slint dependency.
+include!(concat!(env!("OUT_DIR"), "/boot_logo.rs"));
+
+/// Present the exact first Ferrofluid frame while its executable loads.
 pub fn boot_splash(size: alloyos_proto::FramebufferInfo) {
     if !super::virtio_gpu::has_hardware_display() {
         return;
     }
-    let mut pixels = alloc::vec![0xff101116;(size.width as usize)*(size.height as usize)];
-    let bar_width = (size.width / 10).max(1);
-    let bar_height = (size.height / 40).max(1);
-    for bar in 0..3 {
-        let x = size.width / 2 - bar_width * 2 + bar * bar_width * 3 / 2;
-        let y = size.height / 2 - bar_height / 2;
-        for row in y..y + bar_height {
-            for col in x..x + bar_width {
-                pixels[(row * size.width + col) as usize] = 0xff759aa3;
-            }
+    let mut pixels = alloc::vec![0xff000000;(size.width as usize)*(size.height as usize)];
+    let origin_x = BOOT_LOGO_X
+        + (size.width as i64 - alloyos_proto::display::PHONE_WIDTH as i64) / 2;
+    let origin_y = BOOT_LOGO_Y
+        + (size.height as i64 - alloyos_proto::display::PHONE_HEIGHT as i64) / 2;
+    for y in 0..BOOT_LOGO_HEIGHT {
+        let dest_y = origin_y + y as i64;
+        if !(0..size.height as i64).contains(&dest_y) { continue; }
+        for x in 0..BOOT_LOGO_WIDTH {
+            let dest_x = origin_x + x as i64;
+            if !(0..size.width as i64).contains(&dest_x) { continue; }
+            let intensity = BOOT_LOGO[y * BOOT_LOGO_WIDTH + x] as u32;
+            pixels[dest_y as usize * size.width as usize + dest_x as usize] =
+                0xff000000 | intensity * 0x010101;
         }
     }
     super::virtio_gpu::present_ui_frame(&pixels, size.width, size.height);
-    crate::serial_println!("[splash] Kernel startup indicator presented");
+    crate::serial_println!("[splash] Boot wordmark presented");
 }
 static SERVICE: IrqMutex<Service> = IrqMutex::new(Service {
     pid: 0,

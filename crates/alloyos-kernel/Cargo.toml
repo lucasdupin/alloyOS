@@ -21,6 +21,10 @@ alloyos-boot = { path = "../alloyos-boot" }
 alloyos-ferrofluid = { path = "../alloyos-ferrofluid" }
 png = "=0.18.1"
 
+[build-dependencies]
+alloyos-proto = { path = "../alloyos-proto" }
+alloyos-ferrofluid = { path = "../alloyos-ferrofluid" }
+
 [features]
 default = []
 host-tests = []

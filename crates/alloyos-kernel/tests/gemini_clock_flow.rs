@@ -262,7 +262,7 @@ fn gemini_3_8_flash_clock_tile_and_subsequent_chat_flow() {
         .filter(|s| !s.trim().is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            PathBuf::from("target/screenshots")
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/screenshots/gemini-clock-flow")
         });
     let screenshot1_path = artifact_dir.join("gemini_clock_tile_turn1.png");
     let rgb1: Vec<u8> = ui

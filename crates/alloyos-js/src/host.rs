@@ -675,6 +675,10 @@ pub type ForgeHandler = dyn FnMut(&str, Option<&str>, u32) -> Result<String, Str
 pub struct VirtualHostEnv {
     pub files: BTreeMap<String, String>,
     pub http_routes: BTreeMap<String, String>,
+    /// App hosts may suspend a missing GET and replay with its response. No
+    /// filesystem changes from the suspended invocation may be committed.
+    pub defer_network: bool,
+    pub pending_fetch: Option<String>,
     pub status: SystemStatus,
     pub notifications: Vec<String>,
     pub logs: Vec<String>,
@@ -710,6 +714,8 @@ impl VirtualHostEnv {
         Self {
             files: BTreeMap::new(),
             http_routes: BTreeMap::new(),
+            defer_network: false,
+            pending_fetch: None,
             status: SystemStatus::default(),
             notifications: Vec::new(),
             logs: Vec::new(),
@@ -819,6 +825,9 @@ impl AlloyOsHost for VirtualHostEnv {
         self.capabilities.check(&CapabilityRequest::NetFetch(url))?;
         if let Some(resp) = self.http_routes.get(url) {
             Ok(resp.clone())
+        } else if self.defer_network {
+            self.pending_fetch = Some(url.to_string());
+            Err("HTTP GET suspended".into())
         } else {
             Err(alloc::format!("HTTP 404 Not Found: {}", url))
         }

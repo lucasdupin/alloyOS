@@ -6,6 +6,7 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefCell;
+use core::task::Poll;
 
 use crate::packages::{PackageService, ValidatedPackageRevision};
 
@@ -55,6 +56,10 @@ pub trait McpApp {
         tool_name: &str,
         args: &BTreeMap<String, McpValue>,
     ) -> Result<McpValue, McpError>;
+    fn poll_call_tool(&mut self, name: &str, args: &BTreeMap<String, McpValue>) -> Poll<Result<McpValue, McpError>> {
+        Poll::Ready(self.call_tool(name, args))
+    }
+    fn cancel_pending_tool(&mut self) {}
     fn read_resource(&self, uri: &str) -> Result<McpResourceContent, McpError>;
     fn get_prompt(&self, name: &str, args: &BTreeMap<String, String>) -> Result<String, McpError>;
     fn render_tile(&self, tile_id: &str) -> Result<AppTile, McpError> {
@@ -324,7 +329,8 @@ impl McpRegistry {
                         scheduler.clone(),
                     )?
                     .with_vfs_files(vfs.clone())
-                    .with_http_routes(self.http_routes.clone()),
+                    .with_http_routes(self.http_routes.clone())
+                    .with_http_client(self.http_client.clone()),
                 )
             };
             self.register_app(app)?;
@@ -542,6 +548,25 @@ impl McpRegistry {
             .map_err(|e| e.to_mcp_error())?;
 
         entry.app.call_tool(namespaced_tool, args)
+    }
+
+    /// Cooperative counterpart of call_tool_as, with the same caller/revision guards.
+    pub fn poll_call_tool_as(&mut self, caller: &McpCaller, name: &str, args: &BTreeMap<String, McpValue>) -> Poll<Result<McpValue, McpError>> {
+        let Some((app_id, _)) = name.split_once('.') else {
+            return Poll::Ready(Err(McpError::invalid_params("tool name must be namespaced")));
+        };
+        if let Err(error) = self.verify_caller_access(caller, app_id) { return Poll::Ready(Err(error)); }
+        let Some(entry) = self.apps.get_mut(app_id) else {
+            return Poll::Ready(Err(McpError::method_not_found("unknown MCP app")));
+        };
+        if let Err(error) = entry.guard.enforce_capability(&AppCapability::ExposeMcpTools) {
+            return Poll::Ready(Err(error.to_mcp_error()));
+        }
+        entry.app.poll_call_tool(name, args)
+    }
+
+    pub fn cancel_pending_tools(&mut self) {
+        for entry in self.apps.values_mut() { entry.app.cancel_pending_tool(); }
     }
 
     /// Invoke a namespaced MCP tool (`<app_id>.<tool_name>`) as the central `Welder` orchestrator.

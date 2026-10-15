@@ -216,6 +216,7 @@ pub struct NativeToolRegistry {
     sys_status: SystemStatus,
     http_routes: BTreeMap<String, String>,
     pending_service_search: Option<(ToolCall, String)>,
+    pending_app_call: Option<ToolCall>,
     notifications: Vec<String>,
     logs: Vec<String>,
     execution_reports: Vec<ScriptExecutionReport>,
@@ -298,6 +299,7 @@ impl NativeToolRegistry {
             },
             http_routes: BTreeMap::new(),
             pending_service_search: None,
+            pending_app_call: None,
             notifications: Vec::new(),
             logs: Vec::new(),
             execution_reports: Vec::new(),
@@ -404,8 +406,11 @@ impl NativeToolRegistry {
         Ok(count)
     }
 
-    fn persist_app_files(&mut self) -> Result<(), String> {
+    fn persist_app_files(&mut self, previous: &BTreeMap<String, String>) -> Result<(), String> {
         let files = self.mcp_registry.borrow().runtime_files();
+        for path in previous.keys() {
+            if path.starts_with("/var/") && !files.contains_key(path) { self.delete_vfs_raw(path)?; }
+        }
         for (path, value) in files {
             if path.starts_with("/var/") && self.vfs_files.get(&path) != Some(&value) {
                 self.write_vfs_raw(&path, &value)?;
@@ -1692,14 +1697,115 @@ impl NativeToolRegistry {
         Ok(ToolExecutionOutput { tool_name: call.name.clone(), output_json: serde_json::json!({"ok":true,"source":"official_mcp_registry","query":query,"count":servers.len(),"servers":servers,"metadata":value["metadata"]}).to_string(), synthesized_view: None })
     }
 
+    fn poll_app_tool(&mut self, call: &ToolCall, ui_synth: &mut AgentUiSynthesizer) -> Result<Poll<ToolExecutionOutput>, AiError> {
+        let raw_app = extract_json_string_field(&call.arguments_json, "app")
+            .ok_or_else(|| AiError::InvalidToolArguments("missing 'app'".into()))?;
+        let app_id = raw_app.trim_end_matches(".mcp").to_string();
+        let raw_tool = extract_json_string_field(&call.arguments_json, "tool")
+            .ok_or_else(|| AiError::InvalidToolArguments("missing 'tool'".into()))?;
+
+        // Enforce Welder-centralized orchestration: if a caller_app is supplied, verify via McpCaller::App
+        let caller = if let Some(caller_app) =
+            extract_json_string_field(&call.arguments_json, "caller_app")
+        {
+            McpCaller::App(caller_app)
+        } else {
+            McpCaller::Welder
+        };
+
+        let full_tool_name = if raw_tool.starts_with(&format!("{}.", app_id)) {
+            raw_tool.clone()
+        } else {
+            format!("{}.{}", app_id, raw_tool)
+        };
+
+        let outer_args: serde_json::Value = serde_json::from_str(&call.arguments_json)
+            .map_err(|_| AiError::InvalidToolArguments("invalid JSON arguments".into()))?;
+        let raw_args_str = match outer_args.get("args") {
+            Some(serde_json::Value::String(args)) => args.clone(),
+            Some(serde_json::Value::Object(args)) => serde_json::Value::Object(args.clone()).to_string(),
+            Some(_) => return Err(AiError::InvalidToolArguments("MCP args must be a JSON string or object".into())),
+            None => call.arguments_json.clone(),
+        };
+        let args_map = alloyos_mcp::McpValue::from_json(&raw_args_str)
+            .map_err(|error| AiError::InvalidToolArguments(error.message))?
+            .as_map().cloned()
+            .ok_or_else(|| AiError::InvalidToolArguments("MCP args must be a JSON object".into()))?;
+
+        let previous_files = self.mcp_registry.borrow().runtime_files();
+        let result = self
+            .mcp_registry
+            .borrow_mut()
+            .poll_call_tool_as(&caller, &full_tool_name, &args_map);
+        let mcp_result = match result {
+            Poll::Pending => return Ok(Poll::Pending),
+            Poll::Ready(result) => result,
+        }
+            .map_err(|e| {
+                if e.code == alloyos_mcp::ERR_SANDBOX_VIOLATION {
+                    AiError::PolicyViolation(e.message)
+                } else {
+                    AiError::InvalidToolArguments(e.message)
+                }
+            })?;
+
+        self.persist_app_files(&previous_files)
+            .map_err(AiError::InvalidToolArguments)?;
+        let _ = self.sync_scheduler_to_vfs();
+
+        let text_only = mcp_result.as_map().and_then(|map| map.get("presentation")).and_then(alloyos_mcp::McpValue::as_str) == Some("text");
+        let tile = {
+            let registry = self.mcp_registry.borrow();
+            registry
+                .list_tiles()
+                .into_iter()
+                .find(|tile| tile.folder() == Some(app_id.as_str()))
+                .and_then(|tile| registry.render_tile(&tile.tile_id).ok())
+        };
+
+        let content_json = mcp_result.to_json();
+        let view = if text_only { None } else { Some(ui_synth.synthesize_from_mcp_output_with_tile(
+            &UiCallerOrigin::AiAgent,
+            &app_id,
+            &full_tool_name,
+            &content_json,
+            tile,
+        )?) };
+        Ok(Poll::Ready(ToolExecutionOutput {
+            tool_name: call.name.clone(),
+            output_json: content_json,
+            synthesized_view: view,
+        }))
+    }
+
+
     /// The UI polls network tools between frames, rather than blocking on HTTP.
     pub fn cancel_pending_tool(&mut self, id: &str) {
+        if self.pending_app_call.as_ref().is_some_and(|call| call.id == id) {
+            self.mcp_registry.borrow_mut().cancel_pending_tools();
+            self.pending_app_call = None;
+        }
         if self.pending_service_search.as_ref().is_some_and(|(call,_)|call.id == id) {
             self.pending_service_search = None;
             self.mcp_registry.borrow().http_client().borrow_mut().cancel_get();
         }
     }
     pub fn poll_execute_tool(&mut self, call: &ToolCall, ui: &mut AgentUiSynthesizer) -> Poll<Result<ToolExecutionOutput, AiError>> {
+        if self.pending_app_call.as_ref().is_some_and(|pending| pending != call)
+            || self.pending_service_search.as_ref().is_some_and(|(pending, _)| pending != call) {
+            return Poll::Ready(Err(AiError::PolicyViolation("another network tool is pending".into())));
+        }
+        if call.name == "mcp_call_tool" {
+            return match self.poll_app_tool(call, ui) {
+                Ok(Poll::Pending) => { self.pending_app_call = Some(call.clone()); Poll::Pending }
+                Ok(Poll::Ready(output)) => { self.pending_app_call = None; Poll::Ready(Ok(output)) }
+                Err(error) => {
+                    self.mcp_registry.borrow_mut().cancel_pending_tools();
+                    self.pending_app_call = None;
+                    Poll::Ready(Err(error))
+                }
+            };
+        }
         if call.name != "mcp_search_services" { return Poll::Ready(self.execute_tool(call, ui)); }
         let client = self.mcp_registry.borrow().http_client();
         let (query, response) = if let Some((pending, query)) = &self.pending_service_search {
@@ -2323,80 +2429,10 @@ impl NativeToolRegistry {
                     synthesized_view: None,
                 })
             }
-            "mcp_call_tool" => {
-                let raw_app = extract_json_string_field(&call.arguments_json, "app")
-                    .ok_or_else(|| AiError::InvalidToolArguments("missing 'app'".into()))?;
-                let app_id = raw_app.trim_end_matches(".mcp").to_string();
-                let raw_tool = extract_json_string_field(&call.arguments_json, "tool")
-                    .ok_or_else(|| AiError::InvalidToolArguments("missing 'tool'".into()))?;
-
-                // Enforce Welder-centralized orchestration: if a caller_app is supplied, verify via McpCaller::App
-                let caller = if let Some(caller_app) =
-                    extract_json_string_field(&call.arguments_json, "caller_app")
-                {
-                    McpCaller::App(caller_app)
-                } else {
-                    McpCaller::Welder
-                };
-
-                let full_tool_name = if raw_tool.starts_with(&format!("{}.", app_id)) {
-                    raw_tool.clone()
-                } else {
-                    format!("{}.{}", app_id, raw_tool)
-                };
-
-                let outer_args: serde_json::Value = serde_json::from_str(&call.arguments_json)
-                    .map_err(|_| AiError::InvalidToolArguments("invalid JSON arguments".into()))?;
-                let raw_args_str = match outer_args.get("args") {
-                    Some(serde_json::Value::String(args)) => args.clone(),
-                    Some(serde_json::Value::Object(args)) => serde_json::Value::Object(args.clone()).to_string(),
-                    Some(_) => return Err(AiError::InvalidToolArguments("MCP args must be a JSON string or object".into())),
-                    None => call.arguments_json.clone(),
-                };
-                let args_map = alloyos_mcp::McpValue::from_json(&raw_args_str)
-                    .map_err(|error| AiError::InvalidToolArguments(error.message))?
-                    .as_map().cloned()
-                    .ok_or_else(|| AiError::InvalidToolArguments("MCP args must be a JSON object".into()))?;
-
-                let mcp_result = self
-                    .mcp_registry
-                    .borrow_mut()
-                    .call_tool_as(&caller, &full_tool_name, &args_map)
-                    .map_err(|e| {
-                        if e.code == alloyos_mcp::ERR_SANDBOX_VIOLATION {
-                            AiError::PolicyViolation(e.message)
-                        } else {
-                            AiError::InvalidToolArguments(e.message)
-                        }
-                    })?;
-
-                self.persist_app_files()
-                    .map_err(AiError::InvalidToolArguments)?;
-                let _ = self.sync_scheduler_to_vfs();
-
-                let tile = {
-                    let registry = self.mcp_registry.borrow();
-                    registry
-                        .list_tiles()
-                        .into_iter()
-                        .find(|tile| tile.folder() == Some(app_id.as_str()))
-                        .and_then(|tile| registry.render_tile(&tile.tile_id).ok())
-                };
-
-                let content_json = mcp_result.to_json();
-                let view = ui_synth.synthesize_from_mcp_output_with_tile(
-                    &UiCallerOrigin::AiAgent,
-                    &app_id,
-                    &full_tool_name,
-                    &content_json,
-                    tile,
-                )?;
-                Ok(ToolExecutionOutput {
-                    tool_name: call.name.clone(),
-                    output_json: content_json,
-                    synthesized_view: Some(view),
-                })
-            }
+            "mcp_call_tool" => loop {
+                if let Poll::Ready(result) = self.poll_execute_tool(call, ui_synth) { return result; }
+                core::hint::spin_loop();
+            },
             "mcp_read_resource" => {
                 let raw_app = extract_json_string_field(&call.arguments_json, "app")
                     .ok_or_else(|| AiError::InvalidToolArguments("missing 'app'".into()))?;
@@ -2434,17 +2470,19 @@ impl NativeToolRegistry {
                 };
 
                 let payload = resource_content.text;
-                let view = ui_synth.synthesize_from_mcp_output_with_tile(
+                let text_only = serde_json::from_str::<serde_json::Value>(&payload).ok()
+                    .is_some_and(|value| value["presentation"] == "text");
+                let view = if text_only { None } else { Some(ui_synth.synthesize_from_mcp_output_with_tile(
                     &UiCallerOrigin::AiAgent,
                     &app_id,
                     &uri,
                     &payload,
                     tile,
-                )?;
+                )?) };
                 Ok(ToolExecutionOutput {
                     tool_name: call.name.clone(),
                     output_json: payload,
-                    synthesized_view: Some(view),
+                    synthesized_view: view,
                 })
             }
             "ui_render_view" => {

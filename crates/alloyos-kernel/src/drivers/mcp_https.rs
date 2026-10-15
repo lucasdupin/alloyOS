@@ -1,4 +1,4 @@
-//! Cooperative public-registry HTTP relay. No network I/O blocks a UI frame.
+//! Cooperative public-search HTTP relay. No network I/O blocks a UI frame.
 use alloc::{format, string::String, vec::Vec};
 use core::{sync::atomic::{AtomicBool, Ordering}, task::Poll};
 use alloyos_mcp::transport::{HttpRequest, HttpResponse, HttpTransport};
@@ -29,8 +29,8 @@ impl HttpTransport for HostRegistryHttp {
     }
     fn start_request(&mut self, request: &HttpRequest) -> Poll<Result<HttpResponse, String>> {
         if self.pending.is_some() { return Poll::Ready(Err("registry request already pending".into())); }
-        if request.method != "GET" || !request.url.starts_with("https://registry.modelcontextprotocol.io/v0.1/servers?") {
-            return Poll::Ready(Err("only public MCP Registry search is wired to this transport".into()));
+        if request.method != "GET" || !request.headers.is_empty() || !request.body.is_empty() || !alloyos_mcp::transport::allowed_public_get(&request.url) {
+            return Poll::Ready(Err("only public MCP Registry and DuckDuckGo search are wired to this transport".into()));
         }
         self.next = self.next.saturating_add(1);
         let json = match serde_json::to_string(request) { Ok(json) => json, Err(_) => return Poll::Ready(Err("invalid registry HTTP request".into())) };

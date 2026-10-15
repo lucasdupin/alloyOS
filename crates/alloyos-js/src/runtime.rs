@@ -733,6 +733,41 @@ impl JsIsolate {
                 let first = args.first().unwrap_or(&JsValue::Undefined);
                 return Ok(JsValue::Number(first.to_number()?));
             }
+            if name == "encodeURIComponent" {
+                let value = match arg_exprs.first() {
+                    Some(expr) => self.eval_expr(expr, host)?.to_js_string(),
+                    None => "undefined".to_string(),
+                };
+                let mut encoded = String::new();
+                for byte in value.bytes() {
+                    if byte.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&byte) {
+                        encoded.push(byte as char);
+                    } else {
+                        encoded.push_str(&format!("%{:02X}", byte));
+                    }
+                }
+                return Ok(JsValue::String(encoded));
+            }
+            if name == "decodeURIComponent" {
+                let value = match arg_exprs.first() {
+                    Some(expr) => self.eval_expr(expr, host)?.to_js_string(),
+                    None => "undefined".to_string(),
+                };
+                let mut decoded = Vec::new();
+                let mut bytes = value.bytes();
+                while let Some(byte) = bytes.next() {
+                    if byte == b'%' {
+                        let hi = bytes.next().and_then(|b| (b as char).to_digit(16));
+                        let lo = bytes.next().and_then(|b| (b as char).to_digit(16));
+                        match (hi, lo) {
+                            (Some(hi), Some(lo)) => decoded.push((hi * 16 + lo) as u8),
+                            _ => return Err(JsError::TypeError("Malformed URI component".into())),
+                        }
+                    } else { decoded.push(byte); }
+                }
+                return String::from_utf8(decoded).map(JsValue::String)
+                    .map_err(|_| JsError::TypeError("Malformed URI component".into()));
+            }
         }
 
         // 2. Check namespace / host calls (`AlloyOS.*`, `JSON.*`, `Object.*`, `console.log`)

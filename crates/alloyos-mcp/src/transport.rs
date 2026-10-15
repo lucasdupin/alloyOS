@@ -14,6 +14,15 @@ use core::task::Poll;
 
 pub const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
 
+/// Fixed public endpoints accepted by the QEMU relay. Search queries must be
+/// percent-encoded: no credentials, alternate hosts, or extra URL parameters.
+pub fn allowed_public_get(url: &str) -> bool {
+    if url.len() > 8192 || url.bytes().any(|byte| byte.is_ascii_control()) { return false; }
+    if url.starts_with("https://registry.modelcontextprotocol.io/v0.1/servers?") { return true; }
+    let Some(query) = url.strip_prefix("https://html.duckduckgo.com/html/?q=") else { return false; };
+    !query.is_empty() && query.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"%-_.!~*'()".contains(&byte))
+}
+
 #[derive(serde::Serialize)]
 pub struct HttpRequest {
     pub method: &'static str,

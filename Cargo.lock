@@ -35,6 +35,7 @@ name = "alloyos-dev-harness"
 version = "0.1.0"
 dependencies = [
  "alloyos-forge",
+ "alloyos-mcp",
  "serde",
  "serde_json",
 ]

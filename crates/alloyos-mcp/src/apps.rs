@@ -4,6 +4,7 @@ use alloc::rc::Rc;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::cell::RefCell;
+use core::task::Poll;
 
 use alloyos_js::{ScriptCapabilities, ScriptScheduler};
 
@@ -270,6 +271,9 @@ pub struct JsApp {
     scheduler: Option<Rc<RefCell<ScriptScheduler>>>,
     vfs_files: Option<Rc<RefCell<BTreeMap<String, String>>>>,
     http_routes: Option<Rc<RefCell<BTreeMap<String, String>>>>,
+    http_client: Option<Rc<RefCell<crate::transport::HttpClient>>>,
+    pending_fetch: Option<(String, BTreeMap<String, McpValue>, String)>,
+    fetched: BTreeMap<String, String>,
     uptime_ms: u64,
     wall_clock_ms: Option<u64>,
     tile_ids: Vec<String>,
@@ -297,6 +301,9 @@ impl JsApp {
             scheduler,
             vfs_files: Some(Rc::new(RefCell::new(BTreeMap::new()))),
             http_routes: None,
+            http_client: None,
+            pending_fetch: None,
+            fetched: BTreeMap::new(),
             uptime_ms: 0,
             wall_clock_ms: None,
             tile_ids: Vec::new(),
@@ -310,6 +317,11 @@ impl JsApp {
 
     pub fn with_http_routes(mut self, routes: Rc<RefCell<BTreeMap<String, String>>>) -> Self {
         self.http_routes = Some(routes);
+        self
+    }
+
+    pub fn with_http_client(mut self, client: Rc<RefCell<crate::transport::HttpClient>>) -> Self {
+        self.http_client = Some(client);
         self
     }
 
@@ -379,6 +391,41 @@ impl JsApp {
         }
         app.vfs_files = Some(Rc::new(RefCell::new(files.clone())));
         Ok(app)
+    }
+
+    fn invoke_tool(&self, tool_name: &str, args: &BTreeMap<String, McpValue>, host: &mut alloyos_js::VirtualHostEnv) -> Result<McpValue, McpError> {
+        let mut js_args_map = BTreeMap::new();
+        for (k, v) in args {
+            js_args_map.insert(k.clone(), mcp_to_js_value(v)?);
+        }
+
+        let js_args = [
+            alloyos_js::JsValue::String(tool_name.to_string()),
+            alloyos_js::JsValue::Object(js_args_map),
+        ];
+
+        let result = crate::process::invoke(
+            &self.manifest.app_id,
+            &self.source,
+            alloyos_js::AppHandler::CallTool,
+            &js_args,
+            50_000,
+            host,
+        );
+        let result = result.map_err(|e| McpError::internal_error(format!("JS callTool error: {}", e)))?;
+
+        let parsed = McpValue::from_json(&result.text)
+            .unwrap_or_else(|_| McpValue::Text(result.text.clone()));
+
+        if let McpValue::Map(ref m) = parsed {
+            if let Some(McpValue::Text(ref err)) = m.get("error") {
+                if err.starts_with("Unknown tool") || err.starts_with("unknown") {
+                    return Err(McpError::method_not_found(err.clone()));
+                }
+            }
+        }
+
+        Ok(parsed)
     }
 
     fn make_host(&self) -> alloyos_js::VirtualHostEnv {
@@ -463,39 +510,71 @@ impl McpApp for JsApp {
             .map_err(|e| e.to_mcp_error())?;
 
         let mut host = self.make_host();
-        let mut js_args_map = BTreeMap::new();
-        for (k, v) in args {
-            js_args_map.insert(k.clone(), mcp_to_js_value(v)?);
+        let result = self.invoke_tool(tool_name, args, &mut host);
+        if result.is_ok() { self.sync_host(host); }
+        result
+    }
+
+    fn poll_call_tool(&mut self, name: &str, args: &BTreeMap<String, McpValue>) -> Poll<Result<McpValue, McpError>> {
+        // Scheduler operations have external side effects and must never be replayed.
+        if self.http_client.is_none() || self.manifest.has_capability(&AppCapability::ScriptSchedulerAccess) {
+            return Poll::Ready(self.call_tool(name, args));
         }
-
-        let js_args = [
-            alloyos_js::JsValue::String(tool_name.to_string()),
-            alloyos_js::JsValue::Object(js_args_map),
-        ];
-
-        let result = crate::process::invoke(
-            &self.manifest.app_id,
-            &self.source,
-            alloyos_js::AppHandler::CallTool,
-            &js_args,
-            50_000,
-            &mut host,
-        );
-        self.sync_host(host);
-        let result = result.map_err(|e| McpError::internal_error(format!("JS callTool error: {}", e)))?;
-
-        let parsed = McpValue::from_json(&result.text)
-            .unwrap_or_else(|_| McpValue::Text(result.text.clone()));
-
-        if let McpValue::Map(ref m) = parsed {
-            if let Some(McpValue::Text(ref err)) = m.get("error") {
-                if err.starts_with("Unknown tool") || err.starts_with("unknown") {
-                    return Err(McpError::method_not_found(err.clone()));
+        let client = self.http_client.as_ref().unwrap().clone();
+        if let Some((pending_name, pending_args, url)) = &self.pending_fetch {
+            if pending_name != name || pending_args != args {
+                return Poll::Ready(Err(McpError::invalid_params("another app tool invocation is pending")));
+            }
+            let response = client.borrow_mut().poll_get();
+            match response {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Err(error)) => {
+                    self.pending_fetch = None;
+                    self.fetched.clear();
+                    return Poll::Ready(Err(error));
                 }
+                Poll::Ready(Ok(response)) => { self.fetched.insert(url.clone(), response.body); }
+            }
+            self.pending_fetch = None;
+        }
+        loop {
+            let mut host = self.make_host();
+            host.defer_network = true;
+            host.http_routes.extend(self.fetched.clone());
+            let result = self.invoke_tool(name, args, &mut host);
+            if let Some(url) = host.pending_fetch {
+                // All host-local mutations are discarded on suspension. Responses
+                // are invocation-local and never become a stale global HTTP cache.
+                if self.fetched.len() >= 4 {
+                    self.fetched.clear();
+                    return Poll::Ready(Err(McpError::internal_error("app exceeded four HTTP GETs per invocation")));
+                }
+                match client.borrow_mut().start_get(&url) {
+                    Poll::Pending => {
+                        self.pending_fetch = Some((name.into(), args.clone(), url));
+                        return Poll::Pending;
+                    }
+                    Poll::Ready(Ok(response)) => { self.fetched.insert(url, response.body); }
+                    Poll::Ready(Err(error)) => {
+                        self.fetched.clear();
+                        return Poll::Ready(Err(error));
+                    }
+                }
+            } else {
+                // Restore the original routes before syncing durable app state.
+                host.http_routes = self.http_routes.as_ref().map(|routes| routes.borrow().clone()).unwrap_or_default();
+                self.fetched.clear();
+                if result.is_ok() { self.sync_host(host); }
+                return Poll::Ready(result);
             }
         }
+    }
 
-        Ok(parsed)
+    fn cancel_pending_tool(&mut self) {
+        if self.pending_fetch.take().is_some() {
+            if let Some(client) = &self.http_client { client.borrow_mut().cancel_get(); }
+        }
+        self.fetched.clear();
     }
 
     fn read_resource(&self, uri: &str) -> Result<McpResourceContent, McpError> {

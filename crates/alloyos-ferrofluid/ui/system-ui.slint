@@ -244,7 +244,7 @@ component TileCard inherits Rectangle {
     preferred-height: max(tile-content.preferred-height, tile-end.y + 6px);
     min-height: self.preferred-height;
     vertical-stretch: 0;
-    tile-content := VerticalBox {
+    tile-content := VerticalLayout {
         width: parent.width;
         height: self.preferred-height;
         padding: 16px;
@@ -265,17 +265,24 @@ component TileCard inherits Rectangle {
                 clicked => { root.pin(); }
             }
         }
-        if root.tile.subtitle != "": Text { text: root.tile.subtitle; color: AlloyPalette.muted; wrap: word-wrap; }
-        for item in root.tile.items: VerticalBox {
+        if root.tile.subtitle != "": Text { text: root.tile.subtitle; color: AlloyPalette.muted; wrap: word-wrap; min-height: self.preferred-height; }
+        for item in root.tile.items: VerticalLayout {
+            min-height: self.preferred-height;
+            vertical-stretch: 0;
             spacing: 4px;
-            HorizontalBox {
-                Text { text: item.title; color: AlloyPalette.text; font-size: root.tile.tile-id == "clock.now" && item.id == "time" ? 26px : 18px; wrap: word-wrap; }
-                if item.badge != "": Text { text: item.badge; color: AlloyPalette.silver; horizontal-alignment: right; min-width: 0px; wrap: word-wrap; }
+            HorizontalLayout {
+                min-height: self.preferred-height;
+                vertical-stretch: 0;
+                spacing: 8px;
+                Text { text: item.title; color: AlloyPalette.text; font-size: root.tile.tile-id == "clock.now" && item.id == "time" ? 26px : 18px; wrap: word-wrap; min-width: 0px; horizontal-stretch: 1; min-height: self.preferred-height; }
+                if item.badge != "": Text { text: item.badge; color: AlloyPalette.silver; horizontal-alignment: right; horizontal-stretch: 0; min-width: self.preferred-width; min-height: self.preferred-height; }
             }
-            if item.subtitle != "": Text { text: item.subtitle; color: AlloyPalette.muted; wrap: word-wrap; }
-            if item.status != "": Text { text: item.status; color: AlloyPalette.muted; font-size: 13px; wrap: word-wrap; }
+            if item.subtitle != "": Text { text: item.subtitle; color: AlloyPalette.muted; wrap: word-wrap; min-height: self.preferred-height; }
+            if item.status != "": Text { text: item.status; color: AlloyPalette.muted; font-size: 13px; wrap: word-wrap; min-height: self.preferred-height; }
         }
-        if root.tile.actions.length > 0: VerticalBox {
+        if root.tile.actions.length > 0: VerticalLayout {
+            min-height: self.preferred-height;
+            vertical-stretch: 0;
             spacing: 8px;
             for action in root.tile.actions: AlloyButton {
                 text: action.label;
@@ -476,6 +483,8 @@ export component SystemUi inherits Window {
     callback open-keyboard();
     open-keyboard => { root.composer-active = true; input.focus(); keyboard.reopen(); }
     out property <length> chat-top: body.y + chat.y;
+    out property <length> bottom-fade-top: body.height - 80px * (1 - root.typing-progress);
+    out property <length> bottom-fade-height: 80px * (1 - root.typing-progress);
     out property <length> scroll-offset: -scroll.content-y;
     out property <length> scroll-maximum: max(0px, scroll.content-height - scroll.visible-height);
     out property <length> chat-content-bottom: content-end.y + scroll.content-y;
@@ -534,91 +543,87 @@ export component SystemUi inherits Window {
                 }
             }
             chat := Rectangle {
+                width: parent.width;
+                clip: true;
+                min-height: 50px;
                 vertical-stretch: 1;
-                VerticalBox {
-                    padding: 0px;
-                    Rectangle {
-                        clip: true;
-                        min-height: 50px;
-                        vertical-stretch: 1;
-                        scroll := ScrollView {
-                            width: parent.width;
-                            height: parent.height;
-                            mouse-drag-pan-enabled: true;
-                            content-width: self.visible-width;
-                            // Nested rows can lay out taller than their preferred size
-                            // after wrapping at the available width. Measure the actual
-                            // end of the stream so the final row remains reachable.
-                            content-height: max(self.visible-height, content-end.y + 4px);
-                            // Layout changes after streamed text, tiles, or the indicator
-                            // appear always reveal the latest content.
-                            changed content-height => {
-                                self.content-y = min(0px, self.visible-height - self.content-height);
-                            }
-                            changed visible-height => {
-                                self.content-y = min(0px, self.visible-height - self.content-height);
-                            }
-                            horizontal-scrollbar-policy: always-off;
-                            // Only user scrolling dismisses the keyboard. Programmatic
-                            // scrolling during streaming or keyboard reveal keeps focus.
-                            scrolled => {
-                                keyboard.scroll-offset = -self.content-y;
-                            }
-                            stream := VerticalBox {
-                                x: 0px;
-                                y: 0px;
-                                width: scroll.visible-width;
-                                height: self.preferred-height;
-                                padding-left: 20px;
-                                padding-right: 20px;
-                                padding-top: 16px;
-                                // The 16px gap before content-end completes the 20px inset.
-                                padding-bottom: 4px;
-                                spacing: 16px;
-                                if root.chat-items.length == 0: MarkdownText {
-                                    text: root.transcript;
-                                    blocks: root.formatted-transcript;
-                                }
-                                if root.chat-items.length == 0: VerticalBox {
-                                    padding: 0px;
-                                    spacing: 16px;
-                                    for tile in root.tiles: TileCard {
-                                        tile: tile; pending: root.reply-pending;
-                                        pinned: root.tile-is-pinned(tile.tile-id, root.dashboard-pins);
-                                        action(id) => { root.tile-action(tile.tile-id, id); }
-                                        pin => { root.pin-tile(tile.tile-id, !root.tile-is-pinned(tile.tile-id, root.dashboard-pins)); }
-                                        refresh => { root.refresh-tile(tile.tile-id); }
-                                    }
-                                }
-                                for item in root.chat-items: VerticalLayout {
-                                    if !item.is-tile: MarkdownText {
-                                        text: item.text;
-                                        blocks: item.blocks;
-                                        body-size: item.is-user ? 16px : 20px;
-                                        text-color: item.is-user ? AlloyPalette.muted : AlloyPalette.body;
-                                    }
-                                    if item.is-tile: TileCard {
-                                        tile: item.tile; pending: root.reply-pending;
-                                        pinned: root.tile-is-pinned(item.tile.tile-id, root.dashboard-pins);
-                                        action(id) => { root.tile-action(item.tile.tile-id, id); }
-                                        pin => { root.pin-tile(item.tile.tile-id, !root.tile-is-pinned(item.tile.tile-id, root.dashboard-pins)); }
-                                        refresh => { root.refresh-tile(item.tile.tile-id); }
-                                    }
-                                }
-                                if root.voice-caption != "" && (root.voice-state == 2 || root.voice-state == 3 || root.voice-state == 4): Text {
-                                    text: root.voice-caption;
-                                    color: AlloyPalette.text;
-                                    wrap: word-wrap;
-                                }
-                                if root.reply-pending: ThinkingIndicator { time-ms: root.loading-time-ms; }
-                                content-end := Rectangle { height: 0px; }
+                scroll := ScrollView {
+                    width: parent.width;
+                    height: parent.height;
+                    mouse-drag-pan-enabled: true;
+                    content-width: self.visible-width;
+                    // Nested rows can lay out taller than their preferred size
+                    // after wrapping at the available width. Measure the actual
+                    // end of the stream so the final row remains reachable.
+                    content-height: max(self.visible-height, content-end.y + 4px + (root.voice-state != 0 || root.voice-caption != "" ? 140px : 80px) * (1 - root.typing-progress));
+                    // Layout changes after streamed text, tiles, or the indicator
+                    // appear always reveal the latest content.
+                    changed content-height => {
+                        self.content-y = min(0px, self.visible-height - self.content-height);
+                    }
+                    changed visible-height => {
+                        self.content-y = min(0px, self.visible-height - self.content-height);
+                    }
+                    horizontal-scrollbar-policy: always-off;
+                    // Only user scrolling dismisses the keyboard. Programmatic
+                    // scrolling during streaming or keyboard reveal keeps focus.
+                    scrolled => {
+                        keyboard.scroll-offset = -self.content-y;
+                    }
+                    stream := VerticalBox {
+                        x: 0px;
+                        y: 0px;
+                        width: scroll.visible-width;
+                        height: self.preferred-height;
+                        padding-left: 20px;
+                        padding-right: 20px;
+                        padding-top: 16px;
+                        // The 16px gap before content-end completes the 20px inset.
+                        padding-bottom: 4px;
+                        spacing: 16px;
+                        if root.chat-items.length == 0: MarkdownText {
+                            text: root.transcript;
+                            blocks: root.formatted-transcript;
+                        }
+                        if root.chat-items.length == 0: VerticalBox {
+                            padding: 0px;
+                            spacing: 16px;
+                            for tile in root.tiles: TileCard {
+                                tile: tile; pending: root.reply-pending;
+                                pinned: root.tile-is-pinned(tile.tile-id, root.dashboard-pins);
+                                action(id) => { root.tile-action(tile.tile-id, id); }
+                                pin => { root.pin-tile(tile.tile-id, !root.tile-is-pinned(tile.tile-id, root.dashboard-pins)); }
+                                refresh => { root.refresh-tile(tile.tile-id); }
                             }
                         }
+                        for item in root.chat-items: VerticalLayout {
+                            if !item.is-tile: MarkdownText {
+                                text: item.text;
+                                blocks: item.blocks;
+                                body-size: item.is-user ? 16px : 20px;
+                                text-color: item.is-user ? AlloyPalette.muted : AlloyPalette.body;
+                            }
+                            if item.is-tile: TileCard {
+                                tile: item.tile; pending: root.reply-pending;
+                                pinned: root.tile-is-pinned(item.tile.tile-id, root.dashboard-pins);
+                                action(id) => { root.tile-action(item.tile.tile-id, id); }
+                                pin => { root.pin-tile(item.tile.tile-id, !root.tile-is-pinned(item.tile.tile-id, root.dashboard-pins)); }
+                                refresh => { root.refresh-tile(item.tile.tile-id); }
+                            }
+                        }
+                        if root.voice-caption != "" && (root.voice-state == 2 || root.voice-state == 3 || root.voice-state == 4): Text {
+                            text: root.voice-caption;
+                            color: AlloyPalette.text;
+                            wrap: word-wrap;
+                        }
+                        if root.reply-pending: ThinkingIndicator { time-ms: root.loading-time-ms; }
+                        content-end := Rectangle { height: 0px; }
                     }
                 }
             }
+
             composer := Rectangle {
-                height: (root.voice-state != 0 || root.voice-caption != "" ? 140px : 112px) * (1 - root.typing-progress) + 72px * root.typing-progress;
+                height: 72px * root.typing-progress;
                 vertical-stretch: 0;
                 input := AlloyLineEdit {
                     x: 20px; y: 20px + 16px * (1 - root.typing-progress);
@@ -632,6 +637,13 @@ export component SystemUi inherits Window {
                 }
             }
 
+        }
+        // Begin the fade at the mic button and blend into the workspace.
+        Rectangle {
+            y: root.bottom-fade-top;
+            width: parent.width;
+            height: 80px * (1 - root.typing-progress);
+            background: @linear-gradient(180deg, #0b0d1000 0%, AlloyPalette.obsidian 100%);
         }
         unfocused := FocusScope { width: 0px; height: 0px; }
         keyboard := SoftKeyboard {

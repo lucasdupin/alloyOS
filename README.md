@@ -8,6 +8,35 @@
 
 **alloyOS** is an AI-first, bare-metal operating system written from scratch in `#![no_std]` Rust (`aarch64`, native `-accel hvf`). There is no POSIX baggage, no multi-user permission labyrinth, and no window manager cluttered with half-broken apps. It boots through a liquid-metal splash directly into **Ferrofluid (`ferrofluidd`)**—a display server driven entirely by a pluggable frontier model (**Gemini**, **Claude**, **ChatGPT**).
 
+## System in Motion
+
+These previews use the actual Ferrofluid renderer. Setup Wizard also runs the
+Welder setup controller and Clock app with scripted answers; it is a UI preview,
+not a live model conversation.
+
+**Ask for weather → pin the widget → pull open the sidebar.**
+
+<img src="assets/demos/weather-pin-sidebar.gif" alt="Typing a weather question, pinning the Weather widget, and pulling open the sidebar to reveal it" width="402" />
+
+Scripted renderer preview using the Weather app's sample San Francisco data.
+
+| Liquid keyboard | Liquid boot |
+| :---: | :---: |
+| <img src="assets/demos/liquid-keyboard-detail.gif" alt="Liquid keyboard revealing, responding to key presses, and dismissing" width="360" /> | <img src="assets/demos/liquid-boot.gif" alt="Ferrofluid loading logo and droplets transitioning to the workspace" width="240" /> |
+| Reveal, key feedback, and dismissal. | Loading animation and workspace transition. |
+
+<details>
+<summary><strong>Setup Wizard — conversational onboarding preview</strong></summary>
+
+Choose your name, name your assistant, set your region and clock format, and
+choose whether alloyOS may learn your preferences.
+
+<img src="assets/demos/setup-wizard.gif" alt="Setup preview progressing through names, local time, memory preference, and review" width="402" />
+
+</details>
+
+See [capture notes](assets/demos/README.md) for provenance and reproduction.
+
 ## The Manifesto
 
 1. **No Filesystem Maze. No Shell.**
@@ -30,6 +59,17 @@ kept separate from explicit statements. Welder automatically extracts durable co
 filters credentials, and provides bounded retrieval into model turns. The user can
 inspect, correct, delete, or pause learning at any time using natural language or through
 the declarative `knowledge.profile` tile.
+
+<details>
+<summary><strong>Memory controls — scroll and pause learning</strong></summary>
+
+A renderer preview using a real Welder knowledge tile and demo records. Wrapped
+entries and the final controls remain accessible when the keyboard is open.
+The preview also follows the Pause Learning action into its paused state.
+
+<img src="assets/demos/memory-controls.gif" alt="Knowledge card scrolling without clipped entries or controls above the open keyboard" width="402" />
+
+</details>
 
 Knowledge is user context; skills are supplied by applications under `/apps/`.
 There is no separate `/skills/` directory or profile skill. See
@@ -96,6 +136,13 @@ overlapping vector waves follow microphone volume. Tap again to end it. Opening 
 mutes input while retaining the session; tap the mic to resume. Typed messages
 during that session go through the live model. Captions and completed turns stay
 in the conversation, and Welder's existing tools are available to voice.
+
+**Voice chat — simulated preview**
+
+<img src="assets/demos/voice-chat.gif" alt="Simulated voice conversation showing microphone activation, responsive waves, captions, and completed turns" width="402" />
+
+The real Ferrofluid UI with scripted captions and microphone levels; no microphone
+capture or model session is running in this preview.
 
 Voice currently uses a native macOS audio/WebSocket helper for QEMU, built by the
 launcher, and requires a Gemini API key and microphone permission. The Live model

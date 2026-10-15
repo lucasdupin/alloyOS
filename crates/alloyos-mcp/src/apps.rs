@@ -275,7 +275,7 @@ pub struct JsApp {
     pending_fetch: Option<(String, BTreeMap<String, McpValue>, String)>,
     fetched: BTreeMap<String, String>,
     pending_post: Option<(String, BTreeMap<String, McpValue>, String, String, Vec<(String, String)>)>,
-    fetched_posts: BTreeMap<String, String>,
+    fetched_posts: BTreeMap<(usize, String, String, Vec<(String, String)>), String>,
     uptime_ms: u64,
     wall_clock_ms: Option<u64>,
     tile_ids: Vec<String>,
@@ -543,7 +543,7 @@ impl McpApp for JsApp {
             }
             self.pending_fetch = None;
         }
-        if let Some((pending_name, pending_args, url, _, _)) = &self.pending_post {
+        if let Some((pending_name, pending_args, url, body, headers)) = &self.pending_post {
             if pending_name != name || pending_args != args {
                 return Poll::Ready(Err(McpError::invalid_params("another app tool invocation is pending")));
             }
@@ -557,7 +557,7 @@ impl McpApp for JsApp {
                     self.fetched_posts.clear();
                     return Poll::Ready(Err(error));
                 }
-                Poll::Ready(Ok(response)) => { self.fetched_posts.insert(url.clone(), response.body); }
+                Poll::Ready(Ok(response)) => { self.fetched_posts.insert((self.fetched_posts.len(), url.clone(), body.clone(), headers.clone()), response.body); }
             }
             self.pending_post = None;
         }
@@ -565,7 +565,7 @@ impl McpApp for JsApp {
             let mut host = self.make_host();
             host.defer_network = true;
             host.http_routes.extend(self.fetched.clone());
-            host.http_post_routes.extend(self.fetched_posts.clone());
+            host.http_post_responses.extend(self.fetched_posts.clone());
             let result = self.invoke_tool(name, args, &mut host);
             if let Some(url) = host.pending_fetch {
                 // All host-local mutations are discarded on suspension. Responses
@@ -598,7 +598,7 @@ impl McpApp for JsApp {
                         self.pending_post = Some((name.into(), args.clone(), url, body, headers));
                         return Poll::Pending;
                     }
-                    Poll::Ready(Ok(response)) => { self.fetched_posts.insert(url, response.body); }
+                    Poll::Ready(Ok(response)) => { self.fetched_posts.insert((self.fetched_posts.len(), url, body, headers), response.body); }
                     Poll::Ready(Err(error)) => {
                         self.fetched.clear();
                         self.fetched_posts.clear();

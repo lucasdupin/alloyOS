@@ -199,3 +199,35 @@ fn missing_build_key_fails_without_network_or_cached_fallback() {
     assert_eq!(json(result)["status"], "not_configured");
     assert_eq!(state.borrow().starts, 0);
 }
+
+#[test]
+fn cooperative_posts_to_same_url_keep_bodies_and_headers_distinct() {
+    struct Echo(usize);
+    impl HttpTransport for Echo {
+        fn request(&mut self, _: &HttpRequest) -> Result<HttpResponse, String> { panic!("must poll") }
+        fn start_request(&mut self, request: &HttpRequest) -> Poll<Result<HttpResponse, String>> {
+            self.0 += 1;
+            let suffix = request.headers.first().map(|(_, value)| value.as_str()).unwrap_or("");
+            Poll::Ready(Ok(HttpResponse { status: 200, headers: vec![], body: format!("{}{suffix}-{}", request.body, self.0) }))
+        }
+    }
+    let mut package = snapshot();
+    package.files.insert("/apps/search/main.js".into(), format!(r#"
+        function callTool(name, args) {{
+            let a = AlloyOS.net.post("{GEMINI_URL}", "first", []);
+            let b = AlloyOS.net.post("{GEMINI_URL}", "second", []);
+            let c = AlloyOS.net.post("{GEMINI_URL}", "second", [["X-Test", "-third"]]);
+            let d = AlloyOS.net.post("{GEMINI_URL}", "second", [["X-Test", "-third"]]);
+            return JSON.stringify({{a: a, b: b, c: c, d: d}});
+        }}
+        function readResource(uri) {{ return "{{}}"; }}
+    "#));
+    let mut registry = McpRegistry::new();
+    assert_eq!(registry.discover_and_register_packages(&package, None).unwrap(), 1);
+    registry.set_http_transport(Box::new(Echo(0)));
+    let polled = registry.poll_call_tool_as(&McpCaller::Welder, "search.web", &args());
+    let Poll::Ready(Ok(result)) = polled else {
+        panic!("immediate transport must finish: {polled:?}");
+    };
+    assert_eq!(json(result), serde_json::json!({"a":"first-1", "b":"second-2", "c":"second-third-3", "d":"second-third-4"}));
+}

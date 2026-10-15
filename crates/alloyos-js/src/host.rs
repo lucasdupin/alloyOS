@@ -717,6 +717,9 @@ pub struct VirtualHostEnv {
     pub files: BTreeMap<String, String>,
     pub http_routes: BTreeMap<String, String>,
     pub http_post_routes: BTreeMap<String, String>,
+    /// Exact invocation-local replies; different POST bodies must not alias.
+    http_post_index: usize,
+    pub http_post_responses: BTreeMap<(usize, String, String, Vec<(String, String)>), String>,
     /// App hosts may suspend a missing GET and replay with its response. No
     /// filesystem changes from the suspended invocation may be committed.
     pub defer_network: bool,
@@ -758,6 +761,8 @@ impl VirtualHostEnv {
             files: BTreeMap::new(),
             http_routes: BTreeMap::new(),
             http_post_routes: BTreeMap::new(),
+            http_post_responses: BTreeMap::new(),
+            http_post_index: 0,
             defer_network: false,
             pending_fetch: None,
             pending_post: None,
@@ -891,7 +896,12 @@ impl AlloyOsHost for VirtualHostEnv {
     ) -> Result<String, String> {
         self.capabilities.check(&CapabilityRequest::NetPost(url))?;
         let base_url = url.split('?').next().unwrap_or(url);
-        if let Some(resp) = self.http_post_routes.get(url).or_else(|| self.http_post_routes.get(base_url)).or_else(|| self.http_routes.get(url)).or_else(|| self.http_routes.get(base_url)) {
+        let index = self.http_post_index;
+        self.http_post_index += 1;
+        if let Some(resp) = self.http_post_responses.get(&(index, url.into(), body.into(), headers.to_vec()))
+            .or_else(|| self.http_post_routes.get(url))
+            .or_else(|| self.http_post_routes.get(base_url))
+            .or_else(|| if self.defer_network { None } else { self.http_routes.get(url).or_else(|| self.http_routes.get(base_url)) }) {
             Ok(resp.clone())
         } else if self.defer_network {
             self.pending_post = Some((url.to_string(), body.to_string(), headers.to_vec()));

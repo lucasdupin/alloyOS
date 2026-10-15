@@ -7,6 +7,7 @@
 static dispatch_queue_t q,out;
 static dispatch_semaphore_t slots,captureSlots;
 static uint64_t sid,gen,epoch,playbackEpoch;
+static BOOL outputMuted=NO;
 static BOOL testDirectAudio=NO,directAudio=NO,muted=YES,probeAudio=NO,probeNetwork=NO,providerReady=NO;
 static const NSString *liveEndpoint=@"wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
 static AVAudioEngine *engine;
@@ -79,7 +80,7 @@ static NSString* audioPayload(NSData*data){
 }
 static void clearPlayback(void){playbackEpoch++;[player stop];[player play];playbackPending=0;if(directAudio)emit(@{@"event":@"playback_active",@"session":@(sid),@"active":@NO});}
 static void playPCM(NSData*d,uint64_t id){
- if(!d||d.length%2)return;
+ if(outputMuted||!d||d.length%2)return;
  if(testDirectAudio){emit(@{@"event":@"playback_active",@"session":@(id),@"active":@YES});uint64_t ticket=epoch;dispatch_after(dispatch_time(DISPATCH_TIME_NOW,50*NSEC_PER_MSEC),q,^{if(ticket==epoch&&sid==id)emit(@{@"event":@"playback_active",@"session":@(id),@"active":@NO});});return;}
  if(!player)return;
  if(playbackPending>=32){fail(id,@"voice playback queue unavailable");stop();return;}
@@ -172,8 +173,9 @@ static void start(uint64_t id,NSString*endpoint,NSString*key){stop();sid=id;gen=
  }@catch(NSException*e){stop();fail(id,@"audio device unavailable");}
  });}];}
 static void handle(NSDictionary*c){uint64_t id=[c[@"session"]unsignedLongLongValue];NSString*op=c[@"op"];
- if([op isEqual:@"start"]){directAudio=[c[@"direct_audio"]boolValue];start(id,c[@"endpoint"],c[@"api_key"]);return;}if(id!=sid)return;
+ if([op isEqual:@"start"]){outputMuted=[c[@"output_muted"]boolValue];directAudio=[c[@"direct_audio"]boolValue];start(id,c[@"endpoint"],c[@"api_key"]);return;}if(id!=sid)return;
  if([op isEqual:@"stop"]){stop();sid=0;emit(@{@"event":@"stopped",@"session":@(id)});}
+ else if([op isEqual:@"output_mute"]){outputMuted=[c[@"muted"]boolValue];if(outputMuted)clearPlayback();}
  else if([op isEqual:@"mute"]){muted=[c[@"muted"]boolValue];}
  else if([op isEqual:@"interrupt"]){gen=[c[@"generation"]unsignedLongLongValue];clearPlayback();}
  else if([op isEqual:@"send"]){NSString*text=c[@"json"];if(![text isKindOfClass:NSString.class]||[text lengthOfBytesUsingEncoding:NSUTF8StringEncoding]>65536){fail(id,@"voice send too large");stop();return;}NSDictionary*payload=[NSJSONSerialization JSONObjectWithData:[text dataUsingEncoding:NSUTF8StringEncoding] options:0 error:NULL];BOOL setup=[payload isKindOfClass:NSDictionary.class]&&payload[@"setup"]!=nil;BOOL audio=[payload[@"realtimeInput"] isKindOfClass:NSDictionary.class]&&(payload[@"realtimeInput"][@"audio"]||payload[@"realtimeInput"][@"mediaChunks"]);sendText(text,id,audio,setup);}

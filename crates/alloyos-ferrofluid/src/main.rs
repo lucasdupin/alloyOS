@@ -81,6 +81,7 @@ pub extern "C" fn _start(heap_start: usize, heap_length: usize) -> ! {
                     ui.set_reply_pending(s.pending);
                     ui.set_voice_state(s.voice_state, &s.voice_caption, &s.voice_error);
                     ui.set_voice_level(s.voice_level);
+                    ui.set_output_muted(s.output_muted);
                     ui.set_voice_diagnostics(&s.voice_diagnostics);
                     ui.set_active_model(&s.model);
                     ui.set_model_selection_status(&s.model_status);
@@ -129,6 +130,7 @@ pub extern "C" fn _start(heap_start: usize, heap_length: usize) -> ! {
         if let Some(s) = ui.take_submission() {
             send(Event::Submit(s))
         }
+        while ui.take_output_mute_toggle() { send(Event::OutputMuteToggle); }
         while ui.take_voice_toggle() { send(Event::VoiceToggle); }
         while ui.take_voice_mute() { send(Event::VoiceMute); }
         while ui.take_model_cycle() {

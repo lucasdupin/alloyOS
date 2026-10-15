@@ -7,6 +7,31 @@ use core::{task::Poll, time::Duration};
 use alloyos_mcp::display::{ChatItem, TileEvent};
 use super::display_server::DisplayProxy as FerrofluidSystemUi;
 
+const OUTPUT_MUTE_PATH: &str = "/etc/output-muted";
+
+fn load_output_muted() -> bool {
+    let guard = crate::fs::vfs::VFS.lock();
+    let Some(vfs) = guard.as_ref() else { return false; };
+    let Ok(inode) = vfs.lookup(OUTPUT_MUTE_PATH) else { return false; };
+    let mut byte = [0u8];
+    vfs.root_fs.read(inode.ino, 0, &mut byte).ok() == Some(1) && byte[0] == b'1'
+}
+
+fn save_output_muted(muted: bool) -> Result<(), crate::fs::vfs::FsError> {
+    use crate::fs::vfs::{FsError, InodeKind, VFS};
+    let guard = VFS.lock();
+    let vfs = guard.as_ref().ok_or(FsError::NotFound)?;
+    let inode = match vfs.lookup(OUTPUT_MUTE_PATH) {
+        Ok(inode) => inode,
+        Err(FsError::NotFound) => vfs.create(OUTPUT_MUTE_PATH, InodeKind::File)?,
+        Err(error) => return Err(error),
+    };
+    if vfs.root_fs.write(inode.ino, 0, if muted { b"1" } else { b"0" })? != 1 {
+        return Err(FsError::IoError);
+    }
+    Ok(())
+}
+
 pub fn create() -> FerrofluidSystemUi { FerrofluidSystemUi::new() }
 
 pub fn run(
@@ -41,6 +66,8 @@ pub fn run(
     let mut package_watcher = crate::fs::packages::PackageWatcher::default();
     let mut pending = false;
     let mut voice = super::voice::Voice::default();
+    voice.output_muted = load_output_muted();
+    ui.set_output_muted(voice.output_muted);
     let mut partial = String::new();
     let mut booting = forge.is_boot_loading();
     if !booting {
@@ -53,6 +80,18 @@ pub fn run(
         ui.poll();
         let frame_start = rng::monotonic_time_ns();
         forge.poll();
+        while ui.take_output_mute_toggle() {
+            let muted = !voice.output_muted;
+            match voice.set_output_muted(&mut forge, muted) {
+                Ok(()) => {
+                    ui.set_output_muted(muted);
+                    if let Err(error) = save_output_muted(muted) {
+                        voice.error = alloc::format!("Could not save speaker mute: {:?}", error);
+                    }
+                }
+                Err(error) => voice.error = error.into(),
+            }
+        }
         while ui.take_voice_toggle() { voice.toggle(&mut forge, &mut agent, pending, frame_start); }
         while ui.take_voice_mute() { voice.mute(&mut forge); }
         voice.poll(&mut forge, &mut agent, frame_start);

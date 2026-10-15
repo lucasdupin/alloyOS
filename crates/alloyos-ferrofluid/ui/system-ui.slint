@@ -407,6 +407,8 @@ export component SystemUi inherits Window {
     callback soft-key(string);
     callback voice-toggle();
     callback voice-mute();
+    callback output-mute-toggle();
+    in property <bool> output-muted: false;
     in property <int> voice-state: 0;
     in property <float> voice-level: 0;
     property <bool> voice-active: root.voice-state >= 1 && root.voice-state <= 3;
@@ -614,27 +616,11 @@ export component SystemUi inherits Window {
         toolbar := Rectangle {
             x: (parent.width - self.width) / 2;
             y: parent.height - 80px + 134px * root.typing-progress;
-            width: 160px - 96px * root.voice-merge + 28px * root.typing-progress;
+            width: 256px - 192px * root.voice-merge + 28px * root.typing-progress;
             height: 64px + 24px * root.typing-progress;
             visible: root.typing-progress < 1;
             opacity: 1 - root.typing-progress;
             background: transparent;
-            Image { source: @image-url("icons/metaballs.svg"); width: parent.width; height: parent.height; image-fit: fill; visible: root.voice-merge == 0; }
-            // The lobes converge continuously into one circle; the neck stays thin.
-            Path {
-                width: parent.width; height: parent.height;
-                visible: root.voice-merge > 0 && root.voice-merge < 1;
-                viewbox-width: 160 - 96 * root.voice-merge; viewbox-height: 64;
-                fill: #29292b;
-                MoveTo { x: 32; y: 0; }
-                CubicTo { control-1-x: 52; control-1-y: 0; control-2-x: 56 - 48 * root.voice-merge; control-2-y: 27; x: 80 - 48 * root.voice-merge; y: 27; }
-                CubicTo { control-1-x: 104 - 48 * root.voice-merge; control-1-y: 27; control-2-x: 108 - 96 * root.voice-merge; control-2-y: 0; x: 128 - 96 * root.voice-merge; y: 0; }
-                CubicTo { control-1-x: 170.67 - 96 * root.voice-merge; control-1-y: 0; control-2-x: 170.67 - 96 * root.voice-merge; control-2-y: 64; x: 128 - 96 * root.voice-merge; y: 64; }
-                CubicTo { control-1-x: 108 - 96 * root.voice-merge; control-1-y: 64; control-2-x: 104 - 48 * root.voice-merge; control-2-y: 37; x: 80 - 48 * root.voice-merge; y: 37; }
-                CubicTo { control-1-x: 56 - 48 * root.voice-merge; control-1-y: 37; control-2-x: 52; control-2-y: 64; x: 32; y: 64; }
-                CubicTo { control-1-x: -10.67; control-1-y: 64; control-2-x: -10.67; control-2-y: 0; x: 32; y: 0; }
-                Close {}
-            }
             Rectangle {
                 width: 64px; height: 64px; border-radius: 32px;
                 x: (parent.width - self.width) / 2;
@@ -643,7 +629,8 @@ export component SystemUi inherits Window {
             for index in 2: Rectangle {
                 x: index == 0 ? 0px : parent.width - self.width;
                 width: 64px; height: 64px;
-                background: transparent;
+                border-radius: 32px;
+                background: #29292b;
                 opacity: index == 0 ? 1 : 1 - root.voice-merge;
                 property <float> swell: touch.pressed ? 1.12 : 1;
                 animate swell { duration: root.reduced-motion ? 0ms : 240ms; easing: ease-out; }
@@ -673,6 +660,26 @@ export component SystemUi inherits Window {
                     accessible-label: index == 0 ? (root.voice-state == 0 || root.voice-state == 5 ? "Start voice conversation" : root.voice-state == 4 ? "Resume voice conversation" : "Stop voice conversation") : "Open keyboard";
                     clicked => { if index == 0 { root.voice-toggle(); } else { root.open-keyboard(); } }
                 }
+            }
+        }
+        Rectangle {
+            x: toolbar.x + (96px - 24px * root.voice-merge);
+            y: toolbar.y;
+            width: 56px; height: 64px;
+            visible: root.voice-active && !root.keyboard-visible;
+            background: transparent;
+            Rectangle {
+                y: 6px; width: 52px; height: 52px; border-radius: 26px;
+                background: output-touch.pressed ? #45454b : #29292b;
+                Image {
+                    source: root.output-muted ? @image-url("icons/speaker-muted.svg") : @image-url("icons/speaker.svg");
+                    x: 14px; y: 14px; width: 24px; height: 24px;
+                }
+            }
+            output-touch := TouchArea {
+                accessible-role: button;
+                accessible-label: root.output-muted ? "Unmute spoken replies" : "Mute spoken replies";
+                clicked => { root.output-mute-toggle(); }
             }
         }
         Text {

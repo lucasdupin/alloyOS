@@ -394,6 +394,10 @@ impl DisplayProxy {
     pub fn take_model_cycle(&self) -> bool {
         self.take(|e| matches!(e, Event::CycleModel)).is_some()
     }
+    pub fn set_output_muted(&self, muted: bool) { self.state.borrow_mut().output_muted = muted; }
+    pub fn take_output_mute_toggle(&self) -> bool {
+        self.take(|e| matches!(e, Event::OutputMuteToggle)).is_some()
+    }
     pub fn take_voice_toggle(&self) -> bool {
         self.take(|e| matches!(e, Event::VoiceToggle)).is_some()
     }

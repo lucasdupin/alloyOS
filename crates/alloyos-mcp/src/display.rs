@@ -27,6 +27,8 @@ pub enum TileEvent {
 #[derive(Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct State {
     #[serde(default)]
+    pub output_muted: bool,
+    #[serde(default)]
     pub voice_state: VoiceState,
     /// Smoothed microphone RMS envelope, normalized to 0..=1000.
     #[serde(default)]
@@ -52,6 +54,7 @@ pub struct State {
 }
 #[derive(Serialize, Deserialize)]
 pub enum Event {
+    OutputMuteToggle,
     VoiceToggle,
     VoiceMute,
     Submit(String),

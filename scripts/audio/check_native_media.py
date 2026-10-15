@@ -58,7 +58,7 @@ def main():
             assert response['event'] == 'error' and 'transport mismatch' in response.get('message', '').lower(), response
             assert mock.frames == 0 and not mock.messages, 'invalid configuration opened model transport'
         print('PASS native missing/false direct flag: rejected before capture or transport')
-        send('start', endpoint=mock.endpoint, api_key='synthetic-fixture', direct_audio=True)
+        send('start', endpoint=mock.endpoint, api_key='synthetic-fixture', direct_audio=True, output_muted=True)
         pump(.3)
         assert any(event['event'] == 'ready' for event in events), 'helper not ready'
         send('send', json=json.dumps({'setup': {'model': 'models/fixture', 'generationConfig': {'responseModalities': ['AUDIO']}, 'inputAudioTranscription': {}, 'outputAudioTranscription': {}}}))
@@ -67,7 +67,11 @@ def main():
         assert mock.samples >= 72000, f'not realtime 16k PCM: {mock.samples} samples'
         assert any(event['event'] == 'audio_level' and event['level'] > 100 for event in events), 'missing voice level'
         assert any(event['event'] == 'message' and 'inputTranscription' in event['json'] for event in events), 'provider transcript not returned to guest'
-        assert any(event['event'] == 'playback_active' and event['active'] for event in events), 'provider audio did not enter native playback'
+        assert not any(event['event'] == 'playback_active' and event['active'] for event in events), 'restored mute allowed startup playback'
+        send('output_mute', muted=False)
+        send('playback', generation=1, pcm='0000' * 240)
+        pump(.2)
+        assert any(event['event'] == 'playback_active' and event['active'] for event in events), 'unmuted audio did not enter native playback'
         assert any(event['event'] == 'playback_active' and not event['active'] for event in events), 'playback did not complete'
         assert all('inlineData' not in event.get('json', '') for event in events), 'raw provider audio leaked into guest control pipe'
         stats = [event for event in events if event['event'] == 'audio_stats']
@@ -75,6 +79,19 @@ def main():
         assert stats[-1]['level'] > 100 and stats[-1]['conversion_errors'] == 0, 'converted PCM not proven'
         assert stats[-1]['sent_frames'] >= 35, 'successful sends not accounted'
         print(f'PASS native sustained media: {mock.frames} frames / {mock.samples} decoded samples at model boundary')
+        send('output_mute', muted=True)
+        pump(.2)
+        events.clear()
+        at_output_mute = mock.frames
+        send('playback', generation=10, pcm='0000' * 240)
+        pump(.5)
+        assert not any(e['event'] == 'playback_active' and e['active'] for e in events), 'muted speaker scheduled audio'
+        assert mock.frames > at_output_mute, 'speaker mute stopped microphone capture'
+        send('output_mute', muted=False)
+        send('playback', generation=11, pcm='0000' * 240)
+        pump(.2)
+        assert any(e['event'] == 'playback_active' and e['active'] for e in events), 'speaker did not resume'
+        print('PASS speaker mute suppresses playback while microphone continues; unmute resumes')
         send('mute', muted=True)
         pump(.3)  # Drain sends already in flight before asserting silence.
         at_mute = mock.frames

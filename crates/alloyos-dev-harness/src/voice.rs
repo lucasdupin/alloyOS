@@ -15,11 +15,14 @@ pub enum HostCommand {
         api_key: String,
         #[serde(default)]
         direct_audio: bool,
+        #[serde(default)]
+        output_muted: bool,
     },
     Send {
         session: u64,
         json: String,
     },
+    OutputMute { session: u64, muted: bool },
     Mute {
         session: u64,
         muted: bool,
@@ -168,6 +171,7 @@ impl HostVoice {
         let target = if matches!(
             command,
             HostCommand::Start { .. }
+                | HostCommand::OutputMute { .. }
                 | HostCommand::Mute { .. }
                 | HostCommand::Interrupt { .. }
                 | HostCommand::Stop { .. }
@@ -238,6 +242,7 @@ mod tests {
             session: 1,
             endpoint: "wss://evil.test".into(),
             api_key: "secret".into(),
+            output_muted: false,
             direct_audio: false
         })
         .is_err());
@@ -298,6 +303,7 @@ pub fn parse_guest_frame(line: &str) -> Option<(u64, HostCommand)> {
     let inner = match &command {
         HostCommand::Start { session, .. }
         | HostCommand::Send { session, .. }
+        | HostCommand::OutputMute { session, .. }
         | HostCommand::Mute { session, .. }
         | HostCommand::Playback { session, .. }
         | HostCommand::Interrupt { session, .. }

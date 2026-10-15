@@ -52,6 +52,7 @@ pub struct FerrofluidSystemUi {
     model_cycles: Rc<Cell<usize>>,
     voice_toggles: Rc<Cell<usize>>,
     voice_mutes: Rc<Cell<usize>>,
+    output_mute_toggles: Rc<Cell<usize>>,
     tiles: Rc<RefCell<Vec<AppTile>>>,
     chat_items: Rc<RefCell<Vec<ChatItem>>>,
     available_tiles: Rc<RefCell<Vec<AppTile>>>,
@@ -144,6 +145,9 @@ impl FerrofluidSystemUi {
         let voice_toggles = Rc::new(Cell::new(0usize));
         let toggles = voice_toggles.clone();
         ui.on_voice_toggle(move || { toggles.set(toggles.get().saturating_add(1).min(16)); });
+        let output_mute_toggles = Rc::new(Cell::new(0usize));
+        let toggles = output_mute_toggles.clone();
+        ui.on_output_mute_toggle(move || toggles.set(toggles.get().saturating_add(1).min(16)));
         let voice_mutes = Rc::new(Cell::new(0usize));
         let mutes = voice_mutes.clone();
         ui.on_voice_mute(move || { mutes.set(mutes.get().saturating_add(1).min(16)); });
@@ -288,6 +292,7 @@ impl FerrofluidSystemUi {
             model_cycles,
             voice_toggles,
             voice_mutes,
+            output_mute_toggles,
             tiles,
             chat_items,
             available_tiles,
@@ -331,6 +336,14 @@ impl FerrofluidSystemUi {
     /// Smoothed by the view; level is microphone RMS normalized to 0..1000.
     pub fn set_voice_level(&self, level: u16) {
         self.ui.set_voice_level(level.min(1000) as f32 / 1000.0);
+    }
+
+    pub fn set_output_muted(&self, muted: bool) { self.ui.set_output_muted(muted); }
+
+    pub fn take_output_mute_toggle(&self) -> bool {
+        let count = self.output_mute_toggles.get();
+        self.output_mute_toggles.set(count.saturating_sub(1));
+        count > 0
     }
 
     pub fn take_voice_toggle(&self) -> bool {
@@ -1108,7 +1121,7 @@ mod tests {
     // Only one test owns Slint's process-wide, single-context platform.
     fn assert_long_composer_scrolling(ui: &mut FerrofluidSystemUi) {
         for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
-            ui.handle_input(InputEvent { kind, code: 0x110, x: 771, y: 2454 });
+            ui.handle_input(InputEvent { kind, code: 0x110, x: 925, y: 2454 });
         }
         let text = "This is a long chat message that should keep the newest characters visible while typing. ".repeat(4);
         for ch in text.chars() { ui.ui.invoke_soft_key(ch.to_string().into()); }
@@ -1336,7 +1349,7 @@ mod tests {
         // Voice intent starts only on an explicit mic tap; typing emits mute.
         assert!(!ui.take_voice_toggle());
         for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
-            ui.handle_input(InputEvent { kind, code: 0x110, x: 435, y: 2454 });
+            ui.handle_input(InputEvent { kind, code: 0x110, x: 281, y: 2454 });
         }
         assert!(ui.take_voice_toggle());
         assert!(!ui.take_voice_toggle());
@@ -1345,6 +1358,16 @@ mod tests {
         assert_eq!(ui.ui.get_voice_caption().as_str(), "Live caption");
         ui.set_reduced_motion(true);
         ui.set_voice_level(0);
+        ui.render(Duration::ZERO);
+        assert!(!ui.take_output_mute_toggle());
+        for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
+            ui.handle_input(InputEvent { kind, code: 0x110, x: 831, y: 2454 });
+        }
+        assert!(ui.take_output_mute_toggle());
+        assert!(!ui.take_output_mute_toggle());
+        assert!(!ui.take_voice_toggle(), "speaker control must not toggle capture");
+        ui.set_output_muted(true);
+        assert!(ui.ui.get_output_muted());
         ui.render(Duration::ZERO);
         let quiet = ui.pixels().to_vec();
         ui.set_voice_diagnostics("Mic 24 · sent 20 · transcript 0");
@@ -1437,7 +1460,7 @@ mod tests {
             ui.handle_input(InputEvent {
                 kind,
                 code: 0x110,
-                x: 771,
+                x: 925,
                 y: 2454,
             });
         }
@@ -1534,7 +1557,7 @@ mod tests {
             ui.handle_input(InputEvent {
                 kind,
                 code: 0x110,
-                x: 771,
+                x: 925,
                 y: 2454,
             });
         }
@@ -1588,7 +1611,7 @@ mod tests {
             ui.handle_input(InputEvent {
                 kind,
                 code: 0x110,
-                x: 771,
+                x: 925,
                 y: 2454,
             });
         }

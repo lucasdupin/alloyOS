@@ -15,6 +15,7 @@ use core::task::Poll;
 use serde_json::{json, Value};
 
 pub struct Voice {
+    pub output_muted: bool,
     live: Option<LiveSession>,
     next_id: u64,
     started: u64,
@@ -44,6 +45,7 @@ pub struct Voice {
 impl Default for Voice {
     fn default() -> Self {
         Self {
+            output_muted: false,
             live: None,
             next_id: 0,
             started: 0,
@@ -73,6 +75,13 @@ impl Default for Voice {
     }
 }
 impl Voice {
+    pub fn set_output_muted(&mut self, forge: &mut ForgeService, muted: bool) -> Result<(), &'static str> {
+        if self.active() {
+            self.command(forge, json!({"op":"output_mute","muted":muted}))?;
+        }
+        self.output_muted = muted;
+        Ok(())
+    }
     pub fn active(&self) -> bool {
         self.live.is_some()
     }
@@ -188,7 +197,7 @@ impl Voice {
         if self
             .command(
                 forge,
-                json!({"op":"start","endpoint":GEMINI_LIVE_ENDPOINT,"api_key":key,"direct_audio":true}),
+                json!({"op":"start","endpoint":GEMINI_LIVE_ENDPOINT,"api_key":key,"direct_audio":true,"output_muted":self.output_muted}),
             )
             .is_err()
         {
@@ -390,7 +399,7 @@ impl Voice {
                 LiveEvent::Audio {
                     generation_id, pcm, ..
                 } => {
-                    if self.command(forge,json!({"op":"playback","generation":generation_id,"pcm":encode_pcm(&pcm)})).is_err() {
+                    if !self.output_muted && self.command(forge,json!({"op":"playback","generation":generation_id,"pcm":encode_pcm(&pcm)})).is_err() {
                         self.fail(forge,agent,"Voice playback queue is full"); break;
                     }
                 }

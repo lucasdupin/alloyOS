@@ -1157,8 +1157,8 @@ pub fn build_knowledge_tile(
         .enumerate()
         .map(|(idx, e)| TileItem {
             id: format!("k_{}", idx + 1),
-            title: format!("{}: {}", e.title, e.value),
-            subtitle: format!("{} · scope: {}", e.category.path(), e.scope),
+            title: e.title.clone(),
+            subtitle: e.value.clone(),
             badge: e.basis.as_code().to_string(),
             status: e.updated.clone(),
         })

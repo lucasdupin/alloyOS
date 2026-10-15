@@ -1,6 +1,7 @@
 import { SoftKeyboard, AlloyPalette } from "@alloyos-keyboard/keyboard.slint";
 import { VerticalBox, HorizontalBox, ScrollView } from "std-widgets.slint";
 import "../../../assets/fonts/Quicksand.ttf";
+import { QuicksandGlyphCoverage } from "../../../assets/fonts/quicksand-coverage.slint";
 
 // Alloy controls keep focus and selection silver on the embedded renderer.
 component AlloyLineEdit inherits Rectangle {
@@ -412,6 +413,7 @@ export component SystemUi inherits Window {
     default-font-family: "Quicksand";
     default-font-weight: 500;
     default-font-size: 16px;
+    QuicksandGlyphCoverage {}
     in-out property <bool> sidebar-open: false;
     in-out property <bool> sidebar-dragging: false;
     in-out property <length> sidebar-drag-reveal: 0px;

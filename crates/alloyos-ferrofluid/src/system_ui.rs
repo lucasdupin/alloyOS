@@ -1158,6 +1158,27 @@ mod tests {
     use slint::Model;
 
     // Only one test owns Slint's process-wide, single-context platform.
+    fn assert_dynamic_glyph_coverage(ui: &mut FerrofluidSystemUi) {
+        ui.set_transcript("X");
+        for _ in 0..4 { ui.render(Duration::ZERO); }
+        let baseline = ui.pixels().to_vec();
+        for glyph in ['"', '“', '”', '‘', '’', '—', '–', '…', 'é', 'ã', 'ç', '€', '`'] {
+            ui.set_transcript(&alloc::format!("X{glyph}"));
+            for _ in 0..4 { ui.render(Duration::ZERO); }
+            assert_ne!(ui.pixels(), baseline.as_slice(), "dynamic glyph {glyph:?} must paint pixels");
+        }
+        ui.set_transcript("Straight quotes: \"hello\"\nSmart quotes: “hello” ‘hello’\nApostrophes: don't, don’t\nAccents: São Paulo, café, ação\nPunctuation: — – … € £");
+        for _ in 0..4 { ui.render(Duration::ZERO); }
+        if let Ok(path) = std::env::var("ALLOYOS_GLYPH_SCREENSHOT") {
+            let file = std::fs::File::create(path).unwrap();
+            let mut encoder = png::Encoder::new(file, ui.size.width, ui.size.height);
+            encoder.set_color(png::ColorType::Rgb);
+            encoder.set_depth(png::BitDepth::Eight);
+            let bytes: Vec<u8> = ui.pixels().iter().flat_map(|p|[(p>>16) as u8,(p>>8) as u8,*p as u8]).collect();
+            encoder.write_header().unwrap().write_image_data(&bytes).unwrap();
+        }
+    }
+
     fn assert_long_composer_scrolling(ui: &mut FerrofluidSystemUi) {
         for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
             ui.handle_input(InputEvent { kind, code: 0x110, x: 771, y: 2454 });
@@ -1366,13 +1387,14 @@ mod tests {
         assert!(ui.pixels().iter().any(|pixel| *pixel != ui.pixels()[0]));
         assert!(ui.previous_blur_top.is_none(), "chat starts without edge blur");
         let original_transcript = ui.transcript();
+        assert_dynamic_glyph_coverage(&mut ui);
         let example = "**Explore my capabilities:** I can tell you about the system and help with your tasks.";
         ui.set_transcript(example);
         for frame in 0..4 { ui.render(Duration::from_millis(frame * 16)); }
         let bold_pixels = ui.pixels().to_vec();
         if let Ok(path) = std::env::var("ALLOYOS_MARKDOWN_SCREENSHOT") {
             let file = std::fs::File::create(path).unwrap();
-            let mut encoder = png::Encoder::new(file, PHONE_WIDTH, PHONE_HEIGHT);
+            let mut encoder = png::Encoder::new(file, ui.size.width, ui.size.height);
             encoder.set_color(png::ColorType::Rgba);
             encoder.set_depth(png::BitDepth::Eight);
             let bytes: Vec<u8> = bold_pixels.iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8, 255]).collect();

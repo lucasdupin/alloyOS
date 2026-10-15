@@ -11,7 +11,15 @@ at the shared phone display scale using Slint's software-renderer compiler.
 The runtime does not need font files, a host font service, or network access.
 
 The old custom coverage atlases and their generator have been removed.
+`quicksand-coverage.slint` references every printable character in the bundled
+font's Unicode cmap. Its invisible, zero-size component makes Slint include
+those glyphs even when they appear only in dynamic chat text. This covers smart
+quotes, apostrophes, dashes, accented Latin letters, and supported symbols.
+Characters absent from Quicksand still require a separate fallback font.
+
 To regenerate the embedded Slint assets, rebuild `alloyos-ferrofluid`.
+If the font file changes, regenerate the coverage literal from its Unicode cmap,
+escaping backslashes and double quotes and excluding control characters.
 
 Render a preview with the actual Slint adapter:
 

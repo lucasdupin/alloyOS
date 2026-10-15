@@ -633,7 +633,7 @@ fn run_e2e_tests(kernel_image: &Path, overall_timeout: Duration) -> Result<()> {
         .context("e2e_memory_init failed")?;
     harness
         .expect_output(
-            "[splash] Kernel startup indicator presented",
+            "[splash] Boot wordmark presented",
             Duration::from_secs(10),
         )
         .context("e2e_splash_init failed")?;

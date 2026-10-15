@@ -119,3 +119,13 @@ static with reduced motion enabled. `--voice` previews a representative loud fra
 Regenerate the static faces from the original variable font with
 `python3 scripts/generate-static-fonts.py` (requires fonttools). Fixed keyboard
 label sizes keep tap feedback from multiplying the global bitmap font sizes.
+
+The kernel uses `assets/boot-wordmark.bin`, a cropped grayscale first frame,
+so ordinary kernel and xtask builds do not compile the UI on the host. When
+changing the boot wordmark, regenerate it with
+`cargo run -p alloyos-ferrofluid --example generate_boot_logo`.
+The `boot_logo` integration test checks the cached asset against the real UI.
+
+The pinned Slint compiler also emits bitmap data as byte-string literals instead
+of one integer expression per byte. See
+`vendor/i-slint-compiler-1.18.1/ALLOYOS_PATCH.md` for the small generator patch.

@@ -38,3 +38,5 @@ opt-level = 1
 # Slint 1.18.1's Path sampling uses a std-only float method; see vendor patch note.
 [patch.crates-io]
 i-slint-core = { path = "vendor/i-slint-core-1.18.1" }
+# Emit bitmap bytes as byte strings rather than millions of integer expressions.
+i-slint-compiler = { path = "vendor/i-slint-compiler-1.18.1" }

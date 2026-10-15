@@ -1,5 +1,4 @@
 fn main() {
-    println!("cargo:rerun-if-env-changed=CARGO_MANIFEST_DIR");
     let ui_dir =
         std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("ui");
     // Dependents import @alloyos-keyboard without assuming our checkout location.

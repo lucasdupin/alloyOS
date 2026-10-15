@@ -594,6 +594,11 @@ export component SystemUi inherits Window {
                                         refresh => { root.refresh-tile(item.tile.tile-id); }
                                     }
                                 }
+                                if root.voice-caption != "" && (root.voice-state == 2 || root.voice-state == 3 || root.voice-state == 4): Text {
+                                    text: root.voice-caption;
+                                    color: AlloyPalette.text;
+                                    wrap: word-wrap;
+                                }
                                 if root.reply-pending: ThinkingIndicator { time-ms: root.loading-time-ms; }
                                 content-end := Rectangle { height: 0px; }
                             }
@@ -731,7 +736,7 @@ export component SystemUi inherits Window {
             overflow: elide;
             vertical-alignment: center;
             visible: !root.keyboard-visible && (root.voice-state != 0 || root.voice-caption != "");
-            text: root.voice-error != "" ? root.voice-error : root.voice-caption != "" ? root.voice-caption : root.voice-state == 1 ? "Connecting…" : root.voice-state == 2 ? "Listening…" : root.voice-state == 3 ? "Responding…" : root.voice-state == 4 ? "Microphone muted" : "Voice unavailable";
+            text: root.voice-error != "" ? root.voice-error : root.voice-state == 1 ? (root.voice-caption != "" ? root.voice-caption : "Connecting…") : root.voice-state == 2 ? "Listening…" : root.voice-state == 3 ? "Responding…" : root.voice-state == 4 ? "Microphone muted" : "Voice unavailable";
             color: root.voice-state == 5 ? AlloyPalette.rust : AlloyPalette.muted;
             font-size: 13px;
             horizontal-alignment: center;

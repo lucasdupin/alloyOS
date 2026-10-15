@@ -1400,6 +1400,14 @@ mod tests {
         assert!(ui.ui.get_output_muted());
         ui.render(Duration::ZERO);
         let quiet = ui.pixels().to_vec();
+        ui.set_voice_state(alloyos_mcp::display::VoiceState::Listening, "Spoken words in the conversation", "");
+        ui.render(Duration::ZERO);
+        let split = PHONE_WIDTH as usize * (PHONE_HEIGHT as usize / 2);
+        assert_ne!(&ui.pixels()[..split], &quiet[..split], "live speech must render in chat");
+        let toolbar_start = PHONE_WIDTH as usize * (PHONE_HEIGHT as usize - 300);
+        assert_eq!(&ui.pixels()[toolbar_start..], &quiet[toolbar_start..], "speech must not replace the mic status");
+        ui.set_voice_state(alloyos_mcp::display::VoiceState::Listening, "Live caption", "");
+        ui.render(Duration::ZERO);
         ui.set_voice_diagnostics("Mic 24 · sent 20 · transcript 0");
         ui.render(Duration::ZERO);
         assert_eq!(ui.pixels(), quiet.as_slice(), "voice diagnostics must stay hidden");

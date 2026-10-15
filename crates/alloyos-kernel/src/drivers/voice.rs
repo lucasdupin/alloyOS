@@ -100,6 +100,7 @@ impl Voice {
         }
         let user = core::mem::take(&mut self.input);
         let assistant = core::mem::take(&mut self.output);
+        self.caption.clear();
         agent.record_voice_turn(&user, &assistant);
         if self.completed.len() < 16 {
             self.completed.push_back((user, assistant));
@@ -881,6 +882,7 @@ mod tests {
             voice.take_completed(),
             Some(("hello world".into(), "Hi".into()))
         );
+        assert!(voice.caption.is_empty(), "completed chat replaces the live caption");
     }
     #[test]
     fn cancelled_and_interrupted_tools_are_never_executed() {

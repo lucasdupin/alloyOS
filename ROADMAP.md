@@ -7,7 +7,7 @@
 - **No Shell for the AI**: The AI agent cannot see or execute shell commands (`sh`, `exec`, `spawn`). It interacts with the OS exclusively through typed native tools, local JavaScript (`alloyos-js`), and MCP servers.
 - **Agent-Exclusive UI & Declarative Tiles**: Developer apps are strictly headless (`alloyos-mcp`) and never link against or depend on any UI toolkit. Each app can expose **MCP entry points** (tools, resources, prompts), **SKILLs** (text files under `/apps/<app_id>/SKILL.md`), and declarative **Tiles** (`AppTile` schemas that can be embedded in the chat stream or pinned to the **Dashboard**). Only Welder and **Ferrofluid (`ferrofluidd`)** synthesize and render UI surfaces.
 - **One Process per App**: Every JavaScript app runs in its own independently scheduled OS process with a private virtual address space. `alloyos-mcp` invokes app handlers through IPC; manifest capabilities remain enforced inside each app process. An app fault or hang must not stop the host, Welder, Ferrofluid, or other apps.
-- **Protected Display Server**: Ferrofluid runs as a separate EL0 process with a private address space and its own executable. Kernel drivers retain hardware ownership and expose bounded input, time, and presentation interfaces. Ferrofluid can be rebuilt and restarted independently of the kernel. Initially, kernel drivers, VFS, and networking remain together, and Welder and Forge remain in the existing host; further service separation is deferred.
+- **Protected Display Server**: Ferrofluid runs as a separate EL0 process with a private address space and its own executable. Kernel drivers retain hardware ownership and expose bounded input, time, and presentation interfaces. Ferrofluid supports separate executable packaging and restart; removing its kernel build-time dependency remains pending. Welder and Forge currently remain in the kernel host. Independent Welder/setup builds are planned under Phase 5; Forge, drivers, VFS, and networking retain their current placement for that increment.
 - **Welder-Centralized App Orchestration & Capability-Based Scheduler Access**: No app can access or invoke another app; **only Welder centralizes app access and orchestration**. Apps declare `ScriptSchedulerAccess` in their filesystem manifests to receive scheduler bindings and storage scopes. Rust OS services do not select applications by name.
 - **Agent-Owned User Knowledge**: Welder's knowledge service maintains local user context under `/knowledge/`, with source tracking and user correction/deletion controls. Skills are supplied by `/apps/`, independently of knowledge; no top-level `/skills/` directory is planned.
 
@@ -78,8 +78,10 @@ MCP handlers execute in private app processes using `/bin/app-runner`. Welder,
 Forge, filesystem/network services and hardware drivers remain in the kernel host.
 The QEMU bootloader is a startup stage, not a concurrent process.
 
-Ferrofluid code, Slint UI, fonts and assets are independently packaged with
-`cargo xtask processes --release`; this command does not build or relink the kernel.
+Ferrofluid code, Slint UI, fonts and assets are separately packaged with
+`cargo xtask processes --release`. This path skips the explicit guest kernel build,
+but xtask still imports the kernel library and the kernel build script imports
+Ferrofluid to generate its boot logo. Complete build independence is pending.
 The shared display IPC schema is an ABI: changing it requires rebuilding both ends.
 
 
@@ -177,12 +179,12 @@ soft keyboard and liquid displacement effects.
   - Software rendering, damage tracking, embedded Quicksand font and Fluent dark controls
   - All Slint operations run on the protected display process’s UI thread
 - [x] **Independent protected Ferrofluid display server**
-  - Standalone `/system/ferrofluid` ELF owns Slint, UI assets, input interpretation and rendering in a private EL0 process; the kernel has no Ferrofluid/Slint linkage
+  - Standalone `/system/ferrofluid` ELF owns Slint, UI assets, input interpretation and rendering in a private EL0 process; Ferrofluid/Slint are absent from the kernel's runtime dependencies, but remain kernel build dependencies for boot-logo generation
   - Kernel drivers retain GPU/input hardware ownership; only the authorized display PID can poll input or present validated fixed-size frames
   - Bounded host/display IPC carries submissions, incremental replies, model state, conversation items, tiles, tile actions and dashboard pins
   - Authoritative conversation/dashboard state stays in the host; display faults and expired execution leases trigger restart with bounded retry/backoff and restored presentation state
   - `/display restart` reloads Ferrofluid without rebooting; applied-state ACKs verify restored conversation/pin content. Kernel-owned startup bars remain visible until Ferrofluid renders its boot/workspace UI
-  - `cargo xtask processes --release` rebuilds and updates packaged executables without rebuilding the kernel; CobaltFS development-volume upgrades preserve files and retain an original backup with rollback on packaging failure
+  - `cargo xtask processes --release` rebuilds and updates packaged executables without explicitly building the guest kernel; host kernel-library coupling remains pending under Phase 5. CobaltFS development-volume upgrades preserve files and retain an original backup with rollback on packaging failure
   - Runtime guest acceptance covers actual EL0 display fault, restart and restored conversation/dashboard state; normal graphical input and unchanged-kernel rebuild are separate verification gates
 - [x] **Conversation and keyboard input**
   - Conversation viewport, text editing, submission and soft keyboard
@@ -230,6 +232,14 @@ console model commands; task complexity does not change the selected provider.
 - [x] **Development access and model packaging**
   - Versioned Forge UART protocol and optional loopback inference endpoint
   - Host download/image packaging, authentication references and model-sized guest memory
+- [ ] **Independent Welder/setup builds and kernel build separation**
+  - Move Welder's runtime, conversation, setup wizard and tool orchestration into a separately packaged protected service executable; remove the kernel's direct dependency on `alloyos-welder`
+  - Define bounded, versioned IPC for display requests/replies and authorized model, filesystem, app, scheduler and voice operations. Preserve kernel-derived caller identity and capability checks; Forge and existing kernel services may remain in the host behind these interfaces
+  - Extract filesystem image/packaging code into a shared library so xtask no longer imports `alloyos-kernel`, directly or transitively
+  - Generate the early boot splash from an isolated asset or dedicated generator; remove Ferrofluid/Slint from kernel build dependencies and stop watching the full UI source tree. Preserve the pixel-matched handoff to Ferrofluid
+  - Extend executable packaging and launch/restart tooling to update Welder and Ferrofluid without building or relinking either the host kernel library or guest kernel when shared ABI and kernel sources are unchanged
+  - Acceptance: after a baseline build, edit only setup text/logic, rebuild and package Welder, then boot or restart it and verify the changed wizard. Cargo build evidence must show no kernel compilation/linking; the guest kernel artifact hash and modification time must remain unchanged
+  - Repeat the unchanged-kernel check for a Ferrofluid-only UI edit. Verify setup persistence, conversation restoration, tool authorization and recovery after a Welder service fault; shared ABI changes must rebuild both endpoints
 - [ ] **Complete console agent integration**
   - Connect the graphical console to the bounded multi-step tool loop and real OS/app capabilities
   - Persist configuration, conversation and first-boot preferences on CobaltFS
@@ -271,6 +281,16 @@ Forge only through an explicitly granted `AlloyOS.forge(...)` capability.
 ---
 
 ## Phase 7: Headless MCP Apps, SKILLs, Declarative Tiles & Tasks App
+
+### Deferred: conversational app onboarding
+
+- [ ] Reintroduce optional app setup after designing a natural, LLM-led conversation around what the user wants to do (email, documents, calendar), rather than listing installed apps or asking about a dashboard.
+- [ ] Discover and suggest working MCP apps only when relevant to the user's stated needs, then obtain explicit installation approval.
+- [ ] Delegate account connection and authorization to each MCP app, with honest readiness, retry, skip, and resume behavior.
+- [ ] Keep setup questions in chat and tiles reserved for useful widgets; widget selection/pinning is separate from onboarding.
+
+App selection and connection are currently skipped in first-run setup. The active flow covers the user's name, the agent's name, city/country for Clock, clock format, learning preferences, and review.
+
 
 Every alloyOS application is a headless package under `/apps/<app_id>/` that can expose three declarative surfaces:
 1. **MCP Entry Points**: Structured tools (`tools/list`, `tools/call`), resources (`resources/list`, `resources/read`), and prompts (`prompts/list`, `prompts/get`).
@@ -357,9 +377,11 @@ with `python3 scripts/test-process-runtime.py`. The latter loads both executable
 from CobaltFS and checks app operations plus a real display fault/restart.
 
 Use `cargo xtask build --release` for a complete build and
-`cargo xtask processes --release` for UI/app executable updates. ABI changes require
-a complete build. Welder/Forge and kernel services retain their existing host
-boundary; further service isolation is deferred. General asynchronous app host I/O,
+`cargo xtask processes --release` for UI/app executable updates; this skips the
+explicit guest kernel build but does not yet guarantee kernel build independence.
+ABI changes require a complete build. Welder/setup service separation and removal
+of xtask and boot-logo build coupling are pending under Phase 5. Forge and kernel
+services retain their existing host boundary for that increment. General asynchronous app host I/O,
 arbitrary ELF applications and Boa migration remain outside this process-boundary
 increment.
 
@@ -373,3 +395,4 @@ increment.
 | **M6: JS Automation** | Capability-scoped interpreter and time/event scheduler | `alloyos-js`, `alloyos-welder`, `alloyos-kernel` | Current interpreter and scheduler implemented; Boa support deferred, low priority |
 | **M7: Headless Apps (MCP, SKILLs & Tiles)** | JavaScript apps in separate protected processes, MCP entry points, `SKILL.md` files, declarative Tiles, and Welder-only orchestration | `alloyos-mcp`, `alloyos-js`, `alloyos-kernel`, `alloyos-welder`, `alloyos-ferrofluid` | Protected app handlers, bounded host IPC and manifest guards implemented; remaining Ferrofluid Dashboard/chat Tile work tracked above |
 | **M8: User Knowledge** | Durable profile, retrieval, learning and user controls | `alloyos-welder`, `alloyos-kernel`, `alloyos-ferrofluid` | Implemented |
+| **M9: Independent Welder/Setup Builds** | Protected Welder service, bounded service IPC, independent executable updates, isolated boot splash and kernel-free packaging tools | `alloyos-welder`, `alloyos-proto`, `alloyos-kernel`, `alloyos-ferrofluid`, `xtask` | Planned under Phase 5; wizard-only and UI-only edits must pass unchanged-kernel build gates |

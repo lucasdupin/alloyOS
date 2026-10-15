@@ -390,6 +390,9 @@ impl ApiTransport {
                 value["usage"]["output_tokens"].as_u64()
             }
             ApiProvider::Gemini => {
+                if value["promptFeedback"]["blockReason"].as_str().is_some() {
+                    return Err(response_error("Gemini blocked the prompt; no answer was generated"));
+                }
                 let candidate = value["candidates"]
                     .as_array()
                     .and_then(|v| v.first())
@@ -397,15 +400,30 @@ impl ApiTransport {
                 if candidate["finishReason"] == "MAX_TOKENS" {
                     return Err(response_error("generation exhausted its output/thinking token budget; increase max_tokens"));
                 }
+                match candidate["finishReason"].as_str() {
+                    Some("SAFETY" | "RECITATION" | "BLOCKLIST" | "PROHIBITED_CONTENT" | "SPII" | "IMAGE_SAFETY") => {
+                        return Err(response_error("Gemini blocked the generated answer"));
+                    }
+                    _ => {}
+                }
+                let mut has_thoughts = false;
                 for part in candidate["content"]["parts"]
                     .as_array()
                     .ok_or_else(|| response_error("candidate has no content parts"))?
                 {
+                    has_thoughts |= part["thought"] == true;
                     if part["thought"] != true {
                         if let Some(chunk) = part["text"].as_str() {
                             text.push_str(chunk);
                         }
                     }
+                }
+                if text.trim().is_empty() {
+                    return Err(response_error(if has_thoughts || value["usageMetadata"]["thoughtsTokenCount"].as_u64().unwrap_or(0) > 0 {
+                        "Gemini returned thinking without a visible answer"
+                    } else {
+                        "Gemini returned no usable text; response parts were empty or non-text"
+                    }));
                 }
                 value["usageMetadata"]["candidatesTokenCount"].as_u64()
             }

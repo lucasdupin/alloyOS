@@ -17,6 +17,30 @@ struct FixtureHttp {
 }
 
 #[test]
+fn gemini_empty_answers_distinguish_blocking_thinking_and_non_text() {
+    for (response, expected) in [
+        (json!({"promptFeedback":{"blockReason":"SAFETY"}}), "blocked the prompt"),
+        (json!({"candidates":[{"finishReason":"SAFETY"}]}), "blocked the generated answer"),
+        (json!({"candidates":[{"finishReason":"STOP","content":{"parts":[{"thought":true,"text":"PRIVATE_REASONING"}]}}]}), "thinking without a visible answer"),
+        (json!({"candidates":[{"content":{"parts":[]}}],"usageMetadata":{"thoughtsTokenCount":12}}), "thinking without a visible answer"),
+        (json!({"candidates":[{"content":{"parts":[{"text":"   "}]}}]}), "empty or non-text"),
+        (json!({"candidates":[{"content":{"parts":[{"functionCall":{"name":"PRIVATE_TOOL"}}]}}]}), "empty or non-text"),
+    ] {
+        let mut forge = Forge::new(0);
+        forge.connect_api(ApiProvider::Gemini, ApiProvider::Gemini.default_model(), "fixture-key", Box::new(FixtureHttp {
+            status: 200, response: response.to_string(),
+            requests: Arc::new(Mutex::new(Vec::new())), provider: ApiProvider::Gemini,
+        })).unwrap();
+        let error = forge.generate(&GenerationRequest {
+            model: Some(ApiProvider::Gemini.default_model().into()),
+            prompt: "Hello".into(), max_tokens: 2048,
+        }).unwrap_err().to_string();
+        assert!(error.contains(expected), "{error}");
+        assert!(!error.contains("PRIVATE_") && !error.contains("fixture-key"));
+    }
+}
+
+#[test]
 fn gemini_thinking_budget_exhaustion_has_actionable_safe_error() {
     let mut forge = Forge::new(0);
     forge.connect_api(ApiProvider::Gemini, ApiProvider::Gemini.default_model(), "fixture-key", Box::new(FixtureHttp {

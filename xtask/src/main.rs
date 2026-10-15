@@ -274,7 +274,7 @@ fn ensure_cobaltfs_image(path: &Path) -> Result<()> {
         std::fs::remove_file(&pending)?;
     }
     if path.exists() {
-        if std::fs::metadata(path)?.len() >= 32*1024*1024 {
+        if std::fs::metadata(path)?.len() >= 128*1024*1024 {
             return image::copy_tree(path, &get_workspace_root()?.join("apps"), "/apps");
         }
         if backup.exists(){return Err(anyhow!("Volume migration backup already exists: {}",backup.display()))}
@@ -304,12 +304,12 @@ fn ensure_cobaltfs_image(path: &Path) -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     println!(
-        "[xtask] Formatting new 32 MiB CobaltFS volume at {}...",
+        "[xtask] Formatting new 128 MiB CobaltFS volume at {}...",
         path.display()
     );
 
     let bs = 4096usize;
-    let total_blocks = 8192u32; // 32 MiB
+    let total_blocks = 32768u32; // 128 MiB
     let inodes_count = 256u32; // 256 * 128B = 32 KiB = 32 blocks (blocks 5..37)
     let reserved_blocks = 13u32; // 0:boot, 1:SB, 2:BGD, 3:bmap, 4:imap, 5..37:itable, 37:root dir
     let mut img = vec![0u8; bs * total_blocks as usize];

@@ -83,7 +83,25 @@ fn copy_directory(filesystem: &CobaltFS, source: &Path, destination: &str) -> Re
         if kind.is_dir() {
             copy_directory(filesystem, &entry.path(), &target)?;
         } else if kind.is_file() {
-            let bytes = fs::read(entry.path())?;
+            let mut bytes = fs::read(entry.path())?;
+            if target == "/apps/search/main.js" {
+                if let Ok(mut text) = String::from_utf8(bytes.clone()) {
+                    if text.contains("__GEMINI_API_KEY__") {
+                        let key = std::env::var("GEMINI_API_KEY").ok().filter(|s| !s.trim().is_empty()).or_else(|| {
+                            let root = entry.path().ancestors().find(|p| p.join("Cargo.toml").is_file() && p.join("xtask").is_dir())?;
+                            let secret_file = root.join(".secrets/GEMINI_API_KEY");
+                            let content = fs::read_to_string(secret_file).ok()?;
+                            let mut key = content.trim().to_string();
+                            if key.starts_with("GEMINI_API_KEY=") {
+                                key = key["GEMINI_API_KEY=".len()..].trim().to_string();
+                            }
+                            if key.is_empty() { None } else { Some(key) }
+                        }).unwrap_or_default();
+                        text = text.replace("__GEMINI_API_KEY__", &key);
+                        bytes = text.into_bytes();
+                    }
+                }
+            }
             if let Ok(inode) = filesystem.lookup(&target) {
                 let mut existing = vec![0; inode.size];
                 if inode.kind == InodeKind::File
@@ -139,7 +157,7 @@ mod tests {
             .unwrap();
         let original = fs::read(&image).unwrap();
         crate::ensure_cobaltfs_image(&image).unwrap();
-        assert_eq!(fs::metadata(&image).unwrap().len(), 32 * 1024 * 1024);
+        assert_eq!(fs::metadata(&image).unwrap().len(), 128 * 1024 * 1024);
         let export = root.join("export");
         export_tree(&image, &export).unwrap();
         assert!(export.join("var/empty").is_dir());
@@ -154,7 +172,7 @@ mod tests {
         assert!(!image.with_extension("migration-pending").exists());
         // Retry does not collide with stale staging data.
         crate::ensure_cobaltfs_image(&image).unwrap();
-        assert_eq!(fs::metadata(&image).unwrap().len(), 32 * 1024 * 1024);
+        assert_eq!(fs::metadata(&image).unwrap().len(), 128 * 1024 * 1024);
         fs::remove_dir_all(root).unwrap();
     }
 

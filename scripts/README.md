@@ -147,7 +147,7 @@ Ferrofluid crash/restart with host conversation/dashboard restoration. Use
 `cargo xtask build --release` builds the kernel and protected executables. For UI
 iteration, `cargo xtask processes --release` rebuilds and packages only executables;
 it does not rebuild the kernel. Existing small development volumes migrate to
-32 MiB while preserving files and keeping an original backup. Restart the guest
+128 MiB while preserving files and keeping an original backup. Restart the guest
 to load an updated executable; running guest storage must not be overwritten.
 
 ## Gmail MCP search acceptance

@@ -47,7 +47,7 @@ pub fn run(
     chat_items.push(ChatItem::Text(welcome));
     ui.set_active_model(agent.active_model_id());
     if let Err(error) = agent.initialize_dashboard_tiles() {
-        let err_msg = alloc::format!("Welder: {}", error);
+        let err_msg = alloc::format!("{}: {}", agent.agent_name(), error);
         transcript.push_str(&alloc::format!("\n\n{}", err_msg));
         chat_items.push(ChatItem::Text(err_msg));
     }
@@ -57,6 +57,16 @@ pub fn run(
     ui.set_available_tiles(&agent.synthesized_tiles());
     ui.restore_dashboard(agent.pinned_tile_ids());
     let mut chat_tiles: alloc::vec::Vec<alloyos_mcp::AppTile> = alloc::vec::Vec::new();
+    match agent.begin_setup() {
+        Ok(Some(output)) => {
+            let message = alloc::format!("{}: {}", agent.agent_name(), output.chat_text());
+            transcript.push_str(&alloc::format!("\n\n{}", message));
+            chat_items.push(ChatItem::Text(message));
+        }
+        Ok(None) => {},
+        Err(error) => chat_items.push(ChatItem::Text(alloc::format!("Setup: {}",error))),
+    }
+    ui.set_available_tiles(&agent.synthesized_tiles());
     ui.set_tiles(&chat_tiles);
     ui.set_transcript(&transcript);
     ui.set_chat_items(&chat_items);
@@ -101,8 +111,8 @@ pub fn run(
                 chat_items.push(ChatItem::Text(alloc::format!("You: {}", user)));
             }
             if !assistant.is_empty() {
-                transcript.push_str(&alloc::format!("\n\nWelder: {}", assistant));
-                chat_items.push(ChatItem::Text(alloc::format!("Welder: {}", assistant)));
+                transcript.push_str(&alloc::format!("\n\n{}: {}", agent.agent_name(), assistant));
+                chat_items.push(ChatItem::Text(alloc::format!("{}: {}", agent.agent_name(), assistant)));
             }
             ui.set_transcript(&transcript);
             ui.set_chat_items(&chat_items);
@@ -138,8 +148,8 @@ pub fn run(
             crate::serial_println!("[systemui] Model boot phase finished.");
         }
         if let Some(error) = forge.take_boot_error() {
-            let err_msg = alloc::format!("Welder: {}", error);
-            transcript.push_str("\n\nWelder: ");
+            let err_msg = alloc::format!("{}: {}", agent.agent_name(), error);
+            transcript.push_str(&alloc::format!("\n\n{}: ",agent.agent_name()));
             transcript.push_str(error);
             chat_items.push(ChatItem::Text(err_msg));
             ui.set_transcript(&transcript);
@@ -167,8 +177,8 @@ pub fn run(
                 Err(error) => {
                     ui.restore_dashboard(agent.pinned_tile_ids());
                     dashboard_revision = ui.dashboard_state().revision();
-                    let err_msg = alloc::format!("Welder: {}", error);
-                    transcript.push_str(&alloc::format!("\n\nWelder: {}", error));
+                    let err_msg = alloc::format!("{}: {}", agent.agent_name(), error);
+                    transcript.push_str(&alloc::format!("\n\n{}: {}", agent.agent_name(), error));
                     chat_items.push(ChatItem::Text(err_msg));
                     ui.set_transcript(&transcript);
                     ui.set_chat_items(&chat_items);
@@ -204,12 +214,14 @@ pub fn run(
                         }
                     }
                     ui.set_available_tiles(&agent.synthesized_tiles());
+                    ui.restore_dashboard(agent.pinned_tile_ids());
+                    dashboard_revision = ui.dashboard_state().revision();
                     ui.set_tiles(&chat_tiles);
                     ui.set_chat_items(&chat_items);
                 }
                 Err(error) => {
-                    let err_msg = alloc::format!("Welder: {}", error);
-                    transcript.push_str(&alloc::format!("\n\nWelder: {}", error));
+                    let err_msg = alloc::format!("{}: {}", agent.agent_name(), error);
+                    transcript.push_str(&alloc::format!("\n\n{}: {}", agent.agent_name(), error));
                     chat_items.push(ChatItem::Text(err_msg));
                     ui.set_transcript(&transcript);
                     ui.set_chat_items(&chat_items);
@@ -220,7 +232,7 @@ pub fn run(
             if let Poll::Ready(result) = agent.poll_console_reply() {
                 pending = false;
                 ui.set_reply_pending(false);
-                transcript.push_str("\n\nWelder: ");
+                transcript.push_str(&alloc::format!("\n\n{}: ",agent.agent_name()));
                 match result {
                     Ok(output) => {
                         if let Some(id) = console_rpc_id.take() {
@@ -229,9 +241,9 @@ pub fn run(
                             forge.finish_console_request(id, Ok(serde_json::json!({"text":output.response_text,"tools":tools}).to_string()));
                         }
                         transcript.push_str(&output.response_text);
-                        let welder_msg = alloc::format!("Welder: {}", output.response_text);
+                        let welder_msg = alloc::format!("{}: {}", agent.agent_name(), output.response_text);
                         if let Some(ChatItem::Text(last)) = chat_items.last_mut() {
-                            if last.starts_with("Welder:") {
+                            if last.starts_with(&alloc::format!("{}:",agent.agent_name())) {
                                 *last = welder_msg;
                             } else {
                                 chat_items.push(ChatItem::Text(welder_msg));
@@ -257,10 +269,10 @@ pub fn run(
                             crate::serial_println!("[welder-e2e] stage=chat_finished success=false");
                             forge.finish_console_request(id, Err(error.to_string()));
                         }
-                        let err_msg = alloc::format!("Welder: {}", error);
+                        let err_msg = alloc::format!("{}: {}", agent.agent_name(), error);
                         transcript.push_str(&alloc::format!("{}", error));
                         if let Some(ChatItem::Text(last)) = chat_items.last_mut() {
-                            if last.starts_with("Welder:") {
+                            if last.starts_with(&alloc::format!("{}:",agent.agent_name())) {
                                 *last = err_msg;
                             } else {
                                 chat_items.push(ChatItem::Text(err_msg));
@@ -285,8 +297,10 @@ pub fn run(
                     if !super::forge::rpc_output_pending() {
                         crate::serial_println!("[welder] Reply text advanced.");
                     }
-                    ui.update_streaming_reply(&transcript, &partial);
-                    ui.update_streaming_chat_item(&partial);
+                    ui.set_transcript(&alloc::format!("{}\n\n{}: {}",transcript,agent.agent_name(),partial));
+                    let mut streaming_items = chat_items.clone();
+                    streaming_items.push(ChatItem::Text(alloc::format!("{}: {}",agent.agent_name(),partial)));
+                    ui.set_chat_items(&streaming_items);
                 }
             }
         }
@@ -307,9 +321,9 @@ pub fn run(
             chat_items.push(ChatItem::Text(alloc::format!("You: {}", text)));
             match agent.start_console_input(&text) {
                 Ok(Some(output)) => {
-                    transcript.push_str("\n\nWelder: ");
+                    transcript.push_str(&alloc::format!("\n\n{}: ",agent.agent_name()));
                     transcript.push_str(&output.response_text);
-                    chat_items.push(ChatItem::Text(alloc::format!("Welder: {}", output.response_text)));
+                    chat_items.push(ChatItem::Text(alloc::format!("{}: {}", agent.agent_name(), output.response_text)));
                     for tool_out in &output.tool_outputs {
                         if let Some(view) = &tool_out.synthesized_view {
                             if let Some(tile) = &view.tile {
@@ -329,12 +343,14 @@ pub fn run(
                     ui.set_reply_pending(true);
                 }
                 Err(error) => {
-                    let err_msg = alloc::format!("Welder: {}", error);
-                    transcript.push_str(&alloc::format!("\n\nWelder: {}", error));
+                    let err_msg = alloc::format!("{}: {}", agent.agent_name(), error);
+                    transcript.push_str(&alloc::format!("\n\n{}: {}", agent.agent_name(), error));
                     chat_items.push(ChatItem::Text(err_msg));
                 }
             }
             ui.set_active_model(agent.active_model_id());
+            ui.restore_dashboard(agent.pinned_tile_ids());
+            dashboard_revision = ui.dashboard_state().revision();
             ui.set_available_tiles(&agent.synthesized_tiles());
             ui.set_transcript(&transcript);
             ui.set_tiles(&chat_tiles);
@@ -353,7 +369,7 @@ pub fn run(
                     if let alloyos_mcp::packages::PackageChange::Updated(status) = change {
                         if !status.ready {
                             for diagnostic in status.diagnostics {
-                                let diag_msg = alloc::format!("Welder: App {}: {} ({})",
+                                let diag_msg = alloc::format!("{}: App {}: {} ({})",agent.agent_name(),
                                     status.app_id, diagnostic.message, diagnostic.path);
                                 transcript.push_str(&alloc::format!("\n\n{}", diag_msg));
                                 chat_items.push(ChatItem::Text(diag_msg));

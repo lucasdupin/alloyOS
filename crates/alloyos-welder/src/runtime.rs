@@ -30,6 +30,11 @@ pub struct ConsoleTurnOutput {
 /// shell-free native OS tools, and agent-exclusive Ferrofluid UI synthesis.
 #[derive(Clone, Debug)]
 pub struct AgentRuntime {
+    pub(crate) setup: crate::setup::SetupState,
+    pub(crate) setup_view: Option<alloyos_mcp::display::SetupView>,
+    pub(crate) setup_revision: u64,
+    pub(crate) setup_visible: bool,
+    pub(crate) setup_load_error: bool,
     voice_model: String,
     gateway: ModelGateway,
     pinned_tile_ids: Vec<String>,
@@ -54,6 +59,11 @@ impl AgentRuntime {
 
     pub fn new() -> Self {
         let mut runtime = Self {
+            setup: crate::setup::SetupState::default(),
+            setup_view: None,
+            setup_revision: 0,
+            setup_visible: false,
+            setup_load_error: false,
             voice_model: alloyos_forge::voice::DEFAULT_LIVE_MODEL.into(),
             gateway: ModelGateway::new(),
             pinned_tile_ids: Vec::new(),
@@ -61,15 +71,14 @@ impl AgentRuntime {
             turn_tool_outputs: Vec::new(),
             pending_tool_response: None,
             history: vec![Message::system(
-                "You are the alloyOS Ferrofluid AI Agent running on bare-metal ARM64. \
-                 POSIX shells (sh, bash) do not exist for the agent; use structured OS tools, \
-                 local JavaScript scripts, and headless MCP apps. Only you can synthesize UI.",
+                crate::personality::OPERATIONAL_INSTRUCTIONS,
             )],
             tool_registry: NativeToolRegistry::new(),
             ui_synthesizer: AgentUiSynthesizer::new(),
         };
         runtime.persist_config_to_vfs();
         runtime.restore_dashboard();
+        runtime.restore_setup();
         runtime
     }
 
@@ -84,6 +93,11 @@ impl AgentRuntime {
     /// restoring any persisted `/etc/ai.conf`, `/scripts/*.js`, and `/etc/schedules.conf`.
     pub fn with_vfs_backend(backend: Rc<RefCell<dyn ToolVfsBackend>>) -> Self {
         let mut runtime = Self {
+            setup: crate::setup::SetupState::default(),
+            setup_view: None,
+            setup_revision: 0,
+            setup_visible: false,
+            setup_load_error: false,
             voice_model: alloyos_forge::voice::DEFAULT_LIVE_MODEL.into(),
             gateway: ModelGateway::new(),
             pinned_tile_ids: Vec::new(),
@@ -91,9 +105,7 @@ impl AgentRuntime {
             turn_tool_outputs: Vec::new(),
             pending_tool_response: None,
             history: vec![Message::system(
-                "You are the alloyOS Ferrofluid AI Agent running on bare-metal ARM64. \
-                 POSIX shells (sh, bash) do not exist for the agent; use structured OS tools, \
-                 local JavaScript scripts, and headless MCP apps. Only you can synthesize UI.",
+                crate::personality::OPERATIONAL_INSTRUCTIONS,
             )],
             tool_registry: NativeToolRegistry::with_vfs_backend(backend),
             ui_synthesizer: AgentUiSynthesizer::new(),
@@ -109,6 +121,7 @@ impl AgentRuntime {
             runtime.persist_config_to_vfs();
         }
         runtime.restore_dashboard();
+        runtime.restore_setup();
         runtime
     }
 
@@ -135,6 +148,7 @@ impl AgentRuntime {
             self.persist_config_to_vfs();
         }
         self.restore_dashboard();
+        self.restore_setup();
         self.tool_registry
             .restore_automations_from_vfs()
             .map_err(AiError::ConfigError)
@@ -289,6 +303,7 @@ impl AgentRuntime {
 
     fn messages_with_knowledge_context(&mut self, user_turn: &str) -> Vec<Message> {
         let mut messages = self.history.clone();
+        messages.insert(0, Message::system(crate::personality::system_prompt(self.agent_name(), crate::personality::ConversationMode::Text)));
         if let Some(ctx) = self.tool_registry.build_turn_knowledge_context(user_turn) {
             let insert_idx = messages.len().saturating_sub(1);
             messages.insert(insert_idx, Message::system(ctx));
@@ -653,6 +668,7 @@ impl AgentRuntime {
     ) -> Result<ConsoleTurnOutput, AiError> {
         let trimmed = input.trim();
         validate_console_input_no_shell(trimmed)?;
+        if let Some(result) = self.setup_console(trimmed) { return result; }
 
         if let Some(rest) = trimmed.strip_prefix("/model") {
             let target = rest.trim();
@@ -744,6 +760,7 @@ impl AgentRuntime {
         }
         let trimmed = input.trim();
         validate_console_input_no_shell(trimmed)?;
+        if let Some(result) = self.setup_console(trimmed) { return result.map(Some); }
         if trimmed.starts_with("/model")
             || trimmed == "/knowledge"
             || trimmed.starts_with("/knowledge ")
@@ -781,7 +798,9 @@ impl AgentRuntime {
         if self.gateway.is_pending() || self.pending_tool_response.is_some() {
             return Err(AiError::PolicyViolation("Wait for the current reply before starting voice".into()));
         }
-        Ok(self.messages_with_knowledge_context(""))
+        let mut messages = self.messages_with_knowledge_context("");
+        messages[0] = Message::system(crate::personality::system_prompt(self.agent_name(), crate::personality::ConversationMode::Voice));
+        Ok(messages)
     }
     pub fn record_voice_turn(&mut self, user: &str, assistant: &str) {
         if !user.trim().is_empty() {

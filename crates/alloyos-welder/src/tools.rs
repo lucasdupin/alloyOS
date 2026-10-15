@@ -1493,6 +1493,14 @@ impl NativeToolRegistry {
         self.write_vfs_raw(path, content).map(|_| ())
     }
 
+    /// Welder-owned system setup writes must propagate durable storage errors.
+    pub(crate) fn persist_system_config(&mut self, path: &str, content: &str) -> Result<(), String> {
+        if !matches!(path, "/etc/setup.json" | "/etc/ai.conf") {
+            return Err("unsupported system setup configuration path".into());
+        }
+        self.write_vfs_raw(path, content).map(|_| ())
+    }
+
     /// Writes a file directly into the CobaltFS / VFS state and dispatches any matching
     /// `FsCreated` / `FsModified` automation triggers.
     pub fn vfs_write(&mut self, path: impl Into<String>, content: impl Into<String>) {

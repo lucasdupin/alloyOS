@@ -24,6 +24,47 @@ pub enum TileEvent {
         resource_uri: String,
     },
 }
+/// Structured setup question rendered as conversation, separate from app widgets.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetupView {
+    pub revision: u64,
+    pub title: String,
+    pub prompt: String,
+    pub progress: String,
+    pub field_label: String,
+    pub field_value: String,
+    pub field_prefix: String,
+    pub field_placeholder: String,
+    pub choices: Vec<SetupChoice>,
+    pub rows: Vec<SetupRow>,
+    pub can_back: bool,
+    pub can_defer: bool,
+    pub error: String,
+}
+impl SetupView {
+    pub fn chat_text(&self) -> alloc::string::String {
+        use alloc::format;
+        let mut text = format!("{}\n{}\n{}", self.progress, self.title, self.prompt);
+        if !self.field_value.is_empty() { text.push_str(&format!("\nCurrent: {}", self.field_value)); }
+        for row in &self.rows { text.push_str(&format!("\n{}: {}", row.title, row.detail)); }
+        for choice in &self.choices { text.push_str(&format!("\n{} — reply: {}", choice.label, choice.value)); }
+        if self.can_back { text.push_str("\nReply back to return to the previous question."); }
+        if self.can_defer { text.push_str("\nReply later to finish setup later."); }
+        if !self.error.is_empty() { text.push_str(&format!("\n{}", self.error)); }
+        text
+    }
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetupChoice { pub value: String, pub label: String }
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetupRow { pub title: String, pub detail: String }
+impl SetupRow {
+    pub fn new(_id: impl Into<String>,title: impl Into<String>, detail: impl Into<String>,_badge: impl Into<String>,_status: impl Into<String>)->Self {
+        Self {title:title.into(), detail:detail.into()}
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetupAnswer { pub revision: u64, pub value: String }
 #[derive(Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct State {
     #[serde(default)]

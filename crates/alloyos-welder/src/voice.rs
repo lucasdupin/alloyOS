@@ -36,9 +36,7 @@ impl AgentRuntime {
             ));
         }
         let context = self.voice_context()?;
-        let mut instruction = String::from(
-            "Speak naturally and concisely. Use the available tools for actions in alloyOS. ",
-        );
+        let mut instruction = String::new();
         for message in context.iter().filter(|m| m.role == Role::System) {
             if instruction.len() + message.content.len() < 32768 {
                 instruction.push_str(&message.content);
@@ -100,6 +98,21 @@ mod tests {
             .unwrap()
             .is_empty());
     }
+    #[test]
+    fn live_setup_uses_selected_name_shared_personality_and_separate_constraints() {
+        let mut agent = AgentRuntime::new();
+        agent.setup.agent_name = "Nova".into();
+        agent.switch_provider("gemini").unwrap();
+        let mut live = agent.start_voice_session(12, "fixture-live").unwrap();
+        let setup: Value = serde_json::from_str(&live.take_outbound().unwrap()).unwrap();
+        let instruction = setup["setup"]["systemInstruction"]["parts"][0]["text"].as_str().unwrap();
+        let personality = crate::personality::system_prompt("Nova", crate::personality::ConversationMode::Voice);
+        assert!(instruction.contains(&personality));
+        assert!(instruction.contains(crate::personality::OPERATIONAL_INSTRUCTIONS));
+        assert!(!instruction.contains("bare-metal ARM64"));
+        assert!(!instruction.contains("Your user-facing name is"));
+    }
+
     #[test]
     fn reconnect_seeds_completed_voice_history_after_setup_ready() {
         let mut agent = AgentRuntime::new();

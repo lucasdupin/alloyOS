@@ -313,3 +313,38 @@ App data stays under `/var/<app_id>/`; `/apps/` remains read-only to running app
 
 Automatic discovery and validation are planned in
 [Roadmap Phase 7](ROADMAP.md#phase-7-headless-mcp-apps-skills-declarative-tiles--tasks-app).
+
+## Optional first-run setup contract
+
+The built-in system setup wizard belongs to Welder (`alloyos-welder::setup`),
+not an installable app. Questions and answers appear in the chat interface, never as widget tiles. It saves resumable progress to `/etc/setup.json`, writes
+Clock preferences through `clock.configure` (the Clock app owns its scoped local
+storage), and lets users select installed apps for
+Dashboard pins. It offers packages actually discovered under `/apps/` and can
+search the existing Smithery registry with `search <service>`. Installation is an
+explicit action on a returned result, through the existing validated installer.
+Registry or transport failures remain visible and do not block finishing setup;
+Package Manager also remains available later.
+The wizard keeps only draft answers for resuming its form. Clock validates and
+persists timezone/format in `/var/clock/preferences.json`; the review calls
+`clock.settings` to show the app's current values rather than treating saved
+wizard drafts as authoritative. If Clock is unavailable, its step can be skipped.
+
+An app can opt into setup orchestration by exposing these namespaced MCP tools:
+
+- `<app_id>.setup_status`: inspect readiness without starting authorization.
+- `<app_id>.setup_start`: start or resume the app's own setup/authorization.
+
+Both receive `{}` and return a JSON object with `status` equal to `ready`,
+`needs_setup`, `waiting`, or `error`, plus an optional short `message`. For remote
+MCP results, the same object may appear in `structuredContent` or a JSON text
+content block. The wizard records the reported status and lets users retry,
+continue, or defer. Apps without these hooks remain installed with readiness
+unreported; package validation alone never means account authorization succeeded.
+Do not return credentials in setup messages. Credentials and authorization stay
+inside the app/transport; Welder does not implement a shared account login broker.
+
+The wizard does not change providers, networks, appearance, keyboard layouts, or
+accessibility settings. `/setup`, "open setup", and "finish setting up my system"
+reopen it. Learning preferences use the existing `/knowledge` controls; connecting
+or selecting an app never grants additional action permissions.

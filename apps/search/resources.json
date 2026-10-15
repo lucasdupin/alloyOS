@@ -1,0 +1,3 @@
+[
+  {"uri": "mcp://search/latest", "name": "Latest search", "mime_type": "application/json", "description": "Last successful search, marked cached; never performs a network request"}
+]

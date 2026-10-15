@@ -1,0 +1,12 @@
+[
+  {
+    "name": "search.web",
+    "description": "Search the web using Gemini with Google Search Grounding. Returns text titles, URLs, and snippets.",
+    "params": [
+      {"name": "query", "type": "string", "required": true, "description": "Search query, 1 to 500 characters; supports site: and quoted phrases"},
+      {"name": "limit", "type": "number", "required": false, "description": "Maximum results, integer 1 to 10; defaults to 5"}
+    ]
+  },
+  {"name": "search.latest", "description": "Read the last successful search without a network request; results are explicitly marked cached", "params": []},
+  {"name": "search.clear", "description": "Delete the locally retained search query and results", "params": []}
+]

@@ -1,0 +1,4 @@
+# alloyOS headless Search app
+name = Search
+version = 1.0.0
+capabilities = ExposeMcpTools, ExposeMcpResources, ExposeSkills, ScopedStorage(/var/search)

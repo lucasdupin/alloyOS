@@ -85,22 +85,16 @@ fn copy_directory(filesystem: &CobaltFS, source: &Path, destination: &str) -> Re
         } else if kind.is_file() {
             let mut bytes = fs::read(entry.path())?;
             if target == "/apps/search/main.js" {
-                if let Ok(mut text) = String::from_utf8(bytes.clone()) {
-                    if text.contains("__GEMINI_API_KEY__") {
-                        let key = std::env::var("GEMINI_API_KEY").ok().filter(|s| !s.trim().is_empty()).or_else(|| {
-                            let root = entry.path().ancestors().find(|p| p.join("Cargo.toml").is_file() && p.join("xtask").is_dir())?;
-                            let secret_file = root.join(".secrets/GEMINI_API_KEY");
-                            let content = fs::read_to_string(secret_file).ok()?;
-                            let mut key = content.trim().to_string();
-                            if key.starts_with("GEMINI_API_KEY=") {
-                                key = key["GEMINI_API_KEY=".len()..].trim().to_string();
-                            }
-                            if key.is_empty() { None } else { Some(key) }
-                        }).unwrap_or_default();
-                        text = text.replace("__GEMINI_API_KEY__", &key);
-                        bytes = text.into_bytes();
-                    }
-                }
+                let text = String::from_utf8(bytes).context("Search source must be UTF-8")?;
+                let key = std::env::var("GEMINI_API_KEY").ok()
+                    .filter(|key| !key.trim().is_empty()).or_else(|| {
+                        let entry_path = entry.path();
+                        let root = entry_path.ancestors().find(|path|
+                            path.join("Cargo.toml").is_file() && path.join("xtask").is_dir())?;
+                        fs::read_to_string(root.join(".secrets/GEMINI_API_KEY")).ok()
+                    }).unwrap_or_default();
+                let key = key.trim().strip_prefix("GEMINI_API_KEY=").unwrap_or(key.trim()).trim();
+                bytes = inject_search_key(&text, key).into_bytes();
             }
             if let Ok(inode) = filesystem.lookup(&target) {
                 let mut existing = vec![0; inode.size];
@@ -135,9 +129,36 @@ fn copy_directory(filesystem: &CobaltFS, source: &Path, destination: &str) -> Re
     Ok(())
 }
 
+// Replace only the declaration, leaving the runtime placeholder check intact.
+// Escape the value as a JS string so credentials cannot alter the app source.
+fn inject_search_key(source: &str, key: &str) -> String {
+    let mut literal = String::from("\"");
+    for character in key.chars() {
+        match character {
+            '\\' => literal.push_str("\\\\"),
+            '"' => literal.push_str("\\\""),
+            character if character.is_control() || matches!(character, '\u{2028}' | '\u{2029}') => {
+                literal.push_str(&format!("\\u{:04x}", character as u32));
+            }
+            character => literal.push(character),
+        }
+    }
+    literal.push('"');
+    source.replacen("\"__GEMINI_API_KEY__\"", &literal, 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_key_injection_escapes_and_preserves_runtime_guard() {
+        let source = include_str!("../../apps/search/main.js");
+        let injected = inject_search_key(source, "fixture\"\\\nkey");
+        assert!(injected.contains(r#"const API_KEY = "fixture\"\\\u000akey";"#));
+        assert!(injected.contains(r#"API_KEY === "__GEMINI_API_KEY__""#));
+        assert!(inject_search_key(source, "").contains(r#"const API_KEY = "";"#));
+    }
 
     #[test]
     fn migration_preserves_empty_dirs_and_rolls_back_failed_process_packaging() {

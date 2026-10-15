@@ -954,6 +954,7 @@ mod resource_tests {
             include_str!("../../../apps/package-manager/main.js"),
             include_str!("../../../apps/tasks/main.js"),
             include_str!("../../../apps/weather/main.js"),
+            include_str!("../../../apps/search/main.js"),
         ] {
             parse_program(source).unwrap();
         }

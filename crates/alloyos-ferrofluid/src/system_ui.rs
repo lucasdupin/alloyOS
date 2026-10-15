@@ -499,6 +499,12 @@ impl FerrofluidSystemUi {
     pub fn chat_scroll_offset(&self) -> f32 {
         self.ui.get_scroll_offset()
     }
+    pub fn pinned_scroll_offset(&self) -> f32 {
+        self.ui.get_pinned_scroll_offset()
+    }
+    pub fn pinned_scroll_maximum(&self) -> f32 {
+        self.ui.get_pinned_scroll_maximum()
+    }
     pub fn chat_scroll_maximum(&self) -> f32 {
         self.ui.get_scroll_maximum()
     }
@@ -867,6 +873,11 @@ fn tile_views(tiles: &[AppTile]) -> ModelRc<TileView> {
 
 fn layout_words(words: ModelRc<MarkdownWordView>, measured: i32, width: f32, height: f32, available: f32) -> ModelRc<MarkdownWordView> {
     use slint::Model;
+    if let Some(word) = usize::try_from(measured).ok().and_then(|i| words.row_data(i)) {
+        if word.width == width && word.height == height {
+            return words;
+        }
+    }
     let mut words: Vec<_> = words.iter().collect();
     if let Some(word) = usize::try_from(measured).ok().and_then(|i| words.get_mut(i)) {
         word.width = width;
@@ -888,11 +899,21 @@ fn layout_words(words: ModelRc<MarkdownWordView>, measured: i32, width: f32, hei
 }
 
 fn markdown_text(text: &str) -> ModelRc<MarkdownBlockView> {
-    ModelRc::new(VecModel::from(crate::markdown::parse(text).into_iter().map(|block| MarkdownBlockView {
-        text: block.text.as_str().into(), heading: block.heading as i32,
-        code: block.code, quote: block.quote, strong: block.strong,
-        inline_bold: !block.code && crate::markdown::inline(&block.text).iter().any(|(_, strong)| *strong),
-        words: ModelRc::new(VecModel::from(crate::markdown::inline(&block.text).into_iter().map(|(text, strong)| MarkdownWordView { text: text.into(), strong: strong || block.strong, ..Default::default() }).collect::<Vec<_>>())),
+    ModelRc::new(VecModel::from(crate::markdown::parse(text).into_iter().map(|block| {
+        let spans = if block.code { Vec::new() } else { crate::markdown::inline(&block.text) };
+        let inline_bold = spans.iter().any(|(_, strong)| *strong);
+        // Invisible InlineMarkdown items still instantiate their repeaters.
+        // Plain/list/code blocks must not create per-word Text + measure items.
+        let words = if inline_bold {
+            ModelRc::new(VecModel::from(spans.into_iter().map(|(text, strong)| MarkdownWordView {
+                text: text.into(), strong: strong || block.strong, ..Default::default()
+            }).collect::<Vec<_>>()))
+        } else { ModelRc::default() };
+        MarkdownBlockView {
+            text: block.text.as_str().into(), heading: block.heading as i32,
+            code: block.code, quote: block.quote, strong: block.strong,
+            inline_bold, words,
+        }
     }).collect::<Vec<_>>()))
 }
 
@@ -1184,6 +1205,20 @@ mod tests {
     use super::*;
     use slint::Model;
 
+    #[test]
+    fn only_inline_bold_blocks_allocate_word_measurements() {
+        let blocks = markdown_text("Plain text\n- A list item\n```\n**literal code**\n```\nA **bold** word");
+        for i in 0..blocks.row_count() - 1 {
+            assert_eq!(blocks.row_data(i).unwrap().words.row_count(), 0);
+        }
+        assert!(blocks.row_data(blocks.row_count() - 1).unwrap().words.row_count() > 0);
+        let words = ModelRc::new(VecModel::from(vec![MarkdownWordView {
+            text: "test".into(), width: 10.0, height: 20.0, ..Default::default()
+        }]));
+        assert!(layout_words(words.clone(), 0, 10.0, 20.0, 100.0) == words,
+            "identical measurements must preserve the existing model");
+    }
+
     // Only one test owns Slint's process-wide, single-context platform.
     fn assert_dynamic_glyph_coverage(ui: &mut FerrofluidSystemUi) {
         ui.set_transcript("X");
@@ -1207,9 +1242,10 @@ mod tests {
     }
 
     fn assert_long_composer_scrolling(ui: &mut FerrofluidSystemUi) {
-        for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
-            ui.handle_input(InputEvent { kind, code: 0x110, x: 771, y: 2454 });
-        }
+        // This fixture tests caret scrolling. Button opening is covered by the
+        // standalone integration test, outside this fixture's voice animations.
+        ui.open_keyboard();
+        assert!(ui.ui.get_keyboard_visible(), "composer fixture opening must focus the editor");
         let text = "This is a long chat message that should keep the newest characters visible while typing. ".repeat(4);
         for ch in text.chars() { ui.ui.invoke_soft_key(ch.to_string().into()); }
         ui.render(Duration::ZERO);
@@ -1480,12 +1516,16 @@ mod tests {
         let split = PHONE_WIDTH as usize * (PHONE_HEIGHT as usize / 2);
         assert_ne!(&ui.pixels()[..split], &quiet[..split], "live speech must render in chat");
         let toolbar_start = PHONE_WIDTH as usize * (PHONE_HEIGHT as usize - 300);
-        assert_eq!(&ui.pixels()[toolbar_start..], &quiet[toolbar_start..], "speech must not replace the mic status");
+        // The edge wave is decorative and composited independently. Compare
+        // the status/controls, not the wave's antialiased clipping fringe.
+        let toolbar_end = PHONE_WIDTH as usize * (PHONE_HEIGHT as usize - 70);
+        assert!(&ui.pixels()[toolbar_start..toolbar_end] == &quiet[toolbar_start..toolbar_end],
+            "speech must not replace the mic status");
         ui.set_voice_state(alloyos_mcp::display::VoiceState::Listening, "Live caption", "");
         ui.render(Duration::ZERO);
         ui.set_voice_diagnostics("Mic 24 · sent 20 · transcript 0");
         ui.render(Duration::ZERO);
-        assert_eq!(ui.pixels(), quiet.as_slice(), "voice diagnostics must stay hidden");
+        assert!(&ui.pixels()[..toolbar_end] == &quiet[..toolbar_end], "voice diagnostics must stay hidden");
         assert_eq!(ui.ui.get_voice_caption().as_str(), "Live caption");
         ui.set_voice_diagnostics("");
         ui.render(Duration::ZERO);

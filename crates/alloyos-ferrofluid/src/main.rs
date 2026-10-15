@@ -1,4 +1,5 @@
 #![no_std]
+#![feature(alloc_error_handler)]
 #![no_main]
 extern crate alloc;
 use alloc::vec;
@@ -172,4 +173,11 @@ fn exit(code: u64) -> ! {
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     liballoy::runtime::panic_report(info)
+}
+
+#[alloc_error_handler]
+fn allocation_failed(layout: core::alloc::Layout) -> ! {
+    // The panic reporter uses a fixed stack buffer, so an exhausted heap still
+    // produces a useful fault report instead of silently awaiting the watchdog.
+    panic!("Ferrofluid heap exhausted allocating {} bytes", layout.size());
 }

@@ -225,7 +225,8 @@ fn system_ui_screenshots() {
         actions: Vec::new(),
     });
     let item = cards[2].items[0].clone();
-    for _ in 0..8 {
+    // Keep overflowing even after the pin-button fixture removes Clock.
+    for _ in 0..16 {
         cards[2].items.push(item.clone());
     }
     ui.set_tiles(&cards);
@@ -265,6 +266,8 @@ fn system_ui_screenshots() {
     assert!(ui.pixels() != open.as_slice(), "drawer tile pin button responds to pointer input");
     snapshot(&mut suite, "tile-menu", &ui);
     let chat_offset = ui.chat_scroll_offset();
+    assert!(ui.pinned_scroll_maximum() > 0.0, "pinned fixture must overflow its viewport");
+    let pinned_offset = ui.pinned_scroll_offset();
     let menu = ui.pixels().to_vec();
     pointer(&mut ui, InputEventKind::PointerButtonDown, 400, 2100);
     for (frame, y) in [2050, 1950, 1800, 1650].into_iter().enumerate() {
@@ -274,6 +277,9 @@ fn system_ui_screenshots() {
     pointer(&mut ui, InputEventKind::PointerButtonUp, 400, 1650);
     for frame in 1..=60 { ui.render(Duration::from_millis(6600 + frame * 16)); }
     assert_eq!(ui.chat_scroll_offset(), chat_offset, "drawer scrolling must not move the conversation");
+    assert!(ui.pinned_scroll_offset() > pinned_offset,
+        "pins scroll independently: offset {} -> {}, maximum {}",
+        pinned_offset, ui.pinned_scroll_offset(), ui.pinned_scroll_maximum());
     assert!(ui.pixels() != menu.as_slice(), "overflowing pins scroll within the drawer");
     snapshot(&mut suite, "sidebar-scrolled", &ui);
     // Pull the exposed drawer boundary back to the left to dismiss it.

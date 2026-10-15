@@ -493,6 +493,8 @@ export component SystemUi inherits Window {
     out property <length> scroll-maximum: max(0px, scroll.content-height - scroll.visible-height);
     out property <length> chat-content-bottom: content-end.y + scroll.content-y;
     out property <length> pinned-content-height: pin-stream.height;
+    out property <length> pinned-scroll-offset: -pin-scroll.content-y;
+    out property <length> pinned-scroll-maximum: max(0px, pin-scroll.content-height - pin-scroll.visible-height);
     out property <length> chat-viewport-height: scroll.visible-height;
     out property <bool> keyboard-visible: keyboard.shown;
     out property <length> keyboard-reveal: keyboard.reveal;
@@ -630,7 +632,10 @@ export component SystemUi inherits Window {
                 height: 72px * root.typing-progress;
                 vertical-stretch: 0;
                 input := AlloyLineEdit {
-                    x: 20px; y: 20px + 16px * (1 - root.typing-progress);
+                    x: 20px;
+                    // Keep the focused editor inside the window even before
+                    // the composer's first animation frame reserves its height.
+                    y: min(20px + 16px * (1 - root.typing-progress), parent.height - self.height);
                     width: parent.width - 40px;
                     visible: root.composer-active || root.typing-progress > 0;
                     opacity: root.typing-progress;

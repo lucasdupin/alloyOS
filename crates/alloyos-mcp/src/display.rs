@@ -43,14 +43,11 @@ pub struct SetupView {
 }
 impl SetupView {
     pub fn chat_text(&self) -> alloc::string::String {
-        use alloc::format;
-        let mut text = format!("{}\n{}\n{}", self.progress, self.title, self.prompt);
-        if !self.field_value.is_empty() { text.push_str(&format!("\nCurrent: {}", self.field_value)); }
-        for row in &self.rows { text.push_str(&format!("\n{}: {}", row.title, row.detail)); }
-        for choice in &self.choices { text.push_str(&format!("\n{} — reply: {}", choice.label, choice.value)); }
-        if self.can_back { text.push_str("\nReply back to return to the previous question."); }
-        if self.can_defer { text.push_str("\nReply later to finish setup later."); }
-        if !self.error.is_empty() { text.push_str(&format!("\n{}", self.error)); }
+        let mut text = self.prompt.clone();
+        if !self.error.is_empty() {
+            text.push_str("\n\n");
+            text.push_str(&self.error);
+        }
         text
     }
 }

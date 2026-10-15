@@ -41,10 +41,8 @@ pub fn run(
 ) -> ! {
     let mut console_rpc_id = None;
     let start = rng::monotonic_time_ns();
-    let welcome = String::from("Welcome to alloyOS.\n\nYour workspace takes shape around what you need.");
-    let mut transcript = welcome.clone();
+    let mut transcript = String::new();
     let mut chat_items: alloc::vec::Vec<ChatItem> = alloc::vec::Vec::new();
-    chat_items.push(ChatItem::Text(welcome));
     ui.set_active_model(agent.active_model_id());
     if let Err(error) = agent.initialize_dashboard_tiles() {
         let err_msg = alloc::format!("{}: {}", agent.agent_name(), error);
@@ -57,14 +55,17 @@ pub fn run(
     ui.set_available_tiles(&agent.synthesized_tiles());
     ui.restore_dashboard(agent.pinned_tile_ids());
     let mut chat_tiles: alloc::vec::Vec<alloyos_mcp::AppTile> = alloc::vec::Vec::new();
-    match agent.begin_setup() {
-        Ok(Some(output)) => {
-            let message = alloc::format!("{}: {}", agent.agent_name(), output.chat_text());
+    match agent.startup_greeting() {
+        Ok(greeting) => {
+            let message = alloc::format!("{}: {}", agent.agent_name(), greeting);
             transcript.push_str(&alloc::format!("\n\n{}", message));
             chat_items.push(ChatItem::Text(message));
         }
-        Ok(None) => {},
-        Err(error) => chat_items.push(ChatItem::Text(alloc::format!("Setup: {}",error))),
+        Err(error) => {
+            let message = alloc::format!("Setup: {}", error);
+            transcript.push_str(&message);
+            chat_items.push(ChatItem::Text(message));
+        }
     }
     ui.set_available_tiles(&agent.synthesized_tiles());
     ui.set_tiles(&chat_tiles);

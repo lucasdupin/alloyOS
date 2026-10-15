@@ -131,6 +131,19 @@ impl AgentRuntime {
             Ok(None)
         }
     }
+    /// One chat message at startup: resume setup, or greet the returning user.
+    pub fn startup_greeting(&mut self) -> Result<String, AiError> {
+        if let Some(view) = self.begin_setup()? {
+            return Ok(view.chat_text());
+        }
+        let name = self.setup.user_name.trim();
+        Ok(if name.is_empty() {
+            "Hi! What would you like to do today?".into()
+        } else {
+            format!("Hi, {name}! What would you like to do today?")
+        })
+    }
+
     fn setup_apps(&self) -> Vec<(String, String)> {
         self.tool_registry
             .mcp_registry()
@@ -304,7 +317,7 @@ impl AgentRuntime {
                     for (id, value) in [
                         ("Your name", s.user_name.clone()),
                         ("Assistant", s.agent_name.clone()),
-                        ("Clock", clock_report),
+                        ("Clock", clock_report.clone()),
                         ("Apps", s.selected_apps.join(", ")),
                         (
                             "Learning",
@@ -327,6 +340,33 @@ impl AgentRuntime {
             view.can_back = !matches!(s.stage,SetupStage::Welcome|SetupStage::Complete);
             view.can_defer = s.stage != SetupStage::Complete;
         }
+        // Chat gets one conversational turn. Structured fields remain available
+        // to clients, but are never dumped as a form or command menu.
+        view.prompt = if s.deferred {
+            "Of course. I've saved where we left off. Just say ‘open setup’ when you're ready to continue.".into()
+        } else {
+            match s.stage {
+                SetupStage::Welcome => format!("Hi! I'm {}, your personal assistant. Let's get to know each other and set up a few things. We can pause anytime—just say ‘later’. What should I call you?", s.agent_name),
+                SetupStage::AgentName => format!("Nice to meet you, {}! I'm your assistant, {}. Would you like to keep that name, or call me something else?", s.user_name, s.agent_name),
+                SetupStage::TimeRegion => format!("{} it is. Let's get your clock right. What time zone do you use? For example, America/Los_Angeles or Europe/London. You can also say ‘skip clock’ for now.", s.agent_name),
+                SetupStage::ClockFormat => "Got it. Do you prefer a 12-hour clock, like 3:00 PM, or a 24-hour clock, like 15:00?".into(),
+                SetupStage::Apps => {
+                    let apps = self.setup_apps().into_iter().map(|(_, name)|name).collect::<Vec<_>>().join(", ");
+                    let selected = if s.selected_apps.is_empty() { "You haven't picked any yet.".into() } else { format!("You've picked {}. Say an app's name again to remove it.", s.selected_apps.join(", ")) };
+                    let results = s.search_results.iter().map(|(id,name)|format!("{name} (say ‘install:{id}’ to install it)")).collect::<Vec<_>>().join(", ");
+                    format!("Let's choose what to keep on your dashboard. {} {} {} {} Which app would you like to add? Say its name, ‘search calendar’ to look for something else, or ‘continue’ when you're ready.", if apps.is_empty() { "There aren't any installed apps yet.".into() } else { format!("Available apps are {apps}.") }, selected, s.catalog_message, results)
+                }
+                SetupStage::AppSetup => {
+                    let actions = view.choices.iter().filter(|choice|choice.value != "next").map(|choice|format!("‘{}’",choice.label)).collect::<Vec<_>>().join(" or ");
+                    let status = view.rows.iter().map(|row|format!("{}: {}.",row.title,row.detail)).collect::<Vec<_>>().join(" ");
+                    if actions.is_empty() { format!("{} We can come back to connecting apps later. Shall we continue?",status) }
+                    else { format!("{} Some apps may need you to connect an account. Would you like to {}? You can also say ‘continue’ and do this later.",status,actions) }
+                }
+                SetupStage::Memory => "May I learn your preferences from our conversations? You can review or change what I remember, or pause learning, anytime. Say ‘yes’ to allow it or ‘no’ to keep learning paused.".into(),
+                SetupStage::Review => format!("We're almost ready, {}. I'll go by {}. Your clock reports {}. {} Learning is {}. Does that look right? Say ‘yes’ to finish, or ‘back’ to change something.", s.user_name,s.agent_name,clock_report,if s.selected_apps.is_empty() { "You haven't selected any dashboard apps.".into() } else { format!("Your dashboard will include {}.",s.selected_apps.join(", ")) },if s.learning_paused { "paused" } else { "enabled" }),
+                SetupStage::Complete => format!("You're all set, {}! What would you like to do first?",s.user_name),
+            }
+        };
         self.setup_revision = self.setup_revision.saturating_add(1);
         view.revision = self.setup_revision;
         self.setup_view = if self.setup_active() {Some(view.clone())} else {None};
@@ -377,7 +417,25 @@ impl AgentRuntime {
         if !self.setup_active() {
             return Err(invalid("Open setup before answering"));
         }
-        let value = input.trim();
+        let trimmed = input.trim();
+        let lower = trimmed.to_lowercase();
+        let matched_choice = self.setup_view.as_ref().and_then(|view| view.choices.iter()
+            .find(|choice|choice.label.to_lowercase() == lower).map(|choice|choice.value.clone()));
+        let normalized = matched_choice.unwrap_or_else(|| match (self.setup.stage, lower.as_str()) {
+            (SetupStage::AgentName, "keep" | "keep it" | "yes") => self.setup.agent_name.clone(),
+            (SetupStage::ClockFormat, "12" | "12-hour" | "12 hour") => "12h".into(),
+            (SetupStage::ClockFormat, "24" | "24-hour" | "24 hour") => "24h".into(),
+            (SetupStage::Memory, "yes" | "yes please") => "learn".into(),
+            (SetupStage::Memory, "no" | "no thanks") => "pause".into(),
+            (SetupStage::Review, "yes" | "done" | "looks good") => "finish".into(),
+            (SetupStage::Apps | SetupStage::AppSetup, "continue" | "done" | "yes") => "next".into(),
+            (_, "skip clock") => "skip_clock".into(),
+            (SetupStage::Apps, _) => self.setup_apps().iter()
+                .find(|(id,name)|id.to_lowercase() == lower || name.to_lowercase() == lower)
+                .map(|(id,_)|format!("app:{id}")).unwrap_or_else(||trimmed.into()),
+            _ => trimmed.into(),
+        });
+        let value = normalized.as_str();
         let mut next = self.setup.clone();
         if value == "later" || value == "/setup later" {
             next.deferred = true;
@@ -672,6 +730,50 @@ mod tests {
         }
         (AgentRuntime::with_vfs_backend(backend.clone()), backend)
     }
+    #[test]
+    fn greeting_and_setup_are_conversational_and_survive_restart() {
+        let (mut agent, backend) = runtime();
+        let greeting = agent.startup_greeting().unwrap();
+        assert!(greeting.starts_with("Hi! I'm Alloy"));
+        assert!(greeting.ends_with("What should I call you?"));
+        assert!(!greeting.contains("Step "));
+        assert!(!greeting.contains("reply:"));
+        let introduction = agent.start_console_input("Wagner").unwrap().unwrap();
+        assert!(introduction.response_text.contains("Nice to meet you, Wagner!"));
+        agent.start_console_input("Nova").unwrap();
+        agent.start_console_input("America/Los_Angeles").unwrap();
+        agent.start_console_input("12-hour").unwrap();
+        assert_eq!(agent.setup.stage, SetupStage::Apps);
+        let app_name = agent.setup_apps().into_iter().find(|(id,_)|id == "clock").unwrap().1;
+        agent.start_console_input(&app_name).unwrap();
+        assert!(agent.setup.selected_apps.iter().any(|id|id == "clock"));
+        agent.start_console_input("continue").unwrap();
+        agent.start_console_input("continue").unwrap();
+        agent.start_console_input("no").unwrap();
+        let finished = agent.start_console_input("yes").unwrap().unwrap();
+        assert!(finished.response_text.contains("You're all set, Wagner!"));
+        assert!(agent.is_learning_paused());
+        let mut restored = AgentRuntime::with_vfs_backend(backend);
+        assert_eq!(restored.startup_greeting().unwrap(), "Hi, Wagner! What would you like to do today?");
+        assert!(!restored.setup_active());
+        assert_eq!(restored.agent_name(), "Nova");
+    }
+
+    #[test]
+    fn deferred_setup_greets_without_restarting_questions() {
+        let (mut agent, backend) = runtime();
+        agent.startup_greeting().unwrap();
+        agent.answer_setup("Wagner").unwrap();
+        let deferred = agent.answer_setup("later").unwrap().chat_text();
+        assert!(deferred.contains("saved where we left off"));
+        let mut restored = AgentRuntime::with_vfs_backend(backend);
+        assert!(restored.startup_greeting().unwrap().starts_with("Hi, Wagner!"));
+        assert!(!restored.setup_active());
+        let resumed = restored.start_console_input("open setup").unwrap().unwrap();
+        assert!(resumed.response_text.contains("Nice to meet you, Wagner!"));
+        assert!(!resumed.response_text.contains("reply:"));
+    }
+
     #[test]
     fn first_run_is_resumable_and_never_changes_provider() {
         let (mut runtime, backend) = runtime();

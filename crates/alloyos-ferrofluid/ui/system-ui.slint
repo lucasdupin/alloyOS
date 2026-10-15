@@ -420,7 +420,7 @@ export component SystemUi inherits Window {
     release-editor => { unfocused.focus(); root.composer-active = false; }
     in property <string> active-model: "Gemini";
     in property <string> model-selection-status;
-    in property <string> transcript: "Welcome to alloyOS.\n\nYour workspace takes shape around what you need.";
+    in property <string> transcript: "";
     in-out property <string> draft;
     out property <length> composer-scroll-offset: input.scroll-offset;
     in property <bool> reply-pending: false;

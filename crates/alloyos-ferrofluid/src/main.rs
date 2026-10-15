@@ -81,6 +81,7 @@ pub extern "C" fn _start(heap_start: usize, heap_length: usize) -> ! {
                     ui.set_reply_pending(s.pending);
                     ui.set_voice_state(s.voice_state, &s.voice_caption, &s.voice_error);
                     ui.set_voice_level(s.voice_level);
+                    ui.set_voice_diagnostics(&s.voice_diagnostics);
                     ui.set_active_model(&s.model);
                     ui.set_model_selection_status(&s.model_status);
                     ui.set_transcript(&s.transcript);

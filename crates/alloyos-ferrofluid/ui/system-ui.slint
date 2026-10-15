@@ -408,6 +408,7 @@ export component SystemUi inherits Window {
     property <float> wave-level: root.voice-level;
     animate wave-level { duration: root.reduced-motion ? 0ms : 100ms; easing: ease-out; }
     in property <string> voice-caption;
+    in property <string> voice-diagnostics;
     in property <string> voice-error;
     in property <bool> reduced-motion: false;
     property <bool> composer-active: false;
@@ -587,14 +588,17 @@ export component SystemUi inherits Window {
                 property <float> crest: Math.sin(self.phase * 1rad) * self.amplitude;
                 property <float> trough: Math.cos(self.phase * 1rad) * self.amplitude;
                 fill: layer == 0 ? #b8b8ca35 : layer == 1 ? #9696b348 : #d2d2e248;
-                MoveTo { x: 0; y: 35; }
-                CubicTo { control-1-x: 45; control-1-y: 35; control-2-x: 50; control-2-y: 35 - parent.crest; x: 90; y: 35 - parent.crest; }
-                CubicTo { control-1-x: 135; control-1-y: 35 - parent.crest; control-2-x: 135; control-2-y: 35 + parent.trough; x: 180; y: 35 + parent.trough; }
-                CubicTo { control-1-x: 225; control-1-y: 35 + parent.trough; control-2-x: 230; control-2-y: 35 - parent.crest; x: 270; y: 35 - parent.crest; }
-                CubicTo { control-1-x: 315; control-1-y: 35 - parent.crest; control-2-x: 315; control-2-y: 35; x: 360; y: 35; }
+                // Keep the upper surface above the display edge even at zero RMS.
+                // The lower return remains below the edge so the fill still bleeds out.
+                property <float> surface: root.voice-state == 2 ? 29 : 35;
+                MoveTo { x: 0; y: parent.surface; }
+                CubicTo { control-1-x: 45; control-1-y: parent.surface; control-2-x: 50; control-2-y: parent.surface - parent.crest; x: 90; y: parent.surface - parent.crest; }
+                CubicTo { control-1-x: 135; control-1-y: parent.surface - parent.crest; control-2-x: 135; control-2-y: parent.surface + parent.trough; x: 180; y: parent.surface + parent.trough; }
+                CubicTo { control-1-x: 225; control-1-y: parent.surface + parent.trough; control-2-x: 230; control-2-y: parent.surface - parent.crest; x: 270; y: parent.surface - parent.crest; }
+                CubicTo { control-1-x: 315; control-1-y: parent.surface - parent.crest; control-2-x: 315; control-2-y: parent.surface; x: 360; y: parent.surface; }
                 CubicTo { control-1-x: 290; control-1-y: 35; control-2-x: 280; control-2-y: 39 + parent.trough; x: 240; y: 39 + parent.trough; }
                 CubicTo { control-1-x: 180; control-1-y: 39 + parent.trough; control-2-x: 160; control-2-y: 39 - parent.crest; x: 120; y: 39 - parent.crest; }
-                CubicTo { control-1-x: 65; control-1-y: 39 - parent.crest; control-2-x: 60; control-2-y: 35; x: 0; y: 35; }
+                CubicTo { control-1-x: 65; control-1-y: 39 - parent.crest; control-2-x: 60; control-2-y: 35; x: 0; y: parent.surface; }
                 Close {}
             }
         }
@@ -663,7 +667,7 @@ export component SystemUi inherits Window {
             }
         }
         Text {
-            x: 20px; y: toolbar.y - self.height - 8px;
+            x: 20px; y: toolbar.y - self.height - 8px - (voice-diagnostics.visible ? 18px : 0px);
             width: parent.width - 40px; height: 32px;
             overflow: elide;
             vertical-alignment: center;
@@ -673,6 +677,17 @@ export component SystemUi inherits Window {
             font-size: 13px;
             horizontal-alignment: center;
             wrap: word-wrap;
+        }
+        voice-diagnostics := Text {
+            x: 20px; y: toolbar.y - 26px;
+            width: parent.width - 40px; height: 18px;
+            visible: !root.keyboard-visible && root.voice-active && root.voice-diagnostics != "";
+            text: root.voice-diagnostics;
+            color: AlloyPalette.muted;
+            font-size: 10px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            overflow: elide;
         }
         // This layer is omitted while the host captures the pristine workspace.
         // Its image is a separately blurred backdrop; tiles are drawn afterwards.

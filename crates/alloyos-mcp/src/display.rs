@@ -32,6 +32,8 @@ pub struct State {
     #[serde(default)]
     pub voice_level: u16,
     #[serde(default)]
+    pub voice_diagnostics: String,
+    #[serde(default)]
     pub voice_caption: String,
     #[serde(default)]
     pub voice_error: String,

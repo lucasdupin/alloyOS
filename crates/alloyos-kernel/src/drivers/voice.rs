@@ -18,11 +18,17 @@ pub struct Voice {
     live: Option<LiveSession>,
     next_id: u64,
     started: u64,
+    startup_stage: StartupStage,
     host_ready: bool,
+    direct_audio: bool,
+    playback_active: bool,
     pub state: VoiceState,
     pub caption: String,
     pub error: String,
     pub level: u16,
+    pub diagnostics: String,
+    audio_stats: AudioDiagnostics,
+    last_diagnostic_update: u64,
     level_target: u16,
     last_audio: u64,
     last_level_update: u64,
@@ -41,11 +47,17 @@ impl Default for Voice {
             live: None,
             next_id: 0,
             started: 0,
+            startup_stage: StartupStage::Opening,
             host_ready: false,
+            direct_audio: false,
+            playback_active: false,
             state: VoiceState::Off,
             caption: String::new(),
             error: String::new(),
             level: 0,
+            diagnostics: String::new(),
+            audio_stats: AudioDiagnostics::default(),
+            last_diagnostic_update: 0,
             level_target: 0,
             last_audio: 0,
             last_level_update: 0,
@@ -105,6 +117,7 @@ impl Voice {
         self.tools.clear();
         self.seen_tools.clear();
         self.state = VoiceState::Off;
+        self.diagnostics.clear();
         self.level = 0;
         self.level_target = 0;
         self.caption.clear();
@@ -162,13 +175,20 @@ impl Voice {
             }
         }
         self.started = now;
+        self.audio_stats = AudioDiagnostics::default();
+        self.last_diagnostic_update = now;
+        self.diagnostics = "Waiting for microphone frames…".into();
+        self.startup_stage = StartupStage::Opening;
         self.host_ready = false;
+        self.direct_audio = true;
+        self.playback_active = false;
         self.tool_count = 0;
         self.state = VoiceState::Connecting;
+        self.caption = "Opening microphone…".into();
         if self
             .command(
                 forge,
-                json!({"op":"start","endpoint":GEMINI_LIVE_ENDPOINT,"api_key":key}),
+                json!({"op":"start","endpoint":GEMINI_LIVE_ENDPOINT,"api_key":key,"direct_audio":true}),
             )
             .is_err()
         {
@@ -248,20 +268,57 @@ impl Voice {
                 continue;
             }
             match value["event"].as_str() {
+                Some("audio_level") => {
+                    if matches!(self.state, VoiceState::Listening | VoiceState::Responding) {
+                        self.level_target = value["level"].as_u64().unwrap_or(0).min(1000) as u16;
+                        self.last_audio = now;
+                    }
+                }
+                Some("playback_active") => {
+                    self.playback_active = value["active"].as_bool().unwrap_or(false);
+                    if matches!(self.state, VoiceState::Listening | VoiceState::Responding) {
+                        self.state = if value["active"].as_bool() == Some(true) { VoiceState::Responding } else { VoiceState::Listening };
+                    }
+                }
+                Some("audio_stats") => {
+                    self.audio_stats.captured = value["captured_frames"].as_u64().unwrap_or(0);
+                    self.audio_stats.emitted = value["emitted_frames"].as_u64().unwrap_or(0);
+                    self.audio_stats.sent = value["sent_frames"].as_u64().unwrap_or(0);
+                    self.audio_stats.conversion_errors = value["conversion_errors"].as_u64().unwrap_or(0);
+                    self.audio_stats.native_level = value["level"].as_u64().unwrap_or(0).min(1000) as u16;
+                }
+                Some("progress") => {
+                    if let Some(stage) = value["stage"].as_str().and_then(StartupStage::parse) {
+                        if self.live.as_ref().is_some_and(|live| !live.is_ready()) && stage > self.startup_stage {
+                            self.startup_stage = stage;
+                            self.started = now;
+                            self.caption = stage.caption().into();
+                        }
+                    }
+                }
                 Some("ready") => {
                     self.host_ready = true;
+                    if self.startup_stage < StartupStage::AudioReady {
+                        self.startup_stage = StartupStage::AudioReady;
+                        self.started = now;
+                        self.caption = self.startup_stage.caption().into();
+                    }
                 } // setupComplete, not device readiness, enables input.
                 Some("audio") => {
                     if self.state == VoiceState::Muted {
                         continue;
                     }
                     if let Some(pcm) = value["pcm"].as_str().and_then(decode_pcm) {
+                        self.audio_stats.received = self.audio_stats.received.saturating_add(1);
                         self.level_target = pcm_level(&pcm);
                         self.last_audio = now;
                         if let Some(live) = self.live.as_mut() {
-                            let _ = live.send_audio(id, &pcm);
+                            match live.send_audio(id, &pcm) {
+                                Ok(()) => self.audio_stats.queued = self.audio_stats.queued.saturating_add(1),
+                                Err(_) => self.audio_stats.dropped = self.audio_stats.dropped.saturating_add(1),
+                            }
                         }
-                    }
+                    } else { self.audio_stats.dropped = self.audio_stats.dropped.saturating_add(1); }
                 }
                 Some("message") => {
                     let result = self
@@ -301,8 +358,10 @@ impl Voice {
             };
             match event {
                 LiveEvent::State(state) => {
+                    if state == LiveState::Listening && self.state == VoiceState::Connecting { self.caption.clear(); }
                     self.state = match state {
                         LiveState::Connecting => VoiceState::Connecting,
+                        LiveState::Listening if self.direct_audio && self.playback_active => VoiceState::Responding,
                         LiveState::Listening => VoiceState::Listening,
                         LiveState::Responding => VoiceState::Responding,
                         LiveState::Muted => VoiceState::Muted,
@@ -315,6 +374,7 @@ impl Voice {
                     append_bounded(&mut self.caption, &text);
                 }
                 LiveEvent::InputTranscript { text, .. } => {
+                    self.audio_stats.transcripts = self.audio_stats.transcripts.saturating_add(1);
                     // A new utterance may be transcribed before its interruption event.
                     if !self.output.is_empty() {
                         self.commit(agent);
@@ -335,7 +395,9 @@ impl Voice {
                     }
                 }
                 LiveEvent::Interrupted { generation_id } => {
-                    if self
+                    // Native transport clears playback immediately on provider interruption.
+                    // Replaying that command after the UART round trip could cancel new audio.
+                    if !self.direct_audio && self
                         .command(forge, json!({"op":"interrupt","generation":generation_id}))
                         .is_err()
                     {
@@ -436,16 +498,30 @@ impl Voice {
                 break;
             }
         }
+        let startup_timeout = if self.startup_stage == StartupStage::PermissionPending { 180_000_000_000 } else { 20_000_000_000 };
         if self.live.as_ref().is_some_and(|live| !live.is_ready())
-            && now.saturating_sub(self.started) > 20_000_000_000
+            && now.saturating_sub(self.started) > startup_timeout
         {
+            let message = self.startup_stage.timeout_message();
             self.fail(
                 forge,
                 agent,
-                "Voice connection timed out. Tap the mic to retry.",
+                message,
             );
         }
         self.update_level(now);
+        if self.active() && now.saturating_sub(self.last_diagnostic_update) >= 1_000_000_000 {
+            self.last_diagnostic_update = now;
+            let stats = &self.audio_stats;
+            self.diagnostics = if self.direct_audio {
+                alloc::format!("Mic {} · sent {} · text {}",stats.captured,stats.sent,stats.transcripts)
+            } else {
+                alloc::format!("Mic {} · received {} · sent {} · text {}",stats.captured,stats.received,stats.sent,stats.transcripts)
+            };
+            if stats.conversion_errors > 0 { self.diagnostics.push_str(" · conversion error"); }
+            else if stats.captured > 0 && stats.native_level < 10 { self.diagnostics.push_str(" · quiet input"); }
+            forge.queue_voice_diagnostics(&alloc::format!("[voice-input] mic={} emitted={} received={} queued={} sent={} transcripts={} drops={} conversion_errors={} level={}",stats.captured,stats.emitted,stats.received,stats.queued,stats.sent,stats.transcripts,stats.dropped,stats.conversion_errors,stats.native_level));
+        }
     }
     fn update_level(&mut self, now: u64) {
         let elapsed = now.saturating_sub(self.last_level_update).min(100_000_000);
@@ -464,6 +540,46 @@ impl Voice {
         if step == 0 && elapsed > 0 { step = (target - current).signum(); }
         self.level = (current + step).clamp(0,1000) as u16;
         if target == 0 && self.level < 4 { self.level = 0; }
+    }
+}
+#[derive(Default)]
+struct AudioDiagnostics {
+    captured: u64,
+    emitted: u64,
+    received: u64,
+    queued: u64,
+    sent: u64,
+    transcripts: u64,
+    dropped: u64,
+    conversion_errors: u64,
+    native_level: u16,
+}
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum StartupStage { Opening, PermissionPending, PermissionGranted, AudioStarting, AudioReady, SocketOpen, SetupSent }
+impl StartupStage {
+    fn parse(stage: &str) -> Option<Self> {
+        Some(match stage {
+            "permission_pending" => Self::PermissionPending, "permission_granted" => Self::PermissionGranted,
+            "audio_starting" => Self::AudioStarting, "audio_ready" => Self::AudioReady,
+            "socket_open" => Self::SocketOpen, "setup_sent" => Self::SetupSent,
+            _ => return None,
+        })
+    }
+    fn caption(self) -> &'static str {
+        match self {
+            Self::Opening => "Opening microphone…", Self::PermissionPending => "Allow microphone access in macOS…",
+            Self::PermissionGranted | Self::AudioStarting => "Starting microphone…",
+            Self::AudioReady => "Connecting to Gemini…", Self::SocketOpen => "Setting up voice model…", Self::SetupSent => "Waiting for Gemini voice…",
+        }
+    }
+    fn timeout_message(self) -> &'static str {
+        match self {
+            Self::Opening => "Voice host timed out before microphone startup. Restart the QEMU launcher and retry.",
+            Self::PermissionPending => "Microphone permission timed out. Allow access in macOS, then tap the mic to retry.",
+            Self::PermissionGranted | Self::AudioStarting => "Microphone device startup timed out. Check your input device and retry.",
+            Self::AudioReady => "Gemini voice connection timed out. Check network access and retry.",
+            Self::SocketOpen | Self::SetupSent => "Gemini voice setup timed out. Check the voice model and API access, then retry.",
+        }
     }
 }
 /// PCM16LE RMS with a modest noise floor and speech gain. No FFT or provider work.
@@ -588,6 +704,19 @@ mod tests {
         assert_eq!(voice.level,0);
         assert_eq!(voice.level_target,0);
     }
+    #[test]
+    fn audio_diagnostics_show_each_stage_without_speech_contents() {
+        let (mut voice,mut forge,mut agent) = active();
+        voice.live.as_mut().unwrap().ingest(1,r#"{"setupComplete":{}}"#).unwrap();
+        bridge(&mut forge,1,json!({"event":"audio_stats","session":1,"captured_frames":12,"emitted_frames":12,"sent_frames":11,"conversion_errors":0,"level":500}));
+        bridge(&mut forge,1,json!({"event":"audio","session":1,"pcm":encode_pcm(&[3000i16.to_le_bytes();32].concat())}));
+        bridge(&mut forge,1,json!({"event":"message","session":1,"json":r#"{"serverContent":{"inputTranscription":{"text":"private utterance"}}}"#}));
+        voice.poll(&mut forge,&mut agent,1_000_000_000);
+        for stage in ["Mic 12","received 1","sent 11","text 1"] { assert!(voice.diagnostics.contains(stage)); }
+        assert_eq!(voice.audio_stats.queued,1);
+        assert!(!voice.diagnostics.contains("private utterance"));
+        assert_eq!(voice.caption,"private utterance");
+    }
     fn bridge(forge: &mut ForgeService, id: u64, event: Value) {
         let frame = alloc::format!(
             "VOICE1\t{id}\t{}\n",
@@ -628,6 +757,55 @@ mod tests {
         );
         voice.poll(&mut forge, &mut agent, 0);
         assert_eq!(voice.state, VoiceState::Listening);
+    }
+    #[test]
+    fn direct_audio_levels_and_playback_survive_provider_turn_completion() {
+        let (mut voice, mut forge, mut agent) = active();
+        voice.direct_audio = true;
+        bridge(&mut forge,1,json!({"session":1,"event":"message","json":r#"{"setupComplete":{}}"#}));
+        voice.poll(&mut forge,&mut agent,0);
+        bridge(&mut forge,1,json!({"session":1,"event":"audio_level","level":650}));
+        bridge(&mut forge,1,json!({"session":1,"event":"playback_active","active":true}));
+        bridge(&mut forge,1,json!({"session":1,"event":"message","json":r#"{"serverContent":{"turnComplete":true}}"#}));
+        voice.poll(&mut forge,&mut agent,50_000_000);
+        assert_eq!(voice.state,VoiceState::Responding);
+        assert!(voice.level>0);
+        assert_eq!(voice.audio_stats.received,0); // No UART PCM is needed for levels.
+        bridge(&mut forge,1,json!({"session":1,"event":"playback_active","active":false}));
+        voice.poll(&mut forge,&mut agent,100_000_000);
+        assert_eq!(voice.state,VoiceState::Listening);
+        voice.mute(&mut forge);
+        bridge(&mut forge,1,json!({"session":1,"event":"audio_level","level":900}));
+        bridge(&mut forge,1,json!({"session":1,"event":"playback_active","active":true}));
+        voice.poll(&mut forge,&mut agent,150_000_000);
+        assert_eq!(voice.state,VoiceState::Muted);
+        assert_eq!(voice.level,0);
+    }
+    #[test]
+    fn permission_wait_gets_its_own_deadline_and_duplicate_progress_cannot_extend_it() {
+        let (mut voice,mut forge,mut agent) = active();
+        bridge(&mut forge,1,json!({"session":1,"event":"progress","stage":"permission_pending"}));
+        voice.poll(&mut forge,&mut agent,1_000_000_000);
+        voice.poll(&mut forge,&mut agent,30_000_000_000);
+        assert!(voice.active());
+        assert!(voice.caption.contains("Allow microphone"));
+        bridge(&mut forge,1,json!({"session":1,"event":"progress","stage":"permission_pending"}));
+        voice.poll(&mut forge,&mut agent,182_000_000_000);
+        assert!(!voice.active());
+        assert!(voice.error.contains("permission timed out"));
+    }
+    #[test]
+    fn startup_reports_provider_timeout_after_audio_and_socket_progress() {
+        let (mut voice,mut forge,mut agent) = active();
+        for (second,stage) in [(1,"permission_pending"),(25,"permission_granted"),(26,"audio_starting"),(27,"audio_ready"),(28,"socket_open"),(29,"setup_sent")] {
+            bridge(&mut forge,1,json!({"session":1,"event":"progress","stage":stage}));
+            voice.poll(&mut forge,&mut agent,second*1_000_000_000);
+            assert!(voice.active());
+        }
+        assert_eq!(voice.caption,"Waiting for Gemini voice…");
+        voice.poll(&mut forge,&mut agent,50_000_000_000);
+        assert!(!voice.active());
+        assert!(voice.error.contains("Gemini voice setup timed out"));
     }
     #[test]
     fn keyboard_mute_text_history_and_explicit_mic_resume() {

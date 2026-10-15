@@ -82,6 +82,7 @@ pub fn run(
         }
         ui.set_voice(voice.state, &voice.caption, &voice.error);
         ui.set_voice_level(voice.level);
+        ui.set_voice_diagnostics(&voice.diagnostics);
         if !pending && !voice.active() {
             if let Some((id, input)) = forge.take_console_request() {
                 crate::serial_println!("[welder-e2e] stage=chat_started");

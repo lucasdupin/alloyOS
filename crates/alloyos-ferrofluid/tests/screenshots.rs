@@ -39,6 +39,7 @@ fn system_ui_screenshots() {
     ui.set_booting(false);
     ui.render(Duration::from_millis(16));
     snapshot(&mut suite, "workspace", &ui);
+    ui.set_reduced_motion(true);
     ui.set_voice_state(alloyos_mcp::display::VoiceState::Listening, "Tell me about my workspace", "");
     ui.set_voice_level(850);
     ui.render(Duration::from_millis(16));
@@ -46,6 +47,14 @@ fn system_ui_screenshots() {
     ui.set_reduced_motion(true);
     ui.render(Duration::from_millis(16));
     snapshot(&mut suite, "voice-listening", &ui);
+    ui.set_voice_level(0);
+    ui.render(Duration::from_millis(16));
+    snapshot(&mut suite, "voice-listening-silent", &ui);
+    ui.set_voice_diagnostics("Mic 24 · received 23 · sent 20 · text 0");
+    ui.render(Duration::from_millis(16));
+    snapshot(&mut suite, "voice-diagnostics", &ui);
+    ui.set_voice_diagnostics("");
+
     ui.set_voice_state(alloyos_mcp::display::VoiceState::Error, "", "Microphone permission required");
     ui.render(Duration::from_millis(16));
     snapshot(&mut suite, "voice-error", &ui);

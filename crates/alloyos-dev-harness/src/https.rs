@@ -280,19 +280,29 @@ pub fn run_ui(command: &mut Command) -> Result<(), String> {
             input.write_all(reply.as_bytes()).and_then(|_|input.flush()).map_err(|_|"guest pipe closed")?;
         }
         if let Some(bridge)=voice.as_ref() {
-            match bridge.try_event() {
-                Ok(Some(event))=>{let json=serde_json::to_string(&event).map_err(|_|"invalid voice event")?;
-                    let frame=format!("VOICE1\t{}\t{}\n",event.session(),encode_hex(&json));
-                    input.write_all(frame.as_bytes()).and_then(|_|input.flush()).map_err(|_|"voice guest pipe closed")?;
-                },Err(_)=>{voice=None;
-                    if active_voice!=0 {
-                        let event=crate::voice::HostEvent::Error{session:active_voice,message:"voice host disconnected".into()};
+            for _ in 0..16 {
+                match bridge.try_event() {
+                    Ok(Some(event))=>{if let Some(stage)=event.diagnostic_stage(){eprintln!("[voice {}] {}",event.session(),stage);}
+                        if let crate::voice::HostEvent::AudioStats{session,captured_frames,captured_samples,emitted_frames,sent_frames,input_transcripts,conversion_errors,level,muted,provider_ready,..}=&event {
+                            eprintln!("[voice {session}] capture={captured_frames}/{captured_samples} emitted={emitted_frames} sent={sent_frames} transcripts={input_transcripts} conversion_errors={conversion_errors} level={level} muted={muted} provider_ready={provider_ready}");
+                            // Host diagnostics remain useful during setup, but telemetry must
+                            // never occupy the guest UART ahead of setupComplete.
+                            if !provider_ready { continue; }
+                        }
                         let json=serde_json::to_string(&event).map_err(|_|"invalid voice event")?;
-                        let frame=format!("VOICE1\t{active_voice}\t{}\n",encode_hex(&json));
-                        input.write_all(frame.as_bytes()).and_then(|_|input.flush()).map_err(|_|"guest pipe closed")?;
-                        active_voice=0;
+                        let frame=format!("VOICE1\t{}\t{}\n",event.session(),encode_hex(&json));
+                        input.write_all(frame.as_bytes()).and_then(|_|input.flush()).map_err(|_|"voice guest pipe closed")?;
+                    },Ok(None)=>{break;},Err(_)=>{voice=None;
+                        if active_voice!=0 {
+                            let event=crate::voice::HostEvent::Error{session:active_voice,message:"voice host disconnected".into()};
+                            let json=serde_json::to_string(&event).map_err(|_|"invalid voice event")?;
+                            let frame=format!("VOICE1\t{active_voice}\t{}\n",encode_hex(&json));
+                            input.write_all(frame.as_bytes()).and_then(|_|input.flush()).map_err(|_|"guest pipe closed")?;
+                            active_voice=0;
+                        }
+                        break;
                     }
-                },_=>{}
+                }
             }
         }
         let line=match lines_rx.recv_timeout(std::time::Duration::from_millis(5)) {

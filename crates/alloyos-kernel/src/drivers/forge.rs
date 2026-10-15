@@ -59,6 +59,8 @@ pub struct ForgeService {
     outgoing_line_started: bool,
     console_requests: VecDeque<(u64, String)>,
     voice_events: VecDeque<(u64, String)>,
+    uart_rx_bytes: u64,
+    uart_tx_bytes: u64,
     ui_frames: u64,
     ui_input_events: u64,
     boot_error: Option<&'static str>,
@@ -78,6 +80,8 @@ impl ForgeService {
             outgoing_line_started: false,
             console_requests: VecDeque::new(),
             voice_events: VecDeque::new(),
+            uart_rx_bytes: 0,
+            uart_tx_bytes: 0,
             ui_frames: 0,
             ui_input_events: 0,
             boot_error: None,
@@ -272,6 +276,7 @@ impl ForgeService {
     /// Feed one byte. Production ignores non-protocol serial chatter and never
     /// logs request/prompt bytes; bounded overflow is discarded through newline.
     pub fn feed(&mut self, byte: u8) -> Option<String> {
+        self.uart_rx_bytes = self.uart_rx_bytes.saturating_add(1);
         if byte != b'\n' {
             if !self.discarding {
                 if self.incoming.len() >= MAX_FRAME_BYTES {
@@ -363,6 +368,18 @@ impl ForgeService {
 }
 
 impl ForgeService {
+    /// Keep numeric diagnostics inside the UART frame queue so they cannot
+    /// interrupt a partially transmitted voice JSON line.
+    pub fn uart_diagnostics(&self) -> (u64, u64, usize, usize) {
+        (self.uart_rx_bytes, self.uart_tx_bytes, self.incoming.len(), self.outgoing.len())
+    }
+    pub fn queue_voice_diagnostics(&mut self, line: &str) {
+        if line.starts_with("[voice-input] ") && line.len() <= 512
+            && !line.contains(['\n','\r']) && self.outgoing.len() + line.len() < 512 * 1024 {
+            self.outgoing.extend(line.bytes());
+            self.outgoing.push_back(b'\n');
+        }
+    }
     pub fn take_voice_event(&mut self) -> Option<(u64, String)> {
         self.voice_events.pop_front().or_else(||DEFERRED_VOICE.lock().pop_front())
     }
@@ -401,7 +418,7 @@ impl ForgeService {
                     Some(match command["op"].as_str() {
                         Some("stop") => true,
                         Some("interrupt") => queued["op"] == "playback",
-                        Some("mute") => queued["op"] == "send" && queued["json"].as_str().and_then(|s|serde_json::from_str::<serde_json::Value>(s).ok()).is_some_and(|v|!v["realtimeInput"]["audio"].is_null()),
+                        Some("mute") => queued["op"] == "send" && queued["json"].as_str().and_then(|s|serde_json::from_str::<serde_json::Value>(s).ok()).is_some_and(|v| v["realtimeInput"]["mediaChunks"].is_array() || !v["realtimeInput"]["audio"].is_null()),
                         _ => false,
                     })
                 }).unwrap_or(false);
@@ -456,13 +473,15 @@ impl ForgeService {
                     }
                 }
             }
-            for _ in 0..16384 {
-                if super::rng::monotonic_time_ns().saturating_sub(tick_start) >= 1_000_000
-                    || self.shared.borrow().pending_uses_transport()
+            let mut uart = SERIAL1.lock();
+            for count in 0..32768 {
+                if (count & 0x7f) == 0
+                    && (super::rng::monotonic_time_ns().saturating_sub(tick_start) >= 4_000_000
+                        || self.shared.borrow().pending_uses_transport())
                 {
                     break;
                 }
-                let Some(byte) = SERIAL1.lock().try_receive() else {
+                let Some(byte) = uart.try_receive() else {
                     break;
                 };
                 if let Some(response) = self.feed(byte) {
@@ -470,10 +489,13 @@ impl ForgeService {
                 }
             }
         }
+        // RX and TX need independent budgets: continuous microphone input can
+        // consume all of RX's time, but must never starve outgoing audio/setup.
+        let transmit_start = super::rng::monotonic_time_ns();
         let mut uart = SERIAL1.lock();
-        for _ in 0..16384 {
+        for count in 0..32768 {
             if super::mcp_https::REQUEST_WRITING.load(core::sync::atomic::Ordering::Relaxed) { break; }
-            if super::rng::monotonic_time_ns().saturating_sub(tick_start) >= 1_000_000 {
+            if (count & 0x7f) == 0 && super::rng::monotonic_time_ns().saturating_sub(transmit_start) >= 4_000_000 {
                 break;
             }
             let Some(&byte) = self.outgoing.front() else {
@@ -483,6 +505,7 @@ impl ForgeService {
                 break;
             }
             self.outgoing.pop_front();
+            self.uart_tx_bytes = self.uart_tx_bytes.saturating_add(1);
             self.outgoing_line_started = byte != b'\n';
         }
         #[cfg(all(target_arch = "aarch64", target_os = "none"))]

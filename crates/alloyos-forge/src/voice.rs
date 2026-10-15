@@ -170,7 +170,7 @@ impl LiveSession {
         if pcm.is_empty() || pcm.len() > MAX_INPUT_AUDIO_BYTES || pcm.len() % 2 != 0 {
             return Err(ForgeError::InvalidRequest);
         }
-        self.enqueue(json!({"realtimeInput":{"audio":{"mimeType":"audio/pcm;rate=16000","data":encode_base64(pcm)}}}))
+        self.enqueue(json!({"realtimeInput":{"mediaChunks":[{"mimeType":"audio/pcm;rate=16000","data":encode_base64(pcm)}]}}))
     }
     pub fn send_text(&mut self, id: u64, text: &str) -> Result<(), ForgeError> {
         self.active(id)?;
@@ -496,7 +496,7 @@ mod tests {
         s.ingest(1, r#"{"setupComplete":{}}"#).unwrap();
         s.send_audio(1, &[0, 128, 255, 127]).unwrap();
         let wire: Value = serde_json::from_str(&s.take_outbound().unwrap()).unwrap();
-        assert_eq!(wire["realtimeInput"]["audio"]["data"], "AID/fw==");
+        assert_eq!(wire["realtimeInput"]["mediaChunks"][0]["data"], "AID/fw==");
     }
     #[test]
     fn interruption_purges_queued_audio_and_advances_generation() {

@@ -13,6 +13,8 @@ pub enum HostCommand {
         session: u64,
         endpoint: String,
         api_key: String,
+        #[serde(default)]
+        direct_audio: bool,
     },
     Send {
         session: u64,
@@ -39,15 +41,48 @@ pub enum HostCommand {
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum HostEvent {
     Ready { session: u64 },
+    Progress { session: u64, stage: String },
+    AudioStats {
+        session: u64,
+        captured_frames: u64,
+        captured_samples: u64,
+        emitted_frames: u64,
+        sent_frames: u64,
+        input_transcripts: u64,
+        conversion_errors: u64,
+        level: u16,
+        muted: bool,
+        provider_ready: bool,
+        #[serde(default)]
+        direct_audio: bool,
+    },
+    AudioLevel { session: u64, level: u16 },
+    PlaybackActive { session: u64, active: bool },
     Audio { session: u64, pcm: String },
     Message { session: u64, json: String },
     Error { session: u64, message: String },
     Stopped { session: u64 },
 }
 impl HostEvent {
+    /// Only fixed stage names can reach host diagnostics; no transcript, key, or PCM.
+    pub fn diagnostic_stage(&self) -> Option<&str> {
+        match self {
+            Self::Progress { stage, .. } if matches!(stage.as_str(),
+                "permission_pending" | "permission_granted" | "audio_starting" |
+                "audio_ready" | "socket_open" | "setup_sent") => Some(stage),
+            Self::Ready { .. } => Some("host_ready"),
+            Self::Stopped { .. } => Some("stopped"),
+            Self::Error { .. } => Some("error"),
+            _ => None,
+        }
+    }
     pub fn session(&self) -> u64 {
         match self {
             Self::Ready { session }
+            | Self::Progress { session, .. }
+            | Self::AudioStats { session, .. }
+            | Self::AudioLevel { session, .. }
+            | Self::PlaybackActive { session, .. }
             | Self::Audio { session, .. }
             | Self::Message { session, .. }
             | Self::Error { session, .. }
@@ -60,6 +95,7 @@ pub struct HostVoice {
     input: mpsc::SyncSender<Vec<u8>>,
     control: mpsc::SyncSender<Vec<u8>>,
     events: mpsc::Receiver<HostEvent>,
+    telemetry: std::sync::Arc<std::sync::Mutex<[Option<HostEvent>; 2]>>,
 }
 impl HostVoice {
     pub fn launch(path: &std::path::Path) -> Result<Self, String> {
@@ -87,6 +123,8 @@ impl HostVoice {
         });
         let output = child.stdout.take().unwrap();
         let (tx, events) = mpsc::sync_channel(32);
+        let telemetry = std::sync::Arc::new(std::sync::Mutex::new([None, None]));
+        let latest = telemetry.clone();
         std::thread::spawn(move || {
             let mut reader = BufReader::new(output);
             loop {
@@ -104,9 +142,12 @@ impl HostVoice {
                 let Ok(event) = serde_json::from_slice(&line) else {
                     break;
                 };
-                if tx.try_send(event).is_err() {
-                    break;
-                }
+                // Telemetry is replaceable state, never a FIFO ahead of setup/tools.
+                let slot = match &event { HostEvent::AudioLevel { .. } => Some(0), HostEvent::AudioStats { .. } => Some(1), _ => None };
+                if let Some(slot) = slot {
+                    latest.lock().unwrap()[slot] = Some(event);
+                } else if tx.send(event).is_err() { break; }
+
             }
         });
         Ok(Self {
@@ -114,6 +155,7 @@ impl HostVoice {
             input,
             control,
             events,
+            telemetry,
         })
     }
     pub fn command(&mut self, command: &HostCommand) -> Result<(), String> {
@@ -141,7 +183,10 @@ impl HostVoice {
     pub fn try_event(&self) -> Result<Option<HostEvent>, String> {
         match self.events.try_recv() {
             Ok(e) => Ok(Some(e)),
-            Err(mpsc::TryRecvError::Empty) => Ok(None),
+            Err(mpsc::TryRecvError::Empty) => {
+                let mut latest = self.telemetry.lock().unwrap();
+                Ok(latest[0].take().or_else(|| latest[1].take()))
+            },
             Err(_) => Err("voice helper closed".into()),
         }
     }
@@ -163,6 +208,19 @@ fn validate(c: &HostCommand) -> Result<(), String> {
 mod tests {
     use super::*;
     #[test]
+    fn telemetry_is_latest_only_and_control_overtakes_it() {
+        let mut host = HostVoice::launch(std::path::Path::new("/bin/cat")).unwrap();
+        let (tx, rx) = mpsc::sync_channel(32);
+        host.events = rx;
+        for level in 0..200 {
+            host.telemetry.lock().unwrap()[0] = Some(HostEvent::AudioLevel { session: 1, level });
+        }
+        tx.send(HostEvent::Ready { session: 1 }).unwrap();
+        assert!(matches!(host.try_event().unwrap(), Some(HostEvent::Ready { session: 1 })));
+        assert!(matches!(host.try_event().unwrap(), Some(HostEvent::AudioLevel { level: 199, .. })));
+        assert!(host.try_event().unwrap().is_none());
+    }
+    #[test]
     fn bounded_frames() {
         assert!(validate(&HostCommand::Playback {
             session: 1,
@@ -179,9 +237,28 @@ mod tests {
         assert!(validate(&HostCommand::Start {
             session: 1,
             endpoint: "wss://evil.test".into(),
-            api_key: "secret".into()
+            api_key: "secret".into(),
+            direct_audio: false
         })
         .is_err());
+    }
+    #[test]
+    fn diagnostics_include_only_fixed_stages() {
+        assert_eq!(HostEvent::Progress { session: 3, stage: "socket_open".into() }.diagnostic_stage(), Some("socket_open"));
+        assert_eq!(HostEvent::Progress { session: 3, stage: "secret transcript".into() }.diagnostic_stage(), None);
+        assert_eq!(HostEvent::Message { session: 3, json: "secret transcript".into() }.diagnostic_stage(), None);
+        assert_eq!(HostEvent::Error { session: 3, message: "secret request".into() }.diagnostic_stage(), Some("error"));
+    }
+    #[test]
+    fn audio_stats_wire_contract_is_numeric_and_session_scoped() {
+        let event: HostEvent = serde_json::from_str(r#"{"event":"audio_stats","session":7,"captured_frames":20,"captured_samples":32000,"emitted_frames":18,"sent_frames":17,"input_transcripts":1,"conversion_errors":0,"level":312,"muted":false,"provider_ready":true}"#).unwrap();
+        assert_eq!(event.session(), 7);
+        assert_eq!(event.diagnostic_stage(), None);
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(value["captured_samples"], 32000);
+        assert_eq!(value["sent_frames"], 17);
+        assert_eq!(value["level"], 312);
+        assert!(serde_json::from_str::<HostEvent>(r#"{"event":"audio_stats","session":7,"level":"secret"}"#).is_err());
     }
     #[test]
     fn wire_contract() {
@@ -250,6 +327,23 @@ mod lifecycle_tests {
             pcm: "0000".repeat(16385)
         })
         .is_err());
+    }
+    /// Test the actual native reader, not a stand-in that already has short reads.
+    /// Commands deliberately avoid microphone permissions and network sessions.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_helper_dispatches_short_commands_with_stdin_open() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        assert!(Command::new("sh")
+            .arg(root.join("scripts/audio/build.sh"))
+            .status()
+            .expect("build native voice helper")
+            .success());
+        assert!(Command::new("python3")
+            .arg(root.join("scripts/audio/test_helper.py"))
+            .status()
+            .expect("run native pipe regression tests")
+            .success());
     }
     #[test]
     fn helper_eof_and_drop_close_process() {

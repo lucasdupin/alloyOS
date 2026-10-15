@@ -323,6 +323,11 @@ impl FerrofluidSystemUi {
         self.ui.set_voice_error(error.into());
         self.backdrop_dirty.set(true);
     }
+    /// Compact pipeline diagnostics; independent of user/assistant captions.
+    pub fn set_voice_diagnostics(&self, diagnostics: &str) {
+        self.ui.set_voice_diagnostics(diagnostics.into());
+    }
+
     /// Smoothed by the view; level is microphone RMS normalized to 0..1000.
     pub fn set_voice_level(&self, level: u16) {
         self.ui.set_voice_level(level.min(1000) as f32 / 1000.0);
@@ -1315,12 +1320,28 @@ mod tests {
         }
         assert!(ui.take_voice_toggle());
         assert!(!ui.take_voice_toggle());
+        ui.set_reduced_motion(true);
         ui.set_voice_state(alloyos_mcp::display::VoiceState::Listening, "Live caption", "");
         assert_eq!(ui.ui.get_voice_caption().as_str(), "Live caption");
         ui.set_reduced_motion(true);
         ui.set_voice_level(0);
         ui.render(Duration::ZERO);
         let quiet = ui.pixels().to_vec();
+        ui.set_voice_diagnostics("Mic 24 · sent 20 · transcript 0");
+        ui.render(Duration::ZERO);
+        assert_ne!(ui.pixels(), quiet.as_slice(), "voice pipeline status must be visible");
+        assert_eq!(ui.ui.get_voice_caption().as_str(), "Live caption");
+        ui.set_voice_diagnostics("");
+        ui.render(Duration::ZERO);
+        // Captions and mic sit above this strip; only edge-bleeding waves can fill it.
+        let assert_wave_visible = |pixels: &[u32]| {
+            let width = PHONE_WIDTH as usize;
+            let strip = &pixels[(PHONE_HEIGHT as usize - 8) * width..];
+            assert!(strip.iter().filter(|pixel| **pixel != pixels[0]).count() > width * 4,
+                "silent listening must retain a visible wave at the display edge");
+        };
+        assert_wave_visible(ui.pixels()); // Reduced motion at zero volume.
+
         ui.set_voice_level(1000);
         ui.render(Duration::ZERO);
         assert!(ui.pixels() != quiet.as_slice(), "microphone volume must change vector wave geometry");
@@ -1720,6 +1741,18 @@ mod tests {
             Some(TileAction::new("refresh", "Refresh", "fixture.now", alloc::collections::BTreeMap::new()))
         );
         assert_mixed_chat_vertical_scrolling(&mut ui);
+        ui.ui.invoke_release_editor();
+        ui.set_reduced_motion(true);
+        ui.set_voice_state(alloyos_mcp::display::VoiceState::Listening, "", "");
+        ui.set_voice_level(0);
+        ui.render(ui.now.get());
+        assert_wave_visible(ui.pixels());
+        ui.set_reduced_motion(false);
+        let start = ui.now.get();
+        for phase in 0..32 {
+            ui.render(start + Duration::from_millis(phase * 150));
+            assert_wave_visible(ui.pixels());
+        }
         // Key releases retain the original character even if Shift changes.
         let mut keys = EvdevKeyboard::default();
         keys.translate(42, true);

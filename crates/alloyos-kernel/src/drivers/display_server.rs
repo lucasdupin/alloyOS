@@ -390,6 +390,11 @@ impl DisplayProxy {
     pub fn set_voice_level(&self, level: u16) {
         self.state.borrow_mut().voice_level = level.min(1000);
     }
+    pub fn set_voice_diagnostics(&self, text: &str) {
+        let mut state = self.state.borrow_mut();
+        state.voice_diagnostics = text.into();
+        trim_text(&mut state.voice_diagnostics, 256);
+    }
     pub fn take_tile_event(&self) -> Option<TileEvent> {
         match self.take(|e| matches!(e, Event::Tile(_))) {
             Some(Event::Tile(e)) => Some(e),

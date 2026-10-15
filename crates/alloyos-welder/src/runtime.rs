@@ -1080,7 +1080,7 @@ impl AgentRuntime {
 
     fn restore_dashboard(&mut self) {
         if self.tool_registry.vfs_read(Self::DASHBOARD_CONFIG_PATH).is_none() {
-            self.pinned_tile_ids = Vec::new();
+            self.pinned_tile_ids = vec!["clock.now".into()];
             return;
         }
         let saved = self.tool_registry.vfs_read(Self::DASHBOARD_CONFIG_PATH)
@@ -1269,7 +1269,7 @@ mod tests {
     fn dashboard_pin_order_restores_and_empty_is_intentional() {
         let backend = Rc::new(RefCell::new(crate::tools::SharedMapVfsBackend::new()));
         let mut runtime = AgentRuntime::with_vfs_backend(backend.clone());
-        assert!(runtime.pinned_tile_ids().is_empty());
+        assert_eq!(runtime.pinned_tile_ids(), &["clock.now"]);
         runtime.set_pinned_tile_ids(&["sample_scheduler.board".into(), "sample_timer.now".into(), "sample_scheduler.board".into()]).unwrap();
         let mut restored = AgentRuntime::with_vfs_backend(backend.clone());
         assert_eq!(restored.pinned_tile_ids(), &["sample_scheduler.board", "sample_timer.now"]);

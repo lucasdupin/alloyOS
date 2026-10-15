@@ -405,8 +405,9 @@ export component SystemUi inherits Window {
     property <bool> voice-active: root.voice-state >= 1 && root.voice-state <= 3;
     property <float> voice-merge: root.voice-active ? 1 : 0;
     animate voice-merge { duration: root.reduced-motion ? 0ms : 480ms; easing: cubic-bezier(0.22, 1, 0.36, 1); }
-    property <float> wave-level: root.voice-level;
-    animate wave-level { duration: root.reduced-motion ? 0ms : 100ms; easing: ease-out; }
+    out property <float> wave-level: min(1, root.voice-level * 3);
+    out property <float> wave-phase: root.reduced-motion ? 0 : root.loading-time-ms * 0.003333333;
+    animate wave-level { duration: root.reduced-motion ? 0ms : 120ms; easing: linear; }
     in property <string> voice-caption;
     in property <string> voice-diagnostics;
     in property <string> voice-error;
@@ -583,14 +584,14 @@ export component SystemUi inherits Window {
             for layer in 3: Path {
                 width: parent.width; height: parent.height;
                 viewbox-width: 360; viewbox-height: 70;
-                property <float> phase: (root.reduced-motion ? 0 : root.loading-time-ms / 600) + layer * 1.7;
-                property <float> amplitude: 2 + root.wave-level * (22 - layer * 4);
+                property <float> phase: root.wave-phase + layer * 1.7;
+                property <float> amplitude: 2 + root.wave-level * (46 - layer * 7);
                 property <float> crest: Math.sin(self.phase * 1rad) * self.amplitude;
                 property <float> trough: Math.cos(self.phase * 1rad) * self.amplitude;
                 fill: layer == 0 ? #b8b8ca35 : layer == 1 ? #9696b348 : #d2d2e248;
                 // Keep the upper surface above the display edge even at zero RMS.
                 // The lower return remains below the edge so the fill still bleeds out.
-                property <float> surface: root.voice-state == 2 ? 29 : 35;
+                property <float> surface: (root.voice-state == 2 ? 29 : 35) - root.wave-level * 8;
                 MoveTo { x: 0; y: parent.surface; }
                 CubicTo { control-1-x: 45; control-1-y: parent.surface; control-2-x: 50; control-2-y: parent.surface - parent.crest; x: 90; y: parent.surface - parent.crest; }
                 CubicTo { control-1-x: 135; control-1-y: parent.surface - parent.crest; control-2-x: 135; control-2-y: parent.surface + parent.trough; x: 180; y: parent.surface + parent.trough; }
@@ -667,7 +668,7 @@ export component SystemUi inherits Window {
             }
         }
         Text {
-            x: 20px; y: toolbar.y - self.height - 8px - (voice-diagnostics.visible ? 18px : 0px);
+            x: 20px; y: toolbar.y - self.height - 8px;
             width: parent.width - 40px; height: 32px;
             overflow: elide;
             vertical-alignment: center;
@@ -677,17 +678,6 @@ export component SystemUi inherits Window {
             font-size: 13px;
             horizontal-alignment: center;
             wrap: word-wrap;
-        }
-        voice-diagnostics := Text {
-            x: 20px; y: toolbar.y - 26px;
-            width: parent.width - 40px; height: 18px;
-            visible: !root.keyboard-visible && root.voice-active && root.voice-diagnostics != "";
-            text: root.voice-diagnostics;
-            color: AlloyPalette.muted;
-            font-size: 10px;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-            overflow: elide;
         }
         // This layer is omitted while the host captures the pristine workspace.
         // Its image is a separately blurred backdrop; tiles are drawn afterwards.

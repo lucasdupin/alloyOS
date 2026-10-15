@@ -531,11 +531,11 @@ impl Voice {
             self.level_target = 0;
             return;
         }
-        if now.saturating_sub(self.last_audio) > 150_000_000 { self.level_target = 0; }
+        if now.saturating_sub(self.last_audio) > 300_000_000 { self.level_target = 0; }
         let target = self.level_target as i64;
         let current = self.level as i64;
         // Fast attack, slower release. Depend on elapsed time, not frame count.
-        let time_constant = if target > current { 35_000_000 } else { 160_000_000 };
+        let time_constant = if target > current { 8_000_000 } else { 85_000_000 };
         let mut step = (target - current) * elapsed as i64 / (time_constant + elapsed as i64);
         if step == 0 && elapsed > 0 { step = (target - current).signum(); }
         self.level = (current + step).clamp(0,1000) as u16;

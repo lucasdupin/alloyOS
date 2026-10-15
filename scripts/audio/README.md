@@ -65,7 +65,7 @@ and received PCM `inlineData` is played on the host. The helper removes only
 handled PCM fields before forwarding the provider message, preserving sibling
 text, transcripts, tool calls, and cancellation messages. Forge/Welder still
 create setup/context/tools and handle every tool call/result. UART carries
-control, provider text/tool messages, `audio_level` at most 4 Hz, and
+control, provider text/tool messages, `audio_level` at most 10 Hz, and
 `playback_active` transitions. Microphone capture and WebSocket send queues
 remain bounded; transport overload terminates the session visibly.
 

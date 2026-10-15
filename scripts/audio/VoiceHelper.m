@@ -131,7 +131,7 @@ static void captureData(NSData*data,BOOL conversionFailed,uint64_t id,uint64_t t
  NSUInteger samples=data.length/2;uint16_t level=conversionFailed?0:pcmLevel(data.bytes,samples);
  capturedFrames++;capturedSamples+=samples;captureLevel=level;if(conversionFailed)conversionErrors++;
  NSTimeInterval now=NSProcessInfo.processInfo.systemUptime;
- if(directAudio&&providerReady&&now-lastLevelTime>=0.25){lastLevelTime=now;emit(@{@"event":@"audio_level",@"session":@(id),@"level":@(muted?0:level)});}
+ if(directAudio&&providerReady&&now-lastLevelTime>=0.1){lastLevelTime=now;emit(@{@"event":@"audio_level",@"session":@(id),@"level":@(muted?0:level)});}
  if(muted||probeAudio||!providerReady)return;
  for(NSUInteger off=0;off<data.length;off+=8192){
  NSData*chunk=[data subdataWithRange:NSMakeRange(off,MIN(8192,data.length-off))];

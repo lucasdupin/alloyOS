@@ -1329,7 +1329,7 @@ mod tests {
         let quiet = ui.pixels().to_vec();
         ui.set_voice_diagnostics("Mic 24 · sent 20 · transcript 0");
         ui.render(Duration::ZERO);
-        assert_ne!(ui.pixels(), quiet.as_slice(), "voice pipeline status must be visible");
+        assert_eq!(ui.pixels(), quiet.as_slice(), "voice diagnostics must stay hidden");
         assert_eq!(ui.ui.get_voice_caption().as_str(), "Live caption");
         ui.set_voice_diagnostics("");
         ui.render(Duration::ZERO);
@@ -1752,6 +1752,23 @@ mod tests {
         for phase in 0..32 {
             ui.render(start + Duration::from_millis(phase * 150));
             assert_wave_visible(ui.pixels());
+        }
+        // A 100ms microphone update must interpolate across display frames.
+        // Wave phase must advance every frame, even within one 300ms interval.
+        let start = ui.now.get();
+        let initial_phase = ui.ui.get_wave_phase();
+        ui.set_voice_level(300);
+        ui.render(start);
+        let mut previous = ui.ui.get_wave_level();
+        for frame in 1..=6 {
+            ui.render(start + Duration::from_millis(frame * 16));
+            let level = ui.ui.get_wave_level();
+            assert!(level > previous && level < 0.9,
+                "microphone changes must interpolate rather than snap: {previous} -> {level}");
+            let phase_delta = ui.ui.get_wave_phase() - initial_phase;
+            assert!((phase_delta - frame as f32 * 16.0 / 300.0).abs() < 0.001,
+                "wave phase must advance smoothly each frame");
+            previous = level;
         }
         // Key releases retain the original character even if Shift changes.
         let mut keys = EvdevKeyboard::default();

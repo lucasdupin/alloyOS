@@ -15,6 +15,7 @@ pub mod parser;
 pub mod runtime;
 pub mod scheduler;
 pub mod value;
+pub mod timezone;
 
 pub use host::{
     CapabilityRequest, CapabilityScopedHost, AlloyOsHost, OsEvent, ScriptCapabilities,
@@ -167,6 +168,7 @@ mod tests {
         let mut rt = JsIsolate::new();
         let mut host = VirtualHostEnv::new();
         host.status = SystemStatus {
+            wall_clock_ms: None,
             uptime_ms: 42_500,
             mem_used_bytes: 8 * 1024 * 1024,
             mem_free_bytes: 120 * 1024 * 1024,

@@ -172,7 +172,8 @@ pub fn dispatch_host(request: &str, host: &mut dyn AlloyOsHost) -> Result<String
                 JsValue::Number(s.uptime_ms as i64),
                 JsValue::Number(s.mem_used_bytes as i64),
                 JsValue::Number(s.mem_free_bytes as i64),
-                JsValue::Number(s.active_tasks as i64)
+                JsValue::Number(s.active_tasks as i64),
+                s.wall_clock_ms.map(|ms| JsValue::Number(ms as i64)).unwrap_or(JsValue::Null)
             ])
         }
         "notify" => {
@@ -284,16 +285,18 @@ impl<F: Fn(&str) -> Result<String, String>> AlloyOsHost for ProcessHost<F> {
     }
     fn sys_status(&self) -> SystemStatus {
         let mut s = SystemStatus {
+            wall_clock_ms: None,
             uptime_ms: 0,
             mem_used_bytes: 0,
             mem_free_bytes: 0,
             active_tasks: 0,
         };
         if let Ok(JsValue::Array(v)) = self.call("status", &[]) {
-            if let [JsValue::Number(a), JsValue::Number(b), JsValue::Number(c), JsValue::Number(d)] =
+            if let [JsValue::Number(a), JsValue::Number(b), JsValue::Number(c), JsValue::Number(d), wall] =
                 v.as_slice()
             {
                 s = SystemStatus {
+                    wall_clock_ms: match wall { JsValue::Number(ms) if *ms >= 0 => Some(*ms as u64), _ => None },
                     uptime_ms: *a as u64,
                     mem_used_bytes: *b as u64,
                     mem_free_bytes: *c as u64,

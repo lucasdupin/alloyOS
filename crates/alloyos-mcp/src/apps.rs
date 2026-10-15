@@ -271,6 +271,7 @@ pub struct JsApp {
     vfs_files: Option<Rc<RefCell<BTreeMap<String, String>>>>,
     http_routes: Option<Rc<RefCell<BTreeMap<String, String>>>>,
     uptime_ms: u64,
+    wall_clock_ms: Option<u64>,
     tile_ids: Vec<String>,
 }
 
@@ -297,6 +298,7 @@ impl JsApp {
             vfs_files: Some(Rc::new(RefCell::new(BTreeMap::new()))),
             http_routes: None,
             uptime_ms: 0,
+            wall_clock_ms: None,
             tile_ids: Vec::new(),
         })
     }
@@ -395,6 +397,7 @@ impl JsApp {
         }
         let mut host = alloyos_js::VirtualHostEnv::with_capabilities(capabilities);
         host.status.uptime_ms = self.uptime_ms;
+        host.status.wall_clock_ms = self.wall_clock_ms;
         if let Some(ref sched) = self.scheduler {
             host.scheduler = Some(sched.clone());
         }
@@ -418,6 +421,7 @@ impl JsApp {
 }
 
 impl McpApp for JsApp {
+    fn update_wall_clock(&mut self, unix_ms: Option<u64>) { self.wall_clock_ms = unix_ms; }
     fn update_uptime(&mut self, uptime_ms: u64) {
         self.uptime_ms = uptime_ms;
     }
@@ -585,3 +589,79 @@ impl McpApp for JsApp {
 }
 
 pub use crate::remote::RemoteMcpApp;
+
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+
+    #[test]
+    fn clock_tools_own_validate_and_persist_preferences_for_refresh_and_restart() {
+        let manifest = AppManifest::parse(include_str!("../../../apps/clock/clock.mcp")).unwrap();
+        let files = Rc::new(RefCell::new(BTreeMap::new()));
+        let mut app = JsApp::new(manifest.clone(),
+            include_str!("../../../apps/clock/main.js").into(),
+            Vec::new(), Vec::new(), Vec::new(), Vec::new(), None).unwrap().with_vfs_files(files.clone());
+        let defaults = app.call_tool("clock.settings", &BTreeMap::new()).unwrap();
+        assert!(alloc::format!("{:?}", defaults).contains("UTC"));
+        assert!(files.borrow().is_empty());
+        let mut args = BTreeMap::new();
+        args.insert("timezone".into(), McpValue::Text("America/Los_Angeles".into()));
+        args.insert("clock_format".into(), McpValue::Text("12h".into()));
+        app.call_tool("clock.configure", &args).unwrap();
+        assert_eq!(files.borrow().len(), 1);
+        let saved = files.borrow().get("/var/clock/preferences.json").unwrap().clone();
+        assert!(saved.contains("America/Los_Angeles"));
+        app.update_wall_clock(Some(1710064800000));
+        let tile = app.render_tile("clock.now").unwrap();
+        assert_eq!(tile.items[0].title, "3:00:00 AM");
+        assert!(tile.items[0].subtitle.contains("2024-03-10"));
+        args.insert("timezone".into(), McpValue::Text("Unsupported/Zone".into()));
+        let rejected = app.call_tool("clock.configure", &args).unwrap();
+        assert!(alloc::format!("{:?}", rejected).contains("Unsupported time zone"));
+        assert_eq!(files.borrow().get("/var/clock/preferences.json"), Some(&saved));
+        args.insert("timezone".into(), McpValue::Text("Asia/Tokyo".into()));
+        args.insert("clock_format".into(), McpValue::Text("invalid".into()));
+        app.call_tool("clock.configure", &args).unwrap();
+        assert_eq!(files.borrow().get("/var/clock/preferences.json"), Some(&saved));
+        args.insert("clock_format".into(), McpValue::Text("24h".into()));
+        app.call_tool("clock.configure", &args).unwrap();
+        assert_eq!(app.render_tile("clock.now").unwrap().items[0].title, "19:00:00");
+        // Simulate restart with only the saved app-local files, not a host cache.
+        let mut restarted = JsApp::new(manifest,
+            include_str!("../../../apps/clock/main.js").into(),
+            Vec::new(), Vec::new(), Vec::new(), Vec::new(), None).unwrap().with_vfs_files(files.clone());
+        restarted.update_wall_clock(Some(1710064800000));
+        assert_eq!(restarted.render_tile("clock.now").unwrap().items[0].title, "19:00:00");
+        files.borrow_mut().insert("/var/clock/preferences.json".into(),
+            r#"{"timezone":"Invalid","clock_format":"24h"}"#.into());
+        let tile = restarted.render_tile("clock.now").unwrap();
+        assert_eq!(tile.items[0].title, "Unavailable");
+        assert!(tile.items[0].subtitle.contains("Unsupported time zone"));
+    }
+
+    #[test]
+    fn clock_tile_shows_only_wall_clock_and_handles_missing_rtc() {
+        let manifest = AppManifest::parse(include_str!("../../../apps/clock/clock.mcp")).unwrap();
+        let mut app = JsApp::new(manifest,
+            include_str!("../../../apps/clock/main.js").into(),
+            Vec::new(), Vec::new(), Vec::new(), Vec::new(), None).unwrap();
+        app.update_uptime(90_061_999);
+        let unavailable = app.render_tile("clock.now").unwrap();
+        assert_eq!(unavailable.items.len(), 1);
+        assert_eq!(unavailable.items[0].id, "wall-clock");
+        assert_eq!(unavailable.items[0].title, "Unavailable");
+        app.update_wall_clock(Some(1_728_130_496_000));
+        let tile = app.render_tile("clock.now").unwrap();
+        assert_eq!(tile.items.len(), 1);
+        assert_eq!(tile.items[0].title, "12:14:56");
+        let result = app.call_tool("clock.now", &BTreeMap::new()).unwrap();
+        assert!(alloc::format!("{:?}", result).contains("1728130496000"));
+        assert!(alloc::format!("{:?}", result).contains("90061999"));
+        let resource = app.read_resource("mcp://clock/now").unwrap();
+        assert!(alloc::format!("{:?}", resource).contains("1728130496000"));
+        app.update_wall_clock(Some(0));
+        assert_eq!(app.render_tile("clock.now").unwrap().items[0].title, "00:00:00");
+        app.update_wall_clock(None);
+        assert_eq!(app.render_tile("clock.now").unwrap().items[0].title, "Unavailable");
+    }
+}

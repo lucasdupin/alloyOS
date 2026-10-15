@@ -3,6 +3,6 @@
     "uri": "mcp://clock/now",
     "name": "Clock",
     "mime_type": "application/json",
-    "description": "Current system uptime"
+    "description": "Current system uptime and configured local wall-clock time"
   }
 ]

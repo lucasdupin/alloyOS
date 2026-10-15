@@ -39,6 +39,7 @@ pub enum McpCaller {
 pub trait McpApp {
     /// Host-provided monotonic time; apps never fabricate a wall clock.
     fn update_uptime(&mut self, _uptime_ms: u64) {}
+    fn update_wall_clock(&mut self, _unix_ms: Option<u64>) {}
     fn manifest(&self) -> &AppManifest;
     fn tools(&self) -> Vec<McpTool>;
     fn resources(&self) -> Vec<McpResource>;
@@ -94,6 +95,10 @@ impl Default for McpRegistry {
 }
 
 impl McpRegistry {
+    pub fn update_wall_clock(&mut self, unix_ms: Option<u64>) {
+        for entry in self.apps.values_mut() { entry.app.update_wall_clock(unix_ms); }
+    }
+
     pub fn update_uptime(&mut self, uptime_ms: u64) {
         for entry in self.apps.values_mut() {
             entry.app.update_uptime(uptime_ms);

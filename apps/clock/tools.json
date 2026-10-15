@@ -1,7 +1,30 @@
 [
   {
     "name": "clock.now",
-    "description": "Read system uptime; wall clock is unavailable",
+    "description": "Read system uptime and current configured local wall-clock time",
     "params": []
+  },
+  {
+    "name": "clock.settings",
+    "description": "Read Clock app local time zone and 12/24-hour preferences",
+    "params": []
+  },
+  {
+    "name": "clock.configure",
+    "description": "Set Clock app local preferences; validates the time zone and clock format before saving",
+    "params": [
+      {
+        "name": "timezone",
+        "type": "string",
+        "required": true,
+        "description": "Supported IANA time zone identifier, e.g. America/Los_Angeles"
+      },
+      {
+        "name": "clock_format",
+        "type": "string",
+        "required": true,
+        "description": "12h or 24h"
+      }
+    ]
   }
 ]

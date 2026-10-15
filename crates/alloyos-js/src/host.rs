@@ -127,6 +127,8 @@ impl OsEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SystemStatus {
     pub uptime_ms: u64,
+    /// UTC Unix epoch milliseconds, or None when no wall-clock source is available.
+    pub wall_clock_ms: Option<u64>,
     pub mem_used_bytes: u64,
     pub mem_free_bytes: u64,
     pub active_tasks: u32,
@@ -136,6 +138,7 @@ impl Default for SystemStatus {
     fn default() -> Self {
         Self {
             uptime_ms: 1_000,
+            wall_clock_ms: None,
             mem_used_bytes: 16 * 1024 * 1024,
             mem_free_bytes: 112 * 1024 * 1024,
             active_tasks: 4,
@@ -610,6 +613,7 @@ impl<'a, H: AlloyOsHost + ?Sized> AlloyOsHost for CapabilityScopedHost<'a, H> {
         if self.check_capability(&CapabilityRequest::SysStatus).is_err() {
             return SystemStatus {
                 uptime_ms: 0,
+                wall_clock_ms: None,
                 mem_used_bytes: 0,
                 mem_free_bytes: 0,
                 active_tasks: 0,

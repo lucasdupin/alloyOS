@@ -1001,11 +1001,28 @@ impl JsIsolate {
                 let body = host.net_fetch(&url).map_err(JsError::HostError)?;
                 Ok(JsValue::String(body))
             }
+            // Pure conversion helpers: preferences are supplied by the calling app.
+            // These bindings neither read nor persist system or app configuration.
+            ("sys", "timeZones") => Ok(JsValue::Array(crate::timezone::SUPPORTED_TIMEZONES.iter()
+                .map(|zone| JsValue::String((*zone).into())).collect())),
+            ("sys", "localTime") => {
+                if args.len() != 3 { return Err(JsError::TypeError("localTime requires (epochMs, timezone, clockFormat)".into())); }
+                let ms = match args.first() {
+                    Some(JsValue::Number(n)) if *n >= 0 => Some(*n as u64),
+                    Some(JsValue::Null) => None,
+                    _ => return Err(JsError::TypeError("epochMs must be a nonnegative integer or null".into())),
+                };
+                let settings = crate::timezone::ClockSettings {
+                    timezone: args[1].to_js_string(), clock_format: args[2].to_js_string(),
+                };
+                Ok(crate::timezone::ClockDisplay::from_settings(Ok(settings), ms).to_value())
+            }
             ("sys", "status") => {
                 host.check_capability(&CapabilityRequest::SysStatus)
                     .map_err(JsError::ForbiddenCapability)?;
                 let st = host.sys_status();
                 let mut map = BTreeMap::new();
+                map.insert("wallClockMs".to_string(), st.wall_clock_ms.map(|ms| JsValue::Number(ms as i64)).unwrap_or(JsValue::Null));
                 map.insert("uptimeMs".to_string(), JsValue::Number(st.uptime_ms as i64));
                 map.insert(
                     "memUsedBytes".to_string(),

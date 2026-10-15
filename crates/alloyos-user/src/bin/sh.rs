@@ -87,6 +87,9 @@ mod tests {
     use super::*;
     use liballoy::shell::builtin_uname;
 
+    // These navigation tests share the shell process working directory.
+    static CWD_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn parse_simple_command() {
         let cmd = parse_command("ls -l");
@@ -152,6 +155,7 @@ mod tests {
 
     #[test]
     fn builtin_cd_and_pwd_navigation() {
+        let _guard = CWD_TEST_LOCK.lock().unwrap();
         use liballoy::shell::{builtin_cd, builtin_pwd, current_dir, resolve_path};
 
         assert_eq!(resolve_path("/", "dev"), "/dev");
@@ -189,6 +193,7 @@ mod tests {
 
     #[test]
     fn builtin_ls_paths_and_globs() {
+        let _guard = CWD_TEST_LOCK.lock().unwrap();
         use liballoy::shell::{builtin_cd, builtin_ls};
 
         assert_eq!(builtin_cd(&[]), Ok(None));

@@ -151,7 +151,7 @@ fn post_once(request: &HttpRequest, timeout: std::time::Duration) -> Result<Http
 }
 
 pub fn registry_get(url: &str) -> Result<serde_json::Value, String> {
-    if !url.starts_with("https://registry.modelcontextprotocol.io/v0.1/servers?") || url.bytes().any(|byte| byte.is_ascii_control()) { return Err("registry destination rejected".into()); }
+    if !alloyos_mcp::transport::allowed_public_get(url) { return Err("registry destination rejected".into()); }
     let config = format!("url = {}\nrequest = \"GET\"\nproto = \"=https\"\nconnect-timeout = 5\nmax-time = 10\nretry = 1\nretry-delay = 1\nretry-all-errors\nmax-filesize = 1048576\nsilent\nwrite-out = \"\\n%{{http_code}}\"\n", quote(url));
     let mut child = Command::new("curl").args(["-q", "--config", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|_| "registry HTTP process failed")?;
     let mut stdin = child.stdin.take().ok_or("registry stdin unavailable")?;

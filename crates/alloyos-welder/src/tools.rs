@@ -290,6 +290,7 @@ impl NativeToolRegistry {
             mcp_registry,
             default_capabilities: ScriptCapabilities::default_automation(),
             sys_status: SystemStatus {
+                wall_clock_ms: None,
                 uptime_ms: 1_000,
                 mem_used_bytes: 12 * 1024 * 1024,
                 mem_free_bytes: 116 * 1024 * 1024,
@@ -1538,6 +1539,7 @@ impl NativeToolRegistry {
     ) -> Vec<ScriptExecutionReport> {
         self.sys_status.uptime_ms = now_ms;
         self.mcp_registry.borrow_mut().update_uptime(now_ms);
+        self.mcp_registry.borrow_mut().update_wall_clock(self.sys_status.wall_clock_ms);
         let (mut all_reports, emitted) =
             self.run_scheduler_step(|sched, host| sched.tick_time(now_ms, calendar, host));
         self.execution_reports.extend(all_reports.clone());

@@ -199,6 +199,7 @@ impl KernelVfsBackend {
             (12 * 1024 * 1024, 116 * 1024 * 1024)
         };
         SystemStatus {
+            wall_clock_ms: crate::drivers::rtc::unix_time_ms(),
             uptime_ms: self.uptime_ms,
             mem_used_bytes,
             mem_free_bytes,
@@ -420,6 +421,7 @@ pub fn tick_kernel_automations(
         (12 * 1024 * 1024, 116 * 1024 * 1024)
     };
     agent.tool_registry.set_system_status(SystemStatus {
+        wall_clock_ms: crate::drivers::rtc::unix_time_ms(),
         uptime_ms,
         mem_used_bytes,
         mem_free_bytes,

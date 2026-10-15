@@ -17,7 +17,7 @@ subprocess.run(['cargo', 'build', '-p', 'alloyos-kernel', '--target',
 command = ['qemu-system-aarch64', '-M', f'virt,gic-version={args.gic_version}',
            '-accel', args.accel, '-cpu', 'host' if args.accel == 'hvf' else 'cortex-a72',
            '-kernel', str(root / 'target/aarch64-unknown-none/debug/alloyos-kernel'),
-           '-serial', 'stdio', '-display', 'none', '-m', '256M', '-no-reboot']
+           '-serial', 'stdio', '-display', 'none', '-m', '512M', '-no-reboot']
 process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 output = b''
 deadline = time.monotonic() + 30

@@ -9,12 +9,13 @@ root=pathlib.Path(__file__).resolve().parents[1]
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--kernel',type=pathlib.Path,default=root/'target/aarch64-unknown-none/release/alloyos-kernel')
 parser.add_argument('--disk',type=pathlib.Path,default=root/'target/aarch64-unknown-none/release/cobaltfs.img')
+parser.add_argument('--accel', choices=['tcg', 'hvf'], default='tcg')
 parser.add_argument('--output',type=pathlib.Path,default=root/'target/process-validation')
 args=parser.parse_args();out=args.output;out.mkdir(parents=True,exist_ok=True)
 with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
  sock=pathlib.Path(tmp)/'qmp.sock';log=out/'normal-ui.log'
  disk=pathlib.Path(tmp)/'cobaltfs.img';shutil.copy2(args.disk,disk)
- p=subprocess.Popen(['qemu-system-aarch64','-M','virt,gic-version=3','-accel','tcg','-cpu','cortex-a72','-kernel',str(args.kernel),'-drive',f'file={disk},if=none,format=raw,id=hd0','-device','virtio-blk-device,drive=hd0','-device','virtio-gpu-device,xres=1206,yres=2622','-device','virtio-keyboard-device','-device','virtio-tablet-device','-serial',f'file:{log}','-qmp',f'unix:{sock},server=on,wait=off','-display','none','-m','256M','-snapshot','-no-reboot'])
+ p=subprocess.Popen(['qemu-system-aarch64','-M','virt,gic-version=3','-accel',args.accel,'-cpu','host' if args.accel == 'hvf' else 'cortex-a72','-kernel',str(args.kernel),'-drive',f'file={disk},if=none,format=raw,id=hd0','-device','virtio-blk-device,drive=hd0','-device','virtio-gpu-device,xres=1206,yres=2622','-device','virtio-keyboard-device','-device','virtio-tablet-device','-serial',f'file:{log}','-qmp',f'unix:{sock},server=on,wait=off','-display','none','-m','512M','-snapshot','-no-reboot'])
  try:
   until=time.monotonic()+30
   while not sock.exists():time.sleep(.1);assert p.poll() is None;assert time.monotonic()<until
@@ -29,11 +30,11 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
     assert 'error' not in reply,reply
     return reply
   qmp('qmp_capabilities')
-  while '[ferrofluidd] EL0 frame presented' not in log.read_text():time.sleep(.2);assert time.monotonic()<until,log.read_text()
-  assert '[mm] Frame allocator and 160 MiB kernel heap online.' in log.read_text(),log.read_text()
+  while '[ferrofluidd] EL0 Slint ready' not in log.read_text():time.sleep(.2);assert time.monotonic()<until,log.read_text()
+  assert '[mm] Frame allocator and 256 MiB kernel heap online.' in log.read_text(),log.read_text()
   time.sleep(1)
   qmp('screendump',{'filename':str(out/'normal-ui-native.png'),'format':'png'})
-  qmp('input-send-event',{'events':[{'type':'abs','data':{'axis':'x','value':int(300/1206*32767)}},{'type':'abs','data':{'axis':'y','value':int(2500/2622*32767)}},{'type':'btn','data':{'down':True,'button':'left'}},{'type':'btn','data':{'down':False,'button':'left'}}]});time.sleep(.4)
+  qmp('input-send-event',{'events':[{'type':'abs','data':{'axis':'x','value':int(747/1206*32767)}},{'type':'abs','data':{'axis':'y','value':int(2481/2622*32767)}},{'type':'btn','data':{'down':True,'button':'left'}},{'type':'btn','data':{'down':False,'button':'left'}}]});time.sleep(.6)
   for key in ('slash','a','p','p','s'):
    qmp('input-send-event',{'events':[{'type':'key','data':{'down':True,'key':{'type':'qcode','data':key}}},{'type':'key','data':{'down':False,'key':{'type':'qcode','data':key}}}]});time.sleep(.1)
   qmp('screendump',{'filename':str(out/'keyboard-ui-native.png'),'format':'png'})
@@ -41,7 +42,7 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
   qmp('screendump',{'filename':str(out/'apps-reply-ui-native.png'),'format':'png'})
   for cycle in range(3):
    if cycle:
-    qmp('input-send-event',{'events':[{'type':'abs','data':{'axis':'x','value':int(300/1206*32767)}},{'type':'abs','data':{'axis':'y','value':int(2500/2622*32767)}},{'type':'btn','data':{'down':True,'button':'left'}},{'type':'btn','data':{'down':False,'button':'left'}}]});time.sleep(.4)
+    qmp('input-send-event',{'events':[{'type':'abs','data':{'axis':'x','value':int(747/1206*32767)}},{'type':'abs','data':{'axis':'y','value':int(2481/2622*32767)}},{'type':'btn','data':{'down':True,'button':'left'}},{'type':'btn','data':{'down':False,'button':'left'}}]});time.sleep(.6)
     for key in ('slash','a','p','p','s','ret'):
      qmp('input-send-event',{'events':[{'type':'key','data':{'down':True,'key':{'type':'qcode','data':key}}},{'type':'key','data':{'down':False,'key':{'type':'qcode','data':key}}}]});time.sleep(.1)
     time.sleep(2)
@@ -51,6 +52,9 @@ with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
    while log.read_text().count('EL0 frame presented')<cycle+2:time.sleep(.2);assert time.monotonic()<until,log.read_text()
    time.sleep(.3);qmp('screendump',{'filename':str(out/f'restarted-ui-{cycle+1}-native.png'),'format':'png'})
   pids=re.findall(r'protected EL0 executable loaded pid=(\d+)',log.read_text());assert len(set(pids))>=4,pids
+  text=log.read_text()
+  assert text.count('reason=requested-restart') == 3, text
+  assert 'reason=execution-timeout' not in text and 'Cannot load /system/ferrofluid' not in text, text
   shutil.copy2(out/'restarted-ui-3-native.png',out/'restarted-ui-native.png')
   print(log.read_text());print('Screenshots:',out)
  finally:

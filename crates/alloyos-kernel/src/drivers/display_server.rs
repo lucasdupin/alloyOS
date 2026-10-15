@@ -176,6 +176,16 @@ impl DisplayProxy {
         {
             if let Some(task) = self.task.as_ref() {
                 let code = task.exit_code();
+                if code == Some(-110) {
+                    let saved = *task.stack_pointer.lock();
+                    let start = task.kernel_stack.as_ptr() as usize;
+                    let end = start + task.kernel_stack.len();
+                    if saved >= start as u64 && saved <= end.saturating_sub(crate::arch::idt::IRQ_FRAME_SIZE) as u64 {
+                        // The task's Arc retains this kernel stack after expiry.
+                        let frame = unsafe { &*(saved as *const crate::arch::idt::TrapFrame) };
+                        crate::serial_println!("[crash] display-watchdog pc={:#x} lr={:#x}", frame.elr, frame.regs[30]);
+                    }
+                }
                 let reason = match code {
                     Some(-11) => "fault",
                     Some(-110) => "execution-timeout",

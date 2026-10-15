@@ -26,7 +26,11 @@ enum Commands {
         debug_shell: bool,
     },
     /// Rebuilds and packages protected executables without building the kernel
-    Processes { #[arg(long)] release: bool },
+    Processes {
+        #[arg(long)] release: bool,
+        /// Package into a separate image without changing a running guest's disk.
+        #[arg(long)] disk_image: Option<PathBuf>,
+    },
     /// Builds then launches alloyOS in QEMU (aarch64 virt)
     Run {
         #[arg(long)]
@@ -36,7 +40,7 @@ enum Commands {
         /// Attach a packaged Forge model to the UI guest
         #[arg(long)]
         model_image: Option<PathBuf>,
-        /// Guest RAM; defaults to 16G with a model, otherwise 256M
+        /// Guest RAM; defaults to 16G with a model, otherwise 512M
         #[arg(long)]
         memory: Option<String>,
         /// Cloud credential environment references (never key values)
@@ -106,7 +110,7 @@ impl QemuHarness {
             .arg("-display")
             .arg("none")
             .arg("-m")
-            .arg("256M")
+            .arg("512M")
             .arg("-no-reboot")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -489,9 +493,11 @@ fn attach_cloud_credentials(command: &mut Command, root: &Path, mut env_names: V
 
 fn run_qemu(release: bool, debug_shell: bool, model_image: Option<PathBuf>, memory: Option<String>, auth_env: Vec<String>, auth_file: Vec<PathBuf>) -> Result<()> {
     let forge_mode = model_image.is_some();
-    let memory = memory.unwrap_or_else(|| if model_image.is_some() { "16G" } else { "256M" }.into());
+    let memory = memory.unwrap_or_else(|| if model_image.is_some() { "16G" } else { "512M" }.into());
     if model_image.is_some() {
         validate_forge_launch(&memory, model_image.as_deref(), 120)?;
+    } else if parse_ram(&memory)? < 512u64 << 20 {
+        return Err(anyhow!("Standard guest RAM must be at least 512 MiB"));
     }
     let workspace_root = get_workspace_root()?;
     let kernel_image = build_crates_mode(release, debug_shell, model_image.is_some())?;
@@ -627,7 +633,7 @@ fn run_e2e_tests(kernel_image: &Path, overall_timeout: Duration) -> Result<()> {
     println!("[xtask] [TEST 2/10] e2e_memory_init...");
     harness
         .expect_output(
-            "[mm] Frame allocator and 160 MiB kernel heap online.",
+            "[mm] Frame allocator and 256 MiB kernel heap online.",
             Duration::from_secs(10),
         )
         .context("e2e_memory_init failed")?;
@@ -779,12 +785,23 @@ fn run_ci() -> Result<()> {
     Ok(())
 }
 
+fn parse_ram(memory: &str) -> Result<u64> {
+    let scale = match memory.as_bytes().last() {
+        Some(b'M' | b'm') => 1u64 << 20,
+        Some(b'G' | b'g') => 1u64 << 30,
+        _ => return Err(anyhow!("RAM must be a positive integer followed by M or G")),
+    };
+    let digits = &memory[..memory.len() - 1];
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(anyhow!("invalid RAM size"));
+    }
+    digits.parse::<u64>().ok().and_then(|n| n.checked_mul(scale)).filter(|n| *n > 0)
+        .ok_or_else(|| anyhow!("invalid RAM size"))
+}
+
 fn validate_forge_launch(memory: &str, image: Option<&Path>, timeout: u64) -> Result<()> {
     if timeout == 0 || timeout > 3600 { return Err(anyhow!("timeout must be 1..3600 seconds")); }
-    let (digits, unit) = memory.split_at(memory.len().saturating_sub(1));
-    let scale = match unit { "M" | "m" => 1u64 << 20, "G" | "g" => 1u64 << 30, _ => return Err(anyhow!("RAM must be a positive integer followed by M or G")) };
-    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) { return Err(anyhow!("invalid RAM size")); }
-    let bytes = digits.parse::<u64>().ok().and_then(|n| n.checked_mul(scale)).filter(|n| *n > 0).ok_or_else(|| anyhow!("invalid RAM size"))?;
+    let bytes = parse_ram(memory)?;
     let minimum = if image.is_some() { 16u64 << 30 } else { 4u64 << 30 };
     if bytes < minimum || bytes > 31u64 << 30 { return Err(anyhow!("Forge RAM must be {}..31 GiB", minimum >> 30)); }
     if let Some(path) = image {
@@ -812,9 +829,10 @@ fn main() -> Result<()> {
             println!("[xtask] Kernel built: {}", image.display());
             Ok(())
         }
-        Commands::Processes { release } => {
+        Commands::Processes { release, disk_image } => {
             let root=get_workspace_root()?;build_processes(&root,release)?;
-            let disk=get_cobaltfs_image_path(&root,release);ensure_cobaltfs_image(&disk)?;package_processes(&root,release,&disk)
+            let disk=disk_image.unwrap_or_else(|| get_cobaltfs_image_path(&root,release));
+            ensure_cobaltfs_image(&disk)?;package_processes(&root,release,&disk)
         }
         Commands::Run { release, debug_shell, model_image, memory, auth_env, auth_file } => run_qemu(release, debug_shell, model_image, memory, auth_env, auth_file),
         Commands::Test {
@@ -859,6 +877,15 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ram_parser_rejects_invalid_and_unicode_sizes_without_panicking() {
+        assert_eq!(parse_ram("512M").unwrap(), 512u64 << 20);
+        assert_eq!(parse_ram("16g").unwrap(), 16u64 << 30);
+        for value in ["", "0M", "-1G", "M", "1💥", "💥M", "18446744073709551615G"] {
+            assert!(parse_ram(value).is_err(), "accepted {value}");
+        }
+    }
 
     #[test]
     fn parse_build_command() {

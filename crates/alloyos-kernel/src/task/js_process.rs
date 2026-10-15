@@ -80,6 +80,26 @@ pub fn stop(app_id: &str) {
         CHANNELS.lock().remove(&task.pid);
     }
 }
+// Idle interpreters are a cache, not a reason to fail a new app invocation.
+// Reclaim one and yield so the scheduler can release its private page backing.
+fn retire_idle_app() -> bool {
+    let retired = {
+        let mut apps = APPS.lock();
+        let channels = CHANNELS.lock();
+        let id = apps.iter().find(|(_, task)| channels.get(&task.pid).is_some_and(|c| !c.active))
+            .map(|(id, _)| id.clone());
+        drop(channels);
+        id.and_then(|id| apps.remove(&id))
+    };
+    let Some(task) = retired else { return false; };
+    task.set_exit_code(-125);
+    CHANNELS.lock().remove(&task.pid);
+    drop(task);
+    #[cfg(all(target_arch = "aarch64", target_os = "none"))]
+    super::scheduler::sleep_until(crate::drivers::rng::monotonic_time_ns().saturating_add(1_000_000));
+    true
+}
+
 pub fn invoke(
     app_id: &str,
     source: &str,
@@ -130,10 +150,13 @@ pub fn invoke(
             );
         }
         let bytes = executable()?;
-        let task = Arc::new(
-            Task::user_executable(&bytes, 4096, 16384)
-                .map_err(|e| error(format!("App executable load: {e:?}")))?,
-        );
+        let task = loop {
+            match Task::user_executable(&bytes, 4096, 16384) {
+                Ok(task) => break Arc::new(task),
+                Err(super::app_process::Error::MemoryLimit) if retire_idle_app() => continue,
+                Err(error) => return Err(self::error(format!("App executable load: {error:?}"))),
+            }
+        };
         CHANNELS.lock().insert(
             task.pid,
             Channel {

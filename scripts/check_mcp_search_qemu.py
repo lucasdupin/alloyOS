@@ -57,7 +57,7 @@ def main():
         auth.write_bytes(('GEMINI_API_KEY=' + key + '\0').encode())
         auth.chmod(0o600)
         command = ['qemu-system-aarch64', '-M', 'virt', '-accel', 'hvf', '-cpu', 'host',
-                   '-kernel', str(args.kernel), '-m', '256M', '-display', 'none',
+                   '-kernel', str(args.kernel), '-m', '512M', '-display', 'none',
                    '-monitor', 'none', '-serial', 'stdio', '-no-reboot',
                    '-device', 'virtio-gpu-device,xres=1206,yres=2622',
                    '-fw_cfg', f'name=opt/alloyos/auth,file={auth}']

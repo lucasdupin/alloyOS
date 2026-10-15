@@ -11,9 +11,10 @@ parser.add_argument('--skip-build', action='store_true')
 parser.add_argument('--kernel', type=pathlib.Path)
 parser.add_argument('--disk', type=pathlib.Path)
 parser.add_argument('--accel', choices=['tcg', 'hvf'], default='tcg')
-parser.add_argument('--gic-version', choices=['2', '3'], default='2')
+parser.add_argument('--gic-version', choices=['2', '3'])
 parser.add_argument('--timeout', type=int, default=90)
 args = parser.parse_args()
+args.gic_version = args.gic_version or ('3' if args.accel == 'hvf' else '2')
 root = pathlib.Path(__file__).resolve().parents[1]
 if not args.skip_build:
     subprocess.run(['cargo', 'run', '-p', 'xtask', '--', 'build', '--release'], cwd=root, check=True)
@@ -30,7 +31,7 @@ command = ['qemu-system-aarch64', '-M', f'virt,gic-version={args.gic_version}',
            '-device', 'virtio-blk-device,drive=hd0',
            '-device', 'virtio-gpu-device,xres=1206,yres=2622',
            '-device', 'virtio-keyboard-device', '-device', 'virtio-tablet-device',
-           '-serial', 'stdio', '-display', 'none', '-m', '256M', '-no-reboot',
+           '-serial', 'stdio', '-display', 'none', '-m', '512M', '-no-reboot',
            '-snapshot']
 markers = [b'APP-PROCESS: hostile package parser limits and host recovery PASS',
            b'APP-PROCESS: persistent EL0 handler and filesystem IPC PASS',
@@ -53,7 +54,7 @@ try:
             if not chunk:
                 break
             output += chunk
-            if all(marker in output for marker in markers) or b'panicked at' in output:
+            if all(marker in output for marker in markers) or b'[crash] kernel-panic' in output:
                 break
     print(output.decode(errors='replace'))
     missing = [marker.decode() for marker in markers if marker not in output]

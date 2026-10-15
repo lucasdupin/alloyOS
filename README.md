@@ -193,3 +193,6 @@ The `test --timeout` option bounds the QEMU suite (default: 60 seconds).
 UI screenshot tests compare committed PNG baselines and generate visual diffs
 on failure. See [the screenshot test guide](tests/README.md) for running them
 and explicitly reviewing baseline updates.
+
+The standard QEMU guest uses 512 MiB RAM and a 256 MiB kernel heap for the
+protected display and cached app processes. Model-enabled runs default to 16 GiB.

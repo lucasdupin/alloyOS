@@ -101,13 +101,13 @@ pub extern "C" fn aarch64_kernel_entry() -> ! {
     // 3. Print boot banner
     serial_println!("alloyOS v0.1.0 booting...");
 
-    // 4. Init memory (bitmap frame allocator + 4 MiB kernel heap)
+    // 4. Init memory (bitmap frame allocator + bounded kernel heap)
     // Slint and embedded fonts make the image larger than the old fixed 4 MiB
     // reservation. Reserve the entire linked image and stack before allocating.
     unsafe extern "C" { static __kernel_end: u8; }
     let usable_start = (core::ptr::addr_of!(__kernel_end) as u64 + 4095) & !4095;
     #[cfg(not(feature = "forge"))]
-    let allocator_end = 0x5000_0000;
+    let allocator_end = 0x6000_0000; // 512 MiB standard guest
     #[cfg(feature = "forge")]
     let allocator_end = 0x8000_0000;
     assert!(usable_start < allocator_end, "kernel exceeds QEMU RAM");

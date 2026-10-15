@@ -23,7 +23,7 @@ def main():
         auth.write_bytes(b'ANTHROPIC_API_KEY=fixture-key\0GEMINI_API_KEY=fixture-key\0OPENAI_API_KEY=fixture-key\0')
         auth.chmod(0o600)
         command = ['qemu-system-aarch64', '-M', 'virt', '-accel', 'hvf', '-cpu', 'host',
-                   '-kernel', str(args.kernel), '-m', '256M', '-display', 'none', '-monitor', 'none',
+                   '-kernel', str(args.kernel), '-m', '512M', '-display', 'none', '-monitor', 'none',
                    '-device', 'virtio-gpu-device,xres=1206,yres=2622', '-serial', 'stdio',
                    '-fw_cfg', f'name=opt/alloyos/auth,file={auth}', '-no-reboot']
         process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,

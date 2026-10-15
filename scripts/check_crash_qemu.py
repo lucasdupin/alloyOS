@@ -19,7 +19,7 @@ saved_elf = args.log.with_suffix(".elf")
 shutil.copyfile(elf, saved_elf)
 process = subprocess.Popen(['qemu-system-aarch64', '-M', 'virt', '-accel', args.accel,
                             '-cpu', 'host' if args.accel == 'hvf' else 'cortex-a72',
-                            '-kernel', str(elf), '-m', '256M', '-serial', 'stdio',
+                            '-kernel', str(elf), '-m', '512M', '-serial', 'stdio',
                             '-display', 'none', '-monitor', 'none', '-no-reboot'],
                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 selector = selectors.DefaultSelector()

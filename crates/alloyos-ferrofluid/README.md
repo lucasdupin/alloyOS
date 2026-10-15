@@ -11,7 +11,7 @@ scanout. The default graphical boot launches this window after the splash.
 `src/system_ui.rs` installs Slint's platform, creates `MinimalSoftwareWindow`,
 loads `ui/system-ui.slint`, and renders into a persistent RGB buffer. Only damaged
 pixels are converted into opaque ARGB8888 for GPU presentation. Fonts and widget
-assets are embedded at build time, using the imported Quicksand variable font and the Fluent dark style. Quicksand
+assets are embedded at build time, using the imported Quicksand Medium (500) and Bold (700) static fonts and the Fluent dark style. Quicksand
 is the window default for text and standard controls, with medium (500) body
 text and bold (700) headings.
 The current display uses 1206x2622 physical pixels at a fixed 3x scale, configured
@@ -115,3 +115,7 @@ with lower lobes bleeding off-screen behind the mic;
 `set_voice_level(u16)` accepts a normalized 0..1000 microphone volume envelope.
 The view smooths level changes, uses phase motion without FFT, and keeps phase
 static with reduced motion enabled. `--voice` previews a representative loud frame.
+
+Regenerate the static faces from the original variable font with
+`python3 scripts/generate-static-fonts.py` (requires fonttools). Fixed keyboard
+label sizes keep tap feedback from multiplying the global bitmap font sizes.

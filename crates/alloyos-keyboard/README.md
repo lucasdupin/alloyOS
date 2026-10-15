@@ -6,7 +6,7 @@ scroll animation, dismissal, typed key actions, and liquid displacement map.
 Character taps also lift a large white preview above the finger on a small
 borderless dark surface, then fade it away. The preview holds long enough for
 quick taps, keeps its original character when Shift resets, and leaves hit
-areas fixed. Action keys keep their label expansion without a character popup.
+areas fixed. Text labels keep fixed font sizes; action icons retain their tap expansion.
 It does not depend on Ferrofluid, a transcript, an editor, or an AI provider.
 
 `ui/keyboard.slint` exports `SoftKeyboard`. The host supplies `requested`

@@ -10,7 +10,7 @@ component SoftKey inherits Rectangle {
     min-width: 0px;
     horizontal-stretch: 1;
     height: 44px;
-    // Keep the hit target fixed while the label swells.
+    // Fixed text sizes avoid embedding animation sizes for the entire UI.
     border-width: 0px;
     background: touch.pressed || root.tap-pulse ? AlloyPalette.surface : transparent;
     property <bool> tap-pulse: false;
@@ -28,7 +28,7 @@ component SoftKey inherits Rectangle {
     Text {
         text: root.icon-only ? "" : root.label;
         color: AlloyPalette.text;
-        font-size: (root.label == "Shift" || root.label == "SHIFT" || root.label == "Del" ? 12px : 17px) * root.press-scale;
+        font-size: root.label == "Shift" || root.label == "SHIFT" || root.label == "Del" ? 12px : 17px;
         horizontal-alignment: center;
         vertical-alignment: center;
     }

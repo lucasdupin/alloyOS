@@ -1,6 +1,7 @@
 import { SoftKeyboard, AlloyPalette } from "@alloyos-keyboard/keyboard.slint";
 import { VerticalBox, HorizontalBox, ScrollView } from "std-widgets.slint";
-import "../../../assets/fonts/Quicksand.ttf";
+import "../../../assets/fonts/Quicksand-Medium.ttf";
+import "../../../assets/fonts/Quicksand-Bold.ttf";
 import { QuicksandGlyphCoverage } from "../../../assets/fonts/quicksand-coverage.slint";
 
 // Alloy controls keep focus and selection silver on the embedded renderer.
@@ -150,6 +151,7 @@ component InlineMarkdown inherits Rectangle {
         color: root.text-color;
         font-size: root.font-size;
         font-weight: root.strong || word.strong ? 700 : 500;
+        font-family: root.strong || word.strong ? "Quicksand Bold" : "Quicksand";
         property <length> measured-width: measure.preferred-width - sentinel.preferred-width;
         property <length> measured-height: self.preferred-height;
         // A sentinel makes Slint include trailing spaces in the measured advance.
@@ -158,12 +160,14 @@ component InlineMarkdown inherits Rectangle {
             text: word.text + "M";
             font-size: root.font-size;
             font-weight: root.strong || word.strong ? 700 : 500;
+        font-family: root.strong || word.strong ? "Quicksand Bold" : "Quicksand";
         }
         sentinel := Text {
             visible: false;
             text: "M";
             font-size: root.font-size;
             font-weight: root.strong || word.strong ? 700 : 500;
+        font-family: root.strong || word.strong ? "Quicksand Bold" : "Quicksand";
         }
         init => { root.words = MarkdownLayout.layout-words(root.words, index, self.measured-width / 1px, self.measured-height / 1px, root.width / 1px); }
         changed measured-width => {
@@ -210,6 +214,7 @@ component MarkdownText inherits VerticalLayout {
             color: block.quote ? root.text-color.darker(15%) : root.text-color;
             font-size: root.body-size + (block.heading == 1 ? 8px : block.heading == 2 ? 5px : block.heading > 0 ? 2px : 0px);
             font-weight: block.heading > 0 || block.strong ? 700 : 500;
+            font-family: block.heading > 0 || block.strong ? "Quicksand Bold" : "Quicksand";
             wrap: word-wrap;
         }
         inline := InlineMarkdown {
@@ -252,7 +257,7 @@ component TileCard inherits Rectangle {
         padding-bottom: 6px;
         spacing: 10px;
         HorizontalBox {
-            Text { text: root.tile.title; color: AlloyPalette.text; font-size: 20px; font-weight: 700; wrap: word-wrap; horizontal-stretch: 1; min-width: 0px; }
+            Text { text: root.tile.title; color: AlloyPalette.text; font-size: 20px; font-weight: 700; font-family: "Quicksand Bold"; wrap: word-wrap; horizontal-stretch: 1; min-width: 0px; }
             AlloyButton {
                 flat: true;
                 icon-only: true;
@@ -407,9 +412,8 @@ component ThinkingIndicator inherits Rectangle {
 
 component Logotype inherits Text {
     text: "alloyOS";
-    font-family: "Quicksand";
     font-size: 26px;
-    font-weight: 700;
+    font-weight: 700; font-family: "Quicksand Bold";
     color: AlloyPalette.text;
 }
 
@@ -819,7 +823,7 @@ export component SystemUi inherits Window {
                     padding: 16px;
                     spacing: 16px;
                     HorizontalBox {
-                        Text { text: "Pinned"; font-size: 24px; font-weight: 700; color: AlloyPalette.text; vertical-alignment: center; horizontal-stretch: 1; }
+                        Text { text: "Pinned"; font-size: 24px; font-weight: 700; font-family: "Quicksand Bold"; color: AlloyPalette.text; vertical-alignment: center; horizontal-stretch: 1; }
                         AlloyButton { text: "×"; flat: true; button-label: "Close pinned tiles"; clicked => { root.sidebar-open = false; } }
                     }
                     pin-scroll := ScrollView {

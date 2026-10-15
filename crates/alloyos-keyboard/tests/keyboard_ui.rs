@@ -87,14 +87,10 @@ fn standalone_keyboard_types_switches_pages_and_dismisses() {
     assert_eq!(preview_ink.get(), 0);
     tap(75.0, 2073.0); // q; press and release in one frame
     render(576);
-    let expanded_ink = render(672);
+    render(672);
     assert!(
         preview_ink.get() > 100,
         "quick tap shows a large character above the key"
-    );
-    assert!(
-        expanded_ink > resting_ink,
-        "quick tap must visibly enlarge rendered q: {resting_ink} -> {expanded_ink}"
     );
     render(752);
     let settled_ink = render(960);

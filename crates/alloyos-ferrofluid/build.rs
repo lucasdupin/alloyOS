@@ -3,17 +3,6 @@ fn main() {
         println!("cargo:rustc-link-arg-bin=ferrofluid=-T{}/process.ld", std::env::var("CARGO_MANIFEST_DIR").unwrap());
     }
 
-    let sizes =
-        std::env::var("DEP_ALLOYOS_KEYBOARD_FONT_SIZES").expect("keyboard animation font sizes");
-    let existing = std::env::var("SLINT_FONT_SIZES").unwrap_or_default();
-    std::env::set_var(
-        "SLINT_FONT_SIZES",
-        if existing.is_empty() {
-            sizes
-        } else {
-            format!("{existing},{sizes}")
-        },
-    );
     slint_build::compile_with_config(
         "ui/system-ui.slint",
         slint_build::CompilerConfiguration::new()

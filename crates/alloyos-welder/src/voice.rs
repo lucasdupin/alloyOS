@@ -43,7 +43,7 @@ impl AgentRuntime {
                 instruction.push('\n');
             }
         }
-        let declarations: Vec<Value> = self.tool_registry.specs().iter().map(|tool| {
+        let declarations: Vec<Value> = self.model_tool_specs().iter().map(|tool| {
             let mut properties = serde_json::Map::new();
             let mut required = Vec::new();
             for parameter in &tool.parameters {

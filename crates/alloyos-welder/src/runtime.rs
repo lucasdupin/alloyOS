@@ -304,6 +304,7 @@ impl AgentRuntime {
     fn messages_with_knowledge_context(&mut self, user_turn: &str) -> Vec<Message> {
         let mut messages = self.history.clone();
         messages.insert(0, Message::system(crate::personality::system_prompt(self.agent_name(), crate::personality::ConversationMode::Text)));
+        if let Some(ctx) = self.setup_model_context() { messages.insert(1, Message::system(ctx)); }
         if let Some(ctx) = self.tool_registry.build_turn_knowledge_context(user_turn) {
             let insert_idx = messages.len().saturating_sub(1);
             messages.insert(insert_idx, Message::system(ctx));
@@ -728,14 +729,14 @@ impl AgentRuntime {
             }
         }
 
-        let report = self.tool_registry.learn_from_conversation_turn(trimmed);
-        if report.has_changes() {
-            self.refresh_knowledge_tile_if_present();
+        if !self.setup_active() {
+            let report = self.tool_registry.learn_from_conversation_turn(trimmed);
+            if report.has_changes() { self.refresh_knowledge_tile_if_present(); }
         }
 
         self.history.push(Message::user(trimmed));
         let messages = self.messages_with_knowledge_context(trimmed);
-        let tools_snapshot = self.tool_registry.specs().to_vec();
+        let tools_snapshot = self.model_tool_specs();
 
         self.turn_tool_calls = 0;
         self.turn_tool_outputs.clear();
@@ -772,16 +773,16 @@ impl AgentRuntime {
             return self.handle_console_input(input, &mut |_| {}).map(Some);
         }
 
-        let report = self.tool_registry.learn_from_conversation_turn(trimmed);
-        if report.has_changes() {
-            self.refresh_knowledge_tile_if_present();
+        if !self.setup_active() {
+            let report = self.tool_registry.learn_from_conversation_turn(trimmed);
+            if report.has_changes() { self.refresh_knowledge_tile_if_present(); }
         }
 
         self.history.push(Message::user(trimmed));
         let messages = self.messages_with_knowledge_context(trimmed);
         self.turn_tool_calls = 0;
         self.turn_tool_outputs.clear();
-        let tools = self.tool_registry.specs().to_vec();
+        let tools = self.model_tool_specs();
         if let Err(error) = self.gateway.start_chat_with_tools(&messages, &tools) {
             self.history.pop();
             return Err(error);
@@ -805,8 +806,10 @@ impl AgentRuntime {
     pub fn record_voice_turn(&mut self, user: &str, assistant: &str) {
         if !user.trim().is_empty() {
             self.history.push(Message::user(user));
-            let report = self.tool_registry.learn_from_conversation_turn(user);
-            if report.has_changes() { self.refresh_knowledge_tile_if_present(); }
+            if !self.setup_active() {
+                let report = self.tool_registry.learn_from_conversation_turn(user);
+                if report.has_changes() { self.refresh_knowledge_tile_if_present(); }
+            }
         }
         if !assistant.trim().is_empty() {
             self.history.push(Message::assistant(assistant));
@@ -819,6 +822,7 @@ impl AgentRuntime {
         self.poll_agent_tool(call)
     }
     fn poll_agent_tool(&mut self, call: &alloyos_forge::provider::ToolCall) -> Poll<Result<ToolExecutionOutput, AiError>> {
+        if call.name == "setup_answer" { return Poll::Ready(Ok(self.execute_setup_tool(call))); }
         match self.tool_registry.poll_execute_tool(call, &mut self.ui_synthesizer) {
             Poll::Ready(Err(error @ (AiError::InvalidToolArguments(_) | AiError::UnknownTool(_)))) => Poll::Ready(Ok(ToolExecutionOutput {
                 tool_name: call.name.clone(),
@@ -841,7 +845,7 @@ impl AgentRuntime {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
                 Poll::Ready(Ok(())) => {
-                    let tools = self.tool_registry.specs().to_vec();
+                    let tools = self.model_tool_specs();
                     let user = self.history.iter().rev().find(|message| message.role == alloyos_forge::provider::Role::User).map(|message| message.content.clone()).unwrap_or_default();
                     let messages = self.messages_with_knowledge_context(&user);
                     return match self.gateway.start_chat_with_tools(&messages, &tools) {

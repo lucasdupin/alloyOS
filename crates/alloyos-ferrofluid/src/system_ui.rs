@@ -1151,7 +1151,7 @@ mod tests {
     // Only one test owns Slint's process-wide, single-context platform.
     fn assert_long_composer_scrolling(ui: &mut FerrofluidSystemUi) {
         for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
-            ui.handle_input(InputEvent { kind, code: 0x110, x: 925, y: 2454 });
+            ui.handle_input(InputEvent { kind, code: 0x110, x: 771, y: 2454 });
         }
         let text = "This is a long chat message that should keep the newest characters visible while typing. ".repeat(4);
         for ch in text.chars() { ui.ui.invoke_soft_key(ch.to_string().into()); }
@@ -1379,7 +1379,7 @@ mod tests {
         // Voice intent starts only on an explicit mic tap; typing emits mute.
         assert!(!ui.take_voice_toggle());
         for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
-            ui.handle_input(InputEvent { kind, code: 0x110, x: 281, y: 2454 });
+            ui.handle_input(InputEvent { kind, code: 0x110, x: 459, y: 2454 });
         }
         assert!(ui.take_voice_toggle());
         assert!(!ui.take_voice_toggle());
@@ -1498,7 +1498,7 @@ mod tests {
             ui.handle_input(InputEvent {
                 kind,
                 code: 0x110,
-                x: 925,
+                x: 771,
                 y: 2454,
             });
         }
@@ -1595,7 +1595,7 @@ mod tests {
             ui.handle_input(InputEvent {
                 kind,
                 code: 0x110,
-                x: 925,
+                x: 771,
                 y: 2454,
             });
         }
@@ -1649,7 +1649,7 @@ mod tests {
             ui.handle_input(InputEvent {
                 kind,
                 code: 0x110,
-                x: 925,
+                x: 771,
                 y: 2454,
             });
         }

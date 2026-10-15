@@ -355,5 +355,31 @@ fn system_ui_screenshots() {
     assert!(ui.chat_content_bottom() <= ui.chat_viewport_height(),
         "the rendered message and loading indicator must fit above the keyboard at the scroll limit");
     assert!((ui.chat_scroll_offset() - ui.chat_scroll_maximum()).abs() < 1.0);
+    // Capture the real fade/slide while the original metaballs merge.
+    pointer(&mut ui, InputEventKind::PointerButtonDown, 80, 2480);
+    pointer(&mut ui, InputEventKind::PointerButtonUp, 80, 2480);
+    for frame in 0..=60 { ui.render(Duration::from_millis(20000 + frame * 16)); }
+    ui.set_reply_pending(false);
+    ui.set_chat_items(&[]);
+    ui.set_transcript("");
+    let voice_ui = &mut ui;
+    voice_ui.render(Duration::from_millis(21000));
+    voice_ui.set_voice_state(alloyos_mcp::display::VoiceState::Listening, "", "");
+    voice_ui.render(Duration::from_millis(21000));
+    voice_ui.render(Duration::from_millis(21080));
+    snapshot(&mut suite, "voice-controls-entering", &voice_ui);
+    let entering = voice_ui.pixels().to_vec();
+    voice_ui.render(Duration::from_millis(21080));
+    assert_eq!(voice_ui.pixels(), entering.as_slice(), "fade/slide must not drift at a fixed timestamp");
+    voice_ui.render(Duration::from_millis(21480));
+    snapshot(&mut suite, "voice-controls-ready", &voice_ui);
+    assert_ne!(voice_ui.pixels(), entering.as_slice(), "voice controls must animate over time");
+    voice_ui.set_output_muted(true);
+    voice_ui.render(Duration::from_millis(21480));
+    snapshot(&mut suite, "voice-controls-muted", &voice_ui);
+    voice_ui.set_voice_state(alloyos_mcp::display::VoiceState::Off, "", "");
+    voice_ui.render(Duration::from_millis(21480));
+    voice_ui.render(Duration::from_millis(21560));
+    snapshot(&mut suite, "voice-controls-leaving", &voice_ui);
     suite.finish();
 }

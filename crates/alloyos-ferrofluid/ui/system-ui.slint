@@ -129,6 +129,7 @@ export struct MarkdownBlockView {
 
 export struct ChatItemView {
     is-tile: bool,
+    is-user: bool,
     text: string,
     blocks: [MarkdownBlockView],
     tile: TileView,
@@ -180,12 +181,15 @@ component InlineMarkdown inherits Rectangle {
 }
 
 component MarkdownText inherits VerticalLayout {
+    in property <length> body-size: 16px;
+    in property <color> text-color: AlloyPalette.body;
     in property <string> text;
     in property <[MarkdownBlockView]> blocks;
     property <bool> formatted: MarkdownLayout.has-formatting(root.text);
     if !root.formatted: Text {
         text: root.text;
-        color: AlloyPalette.body;
+        font-size: root.body-size;
+        color: root.text-color;
         wrap: word-wrap;
         horizontal-alignment: left;
         vertical-alignment: top;
@@ -202,8 +206,8 @@ component MarkdownText inherits VerticalLayout {
             y: block.code ? 6px : 0px;
             width: parent.width - self.x * 2;
             text: block.text;
-            color: block.quote ? AlloyPalette.muted : AlloyPalette.body;
-            font-size: block.heading == 1 ? 24px : block.heading == 2 ? 21px : block.heading > 0 ? 18px : 16px;
+            color: block.quote ? root.text-color.darker(15%) : root.text-color;
+            font-size: root.body-size + (block.heading == 1 ? 8px : block.heading == 2 ? 5px : block.heading > 0 ? 2px : 0px);
             font-weight: block.heading > 0 || block.strong ? 700 : 500;
             wrap: word-wrap;
         }
@@ -213,8 +217,8 @@ component MarkdownText inherits VerticalLayout {
             width: parent.width - self.x * 2;
             source: block.words;
             strong: block.heading > 0;
-            text-color: block.quote ? AlloyPalette.muted : AlloyPalette.body;
-            font-size: block.heading == 1 ? 24px : block.heading == 2 ? 21px : block.heading > 0 ? 18px : 16px;
+            text-color: block.quote ? root.text-color.darker(15%) : root.text-color;
+            font-size: root.body-size + (block.heading == 1 ? 8px : block.heading == 2 ? 5px : block.heading > 0 ? 2px : 0px);
         }
     }
 }
@@ -585,7 +589,12 @@ export component SystemUi inherits Window {
                                     }
                                 }
                                 for item in root.chat-items: VerticalLayout {
-                                    if !item.is-tile: MarkdownText { text: item.text; blocks: item.blocks; }
+                                    if !item.is-tile: MarkdownText {
+                                        text: item.text;
+                                        blocks: item.blocks;
+                                        body-size: item.is-user ? 16px : 20px;
+                                        text-color: item.is-user ? AlloyPalette.muted : AlloyPalette.body;
+                                    }
                                     if item.is-tile: TileCard {
                                         tile: item.tile; pending: root.reply-pending;
                                         pinned: root.tile-is-pinned(item.tile.tile-id, root.dashboard-pins);

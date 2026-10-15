@@ -881,14 +881,23 @@ fn chat_item_views(items: &[ChatItem]) -> ModelRc<ChatItemView> {
         items
             .iter()
             .map(|item| match item {
-                ChatItem::Text(text) => ChatItemView {
-                    is_tile: false,
-                    text: text.as_str().into(),
-                    blocks: markdown_text(text),
-                    tile: TileView::default(),
+                ChatItem::Text(text) => {
+                    let body = ["You:", "Welder:", "Alloy:"]
+                        .iter()
+                        .find_map(|prefix| text.strip_prefix(prefix))
+                        .map(str::trim_start)
+                        .unwrap_or(text);
+                    ChatItemView {
+                        is_tile: false,
+                        is_user: text.starts_with("You:"),
+                        text: body.into(),
+                        blocks: markdown_text(body),
+                        tile: TileView::default(),
+                    }
                 },
                 ChatItem::Tile(tile) => ChatItemView {
                     is_tile: true,
+                    is_user: false,
                     text: "".into(),
                     blocks: ModelRc::default(),
                     tile: tile_to_view(tile),

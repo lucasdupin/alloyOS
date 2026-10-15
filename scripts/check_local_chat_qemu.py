@@ -15,18 +15,23 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--kernel', type=Path, required=True)
     parser.add_argument('--model-image', type=Path, required=True)
+    parser.add_argument('--disk', type=Path, default=Path(__file__).resolve().parents[1] / 'target/aarch64-unknown-none/release/cobaltfs.img')
     parser.add_argument('--memory', default='16G', help='Guest RAM (model launches require 16..31 GiB)')
     parser.add_argument('--complete', action='store_true', help='Wait for completion and report guest inference timings')
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='mlc-') as directory:
         qmp_path = str(Path(directory) / 'qmp.sock')
         command = ['qemu-system-aarch64', '-M', 'virt', '-accel', 'hvf', '-cpu', 'host',
-                   '-kernel', str(args.kernel), '-m', args.memory, '-display', 'none', '-monitor', 'none',
-                   '-device', 'virtio-gpu-device,xres=1206,yres=2622',
-                   '-device', 'virtio-keyboard-device', '-device', 'virtio-tablet-device',
-                   '-serial', 'stdio', '-qmp', f'unix:{qmp_path},server=on,wait=off',
-                   '-drive', f'file={args.model_image.resolve()},if=none,format=raw,readonly=on,id=model',
-                   '-device', 'virtio-blk-device,drive=model', '-no-reboot']
+                   '-kernel', str(args.kernel), '-m', args.memory, '-display', 'none', '-monitor', 'none']
+        if args.disk and args.disk.exists():
+            command.extend(['-drive', f'file={args.disk.resolve()},if=none,format=raw,id=hd0',
+                            '-device', 'virtio-blk-device,drive=hd0'])
+        command.extend([
+            '-device', 'virtio-gpu-device,xres=1206,yres=2622',
+            '-device', 'virtio-keyboard-device', '-device', 'virtio-tablet-device',
+            '-serial', 'stdio', '-qmp', f'unix:{qmp_path},server=on,wait=off',
+            '-drive', f'file={args.model_image.resolve()},if=none,format=raw,readonly=on,id=model',
+            '-device', 'virtio-blk-device,drive=model', '-no-reboot'])
         process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, env={k: v for k, v in os.environ.items()
                                    if k not in ('ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'OPENAI_API_KEY', 'HF_TOKEN')})
@@ -81,7 +86,7 @@ def main():
             qmp('input-send-event', {'events': [
                 {'type': 'key', 'data': {'down': True, 'key': {'type': 'qcode', 'data': value}}},
                 {'type': 'key', 'data': {'down': False, 'key': {'type': 'qcode', 'data': value}}}]})
-            time.sleep(.05)
+            time.sleep(.1)
 
         try:
             deadline = time.monotonic() + 30
@@ -100,24 +105,26 @@ def main():
                 assert time.monotonic() < deadline, 'Model did not initialize'
             assert any('[forge] Local model ready.' in item for item in log)
             print('Real Gemma model loaded; submitting keyboard chat.', flush=True)
+            time.sleep(1)
             qmp('input-send-event', {'events': [
                 {'type': 'abs', 'data': {'axis': 'x', 'value': int(300 / 1206 * 32767)}},
                 {'type': 'abs', 'data': {'axis': 'y', 'value': int(2500 / 2622 * 32767)}},
                 {'type': 'btn', 'data': {'down': True, 'button': 'left'}},
                 {'type': 'btn', 'data': {'down': False, 'button': 'left'}}]})
-            time.sleep(.3)
+            time.sleep(.5)
             # Cloud is the UI default; this check explicitly exercises Gemma.
             for code in ('slash', 'm', 'o', 'd', 'e', 'l', 'spc', 'l', 'o', 'c', 'a', 'l', 'ret'):
                 key(code)
-            time.sleep(.2)
+            time.sleep(.5)
             for letter in 'hellow':
                 key(letter)
             began = time.monotonic()
             key('ret')
+            time.sleep(1)
             before = status(101)
             assert before['generation_pending'], 'Typed message did not start local inference'
             key('d')  # Edit the next draft while inference is still running.
-            time.sleep(1)
+            time.sleep(1.5)
             after = status(102)
             assert after['ui_frames'] - before['ui_frames'] >= 30, 'Rendering stalled during local inference'
             assert after['ui_input_events'] > before['ui_input_events'], 'Keyboard input stalled during inference'

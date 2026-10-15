@@ -332,7 +332,9 @@ impl ForgeService {
                                 serde_json::from_str::<serde_json::Value>(&payload)
                             {
                                 status["ui_frames"] = serde_json::json!(self.ui_frames);
-                                status["ui_input_events"] = serde_json::json!(self.ui_input_events);
+                                status["ui_input_events"] = serde_json::json!(self
+                                    .ui_input_events
+                                    .max(GLOBAL_UI_INPUT_EVENTS.load(core::sync::atomic::Ordering::Relaxed)));
                                 status["inference_timing"] = serde_json::json!(super::forge_worker::timing());
                                 status["generation_pending"] = serde_json::json!(self
                                     .shared
@@ -365,6 +367,12 @@ impl ForgeService {
     pub fn note_ui_input(&mut self) {
         self.ui_input_events = self.ui_input_events.saturating_add(1);
     }
+}
+
+static GLOBAL_UI_INPUT_EVENTS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+pub fn record_ui_input() {
+    GLOBAL_UI_INPUT_EVENTS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
 impl ForgeService {

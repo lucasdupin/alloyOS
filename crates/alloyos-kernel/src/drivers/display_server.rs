@@ -492,6 +492,7 @@ pub fn syscall(
             let Some(e) = super::virtio_input::VIRTIO_INPUT.lock().poll_ui_event() else {
                 return -11;
             };
+            super::forge::record_ui_input();
             let mut b = [0u8; 16];
             b[0] = e.kind as u8;
             b[2..4].copy_from_slice(&e.code.to_le_bytes());

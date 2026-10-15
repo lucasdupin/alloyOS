@@ -358,7 +358,10 @@ fn gemini_3_8_flash_clock_tile_and_subsequent_chat_flow() {
     // ------------------------------------------------------------------------
     // Turn 3: Tile Refresh in Stream
     // ------------------------------------------------------------------------
-    // Advance uptime and refresh the embedded clock tile
+    // Supply an explicit RTC instant: uptime must never stand in for wall time.
+    let mut status = agent.tool_registry.system_status();
+    status.wall_clock_ms = Some(12_000_000);
+    agent.tool_registry.set_system_status(status);
     agent.tool_registry.tick_scheduler(12_000_000, None);
     let refresh_out = agent.refresh_tile("clock.now").expect("Refresh clock tile must succeed");
     let refreshed_tile = refresh_out

@@ -94,6 +94,22 @@ impl FerrofluidSystemUi {
         }))
         .map_err(|_| slint::PlatformError::Other("Slint platform already installed".into()))?;
         let ui = SystemUi::new()?;
+        ui.on_tile_is_pinned(|id, tiles| {
+            use slint::Model;
+            tiles.iter().any(|tile| tile.tile_id == id)
+        });
+        let weak = ui.as_weak();
+        ui.on_finish_unpin(move |id| {
+            use slint::Model;
+            if let Some(ui) = weak.upgrade() {
+                if ui.get_dashboard_pins().iter().any(|tile| tile.tile_id == id) {
+                    return;
+                }
+                let remaining: Vec<_> = ui.get_dashboard_tiles().iter()
+                    .filter(|tile| tile.tile_id != id).collect();
+                ui.set_dashboard_tiles(ModelRc::new(VecModel::from(remaining)));
+            }
+        });
         let size = PhysicalSize::new(width, height);
         window.dispatch_event(WindowEvent::ScaleFactorChanged {
             scale_factor: scale,
@@ -776,7 +792,21 @@ impl FerrofluidSystemUi {
 }
 
 fn update_dashboard(ui: &SystemUi, tiles: &[AppTile]) {
-    ui.set_dashboard_tiles(tile_views(tiles));
+    use slint::Model;
+    let pins = tile_views(tiles);
+    ui.set_dashboard_pins(pins.clone());
+    if !ui.get_sidebar_open() || ui.get_reduced_motion() {
+        ui.set_dashboard_tiles(pins);
+        return;
+    }
+    let mut displayed: Vec<_> = pins.iter().collect();
+    for (index, old) in ui.get_dashboard_tiles().iter().enumerate() {
+        if !pins.iter().any(|tile| tile.tile_id == old.tile_id) {
+            displayed.insert(index.min(displayed.len()), old);
+        }
+    }
+    ui.set_dashboard_tiles(ModelRc::new(VecModel::from(displayed)));
+
 }
 
 fn tile_to_view(tile: &AppTile) -> TileView {
@@ -1673,6 +1703,11 @@ mod tests {
             &[String::from("fixture.now")]
         );
         assert_eq!(ui.ui.get_dashboard_tiles().row_count(), 1);
+        assert!(ui.ui.invoke_tile_is_pinned("fixture.now".into(), ui.ui.get_dashboard_pins()));
+        ui.ui.invoke_pin_tile("fixture.now".into(), false);
+        assert!(ui.dashboard_state().pinned_ids().is_empty());
+        assert!(!ui.ui.invoke_tile_is_pinned("fixture.now".into(), ui.ui.get_dashboard_pins()));
+        ui.ui.invoke_pin_tile("fixture.now".into(), true);
         assert!(!ui.ui.get_sidebar_open(), "pins start collapsed");
         ui.ui.set_sidebar_open(true);
         ui.set_reply_pending(true);
@@ -1813,6 +1848,36 @@ mod tests {
                 "wave phase must advance smoothly each frame");
             previous = level;
         }
+        // Unpin state changes immediately while the drawer retains an exit row.
+        ui.set_voice_state(alloyos_mcp::display::VoiceState::Off, "", "");
+        ui.restore_dashboard(&["fixture.now".into()]);
+        ui.ui.set_sidebar_open(true);
+        let start = ui.now.get();
+        ui.render(start + Duration::from_millis(300));
+        let start = ui.now.get();
+        ui.ui.invoke_pin_tile("fixture.now".into(), false);
+        assert!(ui.dashboard_state().pinned_ids().is_empty());
+        assert_eq!(ui.ui.get_dashboard_pins().row_count(), 0);
+        assert_eq!(ui.ui.get_dashboard_tiles().row_count(), 1);
+        ui.render(start);
+        let before_exit = ui.pixels().to_vec();
+        ui.render(start + Duration::from_millis(100));
+        assert_ne!(ui.pixels(), before_exit.as_slice(), "unpin visibly slides out");
+        assert_eq!(ui.ui.get_dashboard_tiles().row_count(), 1);
+        ui.render(start + Duration::from_millis(320));
+        assert_eq!(ui.ui.get_dashboard_tiles().row_count(), 1);
+        ui.render(start + Duration::from_millis(460));
+        assert_eq!(ui.ui.get_dashboard_tiles().row_count(), 0);
+        ui.ui.invoke_pin_tile("fixture.now".into(), true);
+        ui.render(ui.now.get());
+        ui.ui.invoke_pin_tile("fixture.now".into(), false);
+        ui.ui.invoke_pin_tile("fixture.now".into(), true);
+        ui.render(ui.now.get() + Duration::from_millis(460));
+        assert_eq!(ui.ui.get_dashboard_tiles().row_count(), 1, "re-pin cancels removal");
+        ui.set_reduced_motion(true);
+        ui.ui.invoke_pin_tile("fixture.now".into(), false);
+        assert_eq!(ui.ui.get_dashboard_tiles().row_count(), 0);
+
         // Key releases retain the original character even if Shift changes.
         let mut keys = EvdevKeyboard::default();
         keys.translate(42, true);

@@ -1188,6 +1188,26 @@ mod tests {
         }
         assert!(ui.chat_scroll_maximum() - short_cards_maximum > 24.0 * 400.0,
             "growing card content must grow the scroll range by its full height");
+        // A single generated tile can be taller than the entire viewport.
+        // Its repeated rows must remain in the scroll extent rather than clip.
+        let mut tall_tile = match &doubled_cards[0] {
+            ChatItem::Tile(tile) => tile.clone(),
+            _ => unreachable!(),
+        };
+        tall_tile.subtitle.clear();
+        tall_tile.items = vec![tall_tile.items[0].clone(); 40];
+        ui.set_chat_items(&[ChatItem::Tile(tall_tile.clone())]);
+        for frame in 0..=10 { ui.render(Duration::from_millis(4980 + frame)); }
+        assert!(ui.chat_scroll_maximum() > 40.0 * 70.0 - ui.chat_viewport_height(),
+            "a tall generated tile must expose every item through scrolling");
+        ui.set_tiles(&[tall_tile.clone()]);
+        ui.restore_dashboard(&[tall_tile.tile_id.clone()]);
+        ui.ui.set_sidebar_open(true);
+        for frame in 0..=10 { ui.render(Duration::from_millis(4990 + frame)); }
+        assert!(ui.ui.get_pinned_content_height() > 40.0 * 70.0,
+            "pinned cards must reserve the full height of a tall generated tile");
+        ui.ui.set_sidebar_open(false);
+        ui.restore_dashboard(&[]);
         ui.set_chat_items(&history);
         for frame in 0..=60 {
             ui.render(Duration::from_millis(5000 + frame * 16));

@@ -236,11 +236,15 @@ component TileCard inherits Rectangle {
     border-color: AlloyPalette.border;
     // Propagate the content size through the surrounding chat layouts so
     // cards cannot be compressed below their contents in the scroll stream.
-    min-height: tile-content.preferred-height;
+    preferred-height: max(tile-content.preferred-height, tile-end.y + 6px);
+    min-height: self.preferred-height;
+    vertical-stretch: 0;
     tile-content := VerticalBox {
         width: parent.width;
         height: self.preferred-height;
         padding: 16px;
+        // The 10px gap before tile-end completes the bottom inset.
+        padding-bottom: 6px;
         spacing: 10px;
         HorizontalBox {
             Text { text: root.tile.title; color: AlloyPalette.text; font-size: 20px; font-weight: 700; wrap: word-wrap; horizontal-stretch: 1; min-width: 0px; }
@@ -274,6 +278,9 @@ component TileCard inherits Rectangle {
                 clicked => { root.action(action.id); }
             }
         }
+        // Wrapped rows can exceed their preferred height at the final width.
+        // Include their actual bottom edge in both inline and pinned card sizing.
+        tile-end := Rectangle { height: 0px; }
     }
 }
 
@@ -423,6 +430,7 @@ export component SystemUi inherits Window {
     out property <length> scroll-offset: -scroll.content-y;
     out property <length> scroll-maximum: max(0px, scroll.content-height - scroll.visible-height);
     out property <length> chat-content-bottom: content-end.y + scroll.content-y;
+    out property <length> pinned-content-height: pin-stream.height;
     out property <length> chat-viewport-height: scroll.visible-height;
     out property <bool> keyboard-visible: keyboard.shown;
     out property <length> keyboard-reveal: keyboard.reveal;

@@ -177,7 +177,15 @@ mod tests {
             .set_len(31 * 1024 * 1024)
             .unwrap();
         let original = fs::read(&image).unwrap();
+        // A completed older upgrade's backup must not block the next upgrade
+        // or be overwritten by its new rollback image.
+        fs::write(image.with_extension("pre-process-backup.img"), b"older retained backup").unwrap();
         crate::ensure_cobaltfs_image(&image).unwrap();
+        let archived = fs::read_dir(&root).unwrap().map(|entry| entry.unwrap().path())
+            .find(|path| path.file_name().unwrap().to_string_lossy().starts_with("volume.pre-process-backup-"))
+            .expect("previous backup is retained");
+        assert_eq!(fs::read(archived).unwrap(), b"older retained backup");
+        assert_eq!(fs::read(image.with_extension("pre-process-backup.img")).unwrap(), original);
         assert_eq!(fs::metadata(&image).unwrap().len(), 128 * 1024 * 1024);
         let export = root.join("export");
         export_tree(&image, &export).unwrap();

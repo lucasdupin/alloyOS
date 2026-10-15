@@ -281,8 +281,14 @@ fn ensure_cobaltfs_image(path: &Path) -> Result<()> {
         if std::fs::metadata(path)?.len() >= 128*1024*1024 {
             return image::copy_tree(path, &get_workspace_root()?.join("apps"), "/apps");
         }
-        if backup.exists(){return Err(anyhow!("Volume migration backup already exists: {}",backup.display()))}
         let nonce=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
+        if backup.exists() {
+            // A completed earlier upgrade may have retained its backup. Keep it
+            // recoverable without confusing it with this transaction's rollback.
+            let archive = path.with_extension(format!("pre-process-backup-{nonce}.img"));
+            std::fs::rename(&backup, &archive)?;
+            println!("[xtask] Retained previous migration backup at {}", archive.display());
+        }
         let staging=path.with_extension(format!("migration-{}-{nonce}",std::process::id()));
         let replacement=path.with_extension(format!("replacement-{}-{nonce}",std::process::id()));
         let prepared=(|| -> Result<()> {

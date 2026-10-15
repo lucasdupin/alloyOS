@@ -1394,6 +1394,42 @@ mod tests {
     }
 
     #[test]
+    fn keyboard_button_opens_without_hardware_key_input() {
+        use alloyos_proto::display::{PHONE_WIDTH, PHONE_HEIGHT, PHONE_SCALE};
+        let mut ui = FerrofluidSystemUi::new(PHONE_WIDTH, PHONE_HEIGHT, PHONE_SCALE as f32).unwrap();
+        ui.set_booting(false);
+        ui.set_transcript("What should I call you?");
+        ui.render(Duration::ZERO);
+        assert!(!ui.ui.get_keyboard_visible());
+        ui.handle_input(InputEvent { kind: InputEventKind::PointerButtonDown, code: 0x110, x: 747, y: 2481 });
+        ui.render(Duration::from_millis(120));
+        ui.handle_input(InputEvent { kind: InputEventKind::PointerButtonUp, code: 0x110, x: 747, y: 2481 });
+        ui.render(Duration::from_millis(136));
+        assert!(ui.ui.get_keyboard_visible(), "button tap alone must open the keyboard");
+        ui.render(Duration::from_millis(680));
+        assert_eq!(ui.ui.get_keyboard_reveal(), 213.0);
+        for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
+            ui.handle_input(InputEvent { kind, code: 0x110, x: 75, y: 2073 });
+        }
+        assert_eq!(ui.ui.get_draft().as_str(), "q");
+        // Hide, let the controls return, and reopen without a hardware key.
+        for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
+            ui.handle_input(InputEvent { kind, code: 0x110, x: 80, y: 2480 });
+        }
+        ui.render(Duration::from_millis(696));
+        ui.render(Duration::from_millis(1240));
+        assert!(!ui.ui.get_keyboard_visible());
+        for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
+            ui.handle_input(InputEvent { kind, code: 0x110, x: 747, y: 2481 });
+        }
+        ui.render(Duration::from_millis(1256));
+        assert!(ui.ui.get_keyboard_visible(), "button must reopen after Hide");
+        ui.render(Duration::from_millis(1800));
+        assert_eq!(ui.ui.get_keyboard_reveal(), 213.0);
+        assert_eq!(ui.ui.get_draft().as_str(), "q");
+    }
+
+    #[test]
     fn system_ui_renders_and_accepts_local_input() {
         use alloyos_proto::display::{PHONE_HEIGHT, PHONE_SCALE, PHONE_WIDTH};
         let mut ui =

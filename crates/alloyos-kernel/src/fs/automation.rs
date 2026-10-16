@@ -241,15 +241,19 @@ impl ToolVfsBackend for KernelVfsBackend {
                 if existing.kind == InodeKind::Directory {
                     return Err(format!("Path is a directory: {}", norm));
                 }
-                let _ = vfs.unlink(&norm);
+                vfs.unlink(&norm)
+                    .map_err(|e| format!("VFS replace '{}' failed: {:?}", norm, e))?;
             }
             let inode = vfs
                 .create(&norm, InodeKind::File)
                 .map_err(|e| format!("VFS create '{}' failed: {:?}", norm, e))?;
             if !content.is_empty() {
-                vfs.root_fs
+                let written = vfs.root_fs
                     .write(inode.ino, 0, content.as_bytes())
                     .map_err(|e| format!("VFS write '{}' failed: {:?}", norm, e))?;
+                if written != content.len() {
+                    return Err(format!("VFS write '{}' was incomplete", norm));
+                }
             }
             Ok(())
         })

@@ -3,6 +3,7 @@ members = [
     "crates/alloyos-proto",
     "crates/alloyos-boot",
     "crates/alloyos-kernel",
+    "crates/alloyos-fs",
     "crates/alloyos-user",
     "crates/alloyos-ferrofluid",
     "crates/alloyos-keyboard",

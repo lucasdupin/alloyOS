@@ -5,6 +5,7 @@ import pathlib
 import select
 import subprocess
 import time
+from process_acceptance import acceptance_errors, has_fatal_failure
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--skip-build', action='store_true')
@@ -33,17 +34,7 @@ command = ['qemu-system-aarch64', '-M', f'virt,gic-version={args.gic_version}',
            '-device', 'virtio-keyboard-device', '-device', 'virtio-tablet-device',
            '-serial', 'stdio', '-display', 'none', '-m', '512M', '-no-reboot',
            '-snapshot']
-markers = [b'APP-PROCESS: hostile package parser limits and host recovery PASS',
-           b'APP-PROCESS: persistent EL0 handler and filesystem IPC PASS',
-           b'APP-PROCESS: denied peer filesystem capability PASS',
-           b'APP-PROCESS: bounded infinite loop and independent peer PASS',
-           b'APP-PROCESS: process restart PASS',
-           b'APP-PROCESS: Tasks scheduler IPC persistence PASS',
-           b'APP-PROCESS: bounded host-call flood and budget reset PASS',
-           b'APP-PROCESS: private heap exhaustion and restart PASS',
-           b'APP-PROCESS: display input and shared kernel operation denial PASS',
-           b'APP-PROCESS: timer cancels nonyielding process and peer continues PASS',
-           b'DISPLAY-PROCESS: real EL0 fault, restart, conversation/dashboard restoration PASS']
+
 process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 output = b''
 deadline = time.monotonic() + args.timeout
@@ -54,12 +45,12 @@ try:
             if not chunk:
                 break
             output += chunk
-            if all(marker in output for marker in markers) or b'[crash] kernel-panic' in output:
+            if not acceptance_errors(output) or has_fatal_failure(output):
                 break
     print(output.decode(errors='replace'))
-    missing = [marker.decode() for marker in markers if marker not in output]
-    if missing:
-        raise SystemExit('Protected-runtime acceptance failed; missing: ' + '; '.join(missing))
+    errors = acceptance_errors(output)
+    if errors:
+        raise SystemExit('Protected-runtime acceptance failed; ' + '; '.join(errors))
 finally:
     process.terminate()
     try:

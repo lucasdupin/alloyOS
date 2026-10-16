@@ -1,5 +1,5 @@
 //! Copy a filesystem tree into an image before boot. No package catalog is compiled into the OS.
-use alloyos_kernel::fs::{
+use alloyos_fs::{
     block::{BlockDevice, BlockError},
     cobaltfs::CobaltFS,
     vfs::{FileSystem, InodeKind},
@@ -247,18 +247,7 @@ mod tests {
             binary.len()
         );
         assert_eq!(actual, binary);
-        // The mounted OS discovers and executes a new package without Rust registration.
-        let vfs = alloyos_kernel::fs::vfs::Vfs::with_root(Arc::new(filesystem), "CobaltFS");
-        let snapshot = alloyos_kernel::fs::packages::snapshot(&vfs).unwrap();
-        let mut registry = alloyos_mcp::McpRegistry::new();
-        registry
-            .discover_and_register_packages(&snapshot, None)
-            .unwrap();
-        let result = registry
-            .call_tool("arbitrary.answer", &std::collections::BTreeMap::new())
-            .unwrap();
-        assert_eq!(result.as_map().unwrap()["value"].as_i64(), Some(73));
-        let filesystem = vfs.root_fs.clone();
+        filesystem.create("/var", InodeKind::Directory).unwrap();
         let state = filesystem
             .create("/var/state.txt", InodeKind::File)
             .unwrap();

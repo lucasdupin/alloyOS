@@ -141,12 +141,15 @@ process. They establish the low-level memory and syscall boundaries.
 Run `python3 scripts/test-process-runtime.py` for the protected production runtime.
 It packages `/system/ferrofluid` and `/bin/app-runner` on CobaltFS, then exercises
 real app handlers, capability-scoped host operations, app resource containment and
-Ferrofluid crash/restart with host conversation/dashboard restoration. Use
+Ferrofluid crash/restart with host conversation/pinned-Tile restoration. Use
 `--gic-version 3` for GICv3 and `--accel hvf` on Apple Silicon.
 
 `cargo xtask build --release` builds the kernel and protected executables. For UI
-iteration, `cargo xtask processes --release` rebuilds and packages only executables;
-it does not rebuild the kernel. Existing small development volumes migrate to
+iteration, `cargo xtask processes --release` rebuilds and packages executables,
+skipping the explicit guest kernel build. Image tools share `alloyos-fs` with the
+kernel; xtask no longer imports the host kernel library. The opt-in
+[M9 build evidence gate](test-build-independence.md) checks the planned boundary
+and records unchanged-kernel evidence. Existing small development volumes migrate to
 128 MiB while preserving files and keeping an original backup. Restart the guest
 to load an updated executable; running guest storage must not be overwritten.
 
@@ -164,7 +167,10 @@ The stage log records token counts, finish reasons, registry counts, chat result
 and UI frame progress without credentials, prompts or raw response text. Passing
 requires fresh registry lookups and final answers containing a returned service
 name. Discovery returns service metadata; Gmail account access requires a separate
-authenticated connection.
+authenticated connection. External server choices are restricted to web-hosted
+endpoints; local-only stdio/Node/Python/MCPB listings are not offered. Native
+alloyOS JavaScript packages and their protected app runner are separate from
+external MCP server hosting.
 
 For graphical input/restart verification, build the normal release kernel and run
 `python3 scripts/test-process-ui.py`. It sends `/apps` through the real VirtIO

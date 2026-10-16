@@ -88,6 +88,7 @@ pub extern "C" fn _start(heap_start: usize, heap_length: usize) -> ! {
                     ui.set_model_selection_status(&s.model_status);
                     ui.set_transcript(&s.transcript);
                     ui.set_available_tiles(&s.available);
+                    ui.set_tile_discovery_status(s.tile_catalog_loaded, &s.tile_catalog_error);
                     ui.set_tiles(&s.tiles);
                     ui.set_chat_items(&s.items);
                     if s.pinned != pins {
@@ -136,6 +137,9 @@ pub extern "C" fn _start(heap_start: usize, heap_length: usize) -> ! {
         while ui.take_voice_mute() { send(Event::VoiceMute); }
         while ui.take_model_cycle() {
             send(Event::CycleModel)
+        }
+        if ui.take_tile_discovery_request() {
+            send(Event::DiscoverTiles);
         }
         while let Some(e) = ui.take_tile_event() {
             send(Event::Tile(e))

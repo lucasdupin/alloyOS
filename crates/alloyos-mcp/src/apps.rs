@@ -504,6 +504,17 @@ impl McpApp for JsApp {
             .collect()
     }
 
+    fn tile_catalog(&self) -> Vec<AppTile> {
+        self.tile_ids.iter().take(128).map(|id| AppTile {
+            tile_id: id.clone(),
+            title: self.manifest.name.clone(),
+            subtitle: id.clone(),
+            refresh_resource_uri: None,
+            items: Vec::new(),
+            actions: Vec::new(),
+        }).collect()
+    }
+
     fn call_tool(
         &mut self,
         tool_name: &str,

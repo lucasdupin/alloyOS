@@ -52,7 +52,7 @@ pub fn run(
     for id in agent.pinned_tile_ids().to_vec() {
         let _ = agent.refresh_tile(&id);
     }
-    ui.set_available_tiles(&agent.synthesized_tiles());
+    ui.set_available_tiles(&agent.available_dashboard_tiles());
     ui.restore_dashboard(agent.pinned_tile_ids());
     let mut chat_tiles: alloc::vec::Vec<alloyos_mcp::AppTile> = alloc::vec::Vec::new();
     match agent.startup_greeting() {
@@ -67,13 +67,14 @@ pub fn run(
             chat_items.push(ChatItem::Text(message));
         }
     }
-    ui.set_available_tiles(&agent.synthesized_tiles());
+    ui.set_available_tiles(&agent.available_dashboard_tiles());
     ui.set_tiles(&chat_tiles);
     ui.set_transcript(&transcript);
     ui.set_chat_items(&chat_items);
     let mut dashboard_revision = ui.dashboard_state().revision();
     let mut last_dashboard_refresh = 0u64;
     let mut refresh_queue = VecDeque::new();
+    let mut discovery_requested = false;
     let mut package_watcher = crate::fs::packages::PackageWatcher::default();
     let mut pending = false;
     let mut voice = super::voice::Voice::default();
@@ -89,6 +90,10 @@ pub fn run(
     ui.acceptance();
     loop {
         ui.poll();
+        if ui.take_tile_discovery_request() {
+            discovery_requested = true;
+            ui.set_tile_discovery_status(false, "");
+        }
         let frame_start = rng::monotonic_time_ns();
         forge.poll();
         while ui.take_output_mute_toggle() {
@@ -117,7 +122,7 @@ pub fn run(
             }
             ui.set_transcript(&transcript);
             ui.set_chat_items(&chat_items);
-            ui.set_available_tiles(&agent.synthesized_tiles());
+            ui.set_available_tiles(&agent.available_dashboard_tiles());
         }
         while let Some(output) = voice.take_tool_output() {
             if let Some(tile) = output.synthesized_view.and_then(|view|view.tile) {
@@ -128,7 +133,7 @@ pub fn run(
                 ui.set_tiles(&chat_tiles);
                 ui.set_chat_items(&chat_items);
             }
-            ui.set_available_tiles(&agent.synthesized_tiles());
+            ui.set_available_tiles(&agent.available_dashboard_tiles());
         }
         ui.set_voice(voice.state, &voice.caption, &voice.error);
         ui.set_voice_level(voice.level);
@@ -174,7 +179,13 @@ pub fn run(
         let dashboard = ui.dashboard_state();
         if dashboard.revision() != dashboard_revision {
             match agent.set_pinned_tile_ids(dashboard.pinned_ids()) {
-                Ok(()) => dashboard_revision = dashboard.revision(),
+                Ok(()) => {
+                    dashboard_revision = dashboard.revision();
+                    // Pinning materializes the selected widget in Welder. Publish
+                    // it immediately instead of leaving the catalog placeholder
+                    // visible until the next periodic refresh.
+                    ui.set_available_tiles(&agent.available_dashboard_tiles());
+                }
                 Err(error) => {
                     ui.restore_dashboard(agent.pinned_tile_ids());
                     dashboard_revision = ui.dashboard_state().revision();
@@ -214,7 +225,7 @@ pub fn run(
                             }
                         }
                     }
-                    ui.set_available_tiles(&agent.synthesized_tiles());
+                    ui.set_available_tiles(&agent.available_dashboard_tiles());
                     ui.restore_dashboard(agent.pinned_tile_ids());
                     dashboard_revision = ui.dashboard_state().revision();
                     ui.set_tiles(&chat_tiles);
@@ -283,7 +294,7 @@ pub fn run(
                         }
                     }
                 }
-                ui.set_available_tiles(&agent.synthesized_tiles());
+                ui.set_available_tiles(&agent.available_dashboard_tiles());
                 ui.set_transcript(&transcript);
                 ui.set_tiles(&chat_tiles);
                 ui.set_chat_items(&chat_items);
@@ -352,7 +363,7 @@ pub fn run(
             ui.set_active_model(agent.active_model_id());
             ui.restore_dashboard(agent.pinned_tile_ids());
             dashboard_revision = ui.dashboard_state().revision();
-            ui.set_available_tiles(&agent.synthesized_tiles());
+            ui.set_available_tiles(&agent.available_dashboard_tiles());
             ui.set_transcript(&transcript);
             ui.set_tiles(&chat_tiles);
             ui.set_chat_items(&chat_items);
@@ -382,6 +393,16 @@ pub fn run(
                 }
             }
         }
+        if discovery_requested && !pending && !voice.active() {
+            discovery_requested = false;
+            match agent.discover_dashboard_tiles() {
+                Ok(()) => {
+                    ui.set_available_tiles(&agent.available_dashboard_tiles());
+                    ui.set_tile_discovery_status(true, "");
+                }
+                Err(error) => ui.set_tile_discovery_status(false, &error.to_string()),
+            }
+        }
         if !pending && !voice.active() && refresh_queue.is_empty() && now_ms.saturating_sub(last_dashboard_refresh) >= 5_000 {
             last_dashboard_refresh = now_ms;
             refresh_queue.extend(ui.dashboard_state().pinned_ids().iter().cloned());
@@ -392,7 +413,7 @@ pub fn run(
                 // rendering. Unpinned cards need no background refresh.
                 if ui.dashboard_state().pinned_ids().contains(&id) {
                     let _ = agent.refresh_tile(&id);
-                    ui.set_available_tiles(&agent.synthesized_tiles());
+                    ui.set_available_tiles(&agent.available_dashboard_tiles());
                     ui.set_tiles(&chat_tiles);
                     ui.set_chat_items(&chat_items);
                 }

@@ -813,7 +813,7 @@ impl NativeToolRegistry {
             ),
             ToolSpec::new(
                 "smithery_search",
-                "Search the Smithery.ai public registry for available third-party MCP servers.",
+                "Search Smithery for web-hosted remote MCP servers with compatible HTTP(S) endpoint metadata. Excludes local stdio/npm/Python servers; discovery does not verify connectivity or account authorization.",
                 vec![ToolParameter::new(
                     "query",
                     "string",
@@ -822,10 +822,10 @@ impl NativeToolRegistry {
                 ), ToolParameter::new("page", "integer", "Page number, starting at 1", false),
                 ToolParameter::new("page_size", "integer", "Results per page, 1 to 100", false)],
             ),
-            ToolSpec::new("mcp_search_services", "Search the public official MCP Registry for third-party services such as Gmail; no registry API key is required. This discovers metadata, not an authenticated account connection.", vec![ToolParameter::new("query", "string", "Service keyword, for example gmail", true)]),
+            ToolSpec::new("mcp_search_services", "Search the official MCP Registry for web-hosted remote services such as Gmail. Only advertised compatible Streamable HTTP endpoints are returned; no local stdio/npm/Python/MCPB servers. Endpoint metadata is not verified connectivity or an authenticated account connection.", vec![ToolParameter::new("query", "string", "Service keyword, for example gmail", true)]),
             ToolSpec::new(
                 "smithery_install",
-                "Install a third-party MCP server from Smithery.ai into /apps/<app_id> on CobaltFS.",
+                "Register a web-hosted remote MCP server from Smithery under /apps/<app_id>. Does not run or deploy a local server, verify connectivity, or connect an account.",
                 vec![
                     ToolParameter::new(
                         "server",
@@ -842,7 +842,7 @@ impl NativeToolRegistry {
                     ToolParameter::new(
                         "endpoint",
                         "string",
-                        "Optional custom remote MCP endpoint URL override",
+                        "Optional advertised compatible HTTP(S) endpoint from this server metadata",
                         false,
                     ),
                 ],
@@ -1697,7 +1697,9 @@ impl NativeToolRegistry {
         for entry in entries {
             let server = entry.get("server").ok_or_else(|| AiError::InvalidToolArguments("MCP Registry entry has no server metadata".into()))?;
             let name = server["name"].as_str().ok_or_else(|| AiError::InvalidToolArguments("MCP Registry entry has no name".into()))?;
-            servers.push(serde_json::json!({"name":name,"description":server["description"],"version":server["version"],"repository":server["repository"],"remotes":server["remotes"],"packages":server["packages"]}));
+            let remotes = crate::remote_discovery::official_remotes(server);
+            if remotes.is_empty() { continue; }
+            servers.push(serde_json::json!({"name":name,"description":server["description"],"version":server["version"],"repository":server["repository"],"remotes":remotes,"connection_status":"not_connected","connectivity_verified":false}));
         }
         Ok(ToolExecutionOutput { tool_name: call.name.clone(), output_json: serde_json::json!({"ok":true,"source":"official_mcp_registry","query":query,"count":servers.len(),"servers":servers,"metadata":value["metadata"]}).to_string(), synthesized_view: None })
     }
@@ -1762,7 +1764,7 @@ impl NativeToolRegistry {
         let tile = {
             let registry = self.mcp_registry.borrow();
             registry
-                .list_tiles()
+                .tile_catalog()
                 .into_iter()
                 .find(|tile| tile.folder() == Some(app_id.as_str()))
                 .and_then(|tile| registry.render_tile(&tile.tile_id).ok())
@@ -1886,6 +1888,12 @@ impl NativeToolRegistry {
         {
             return Err("invalid Smithery search response".into());
         }
+        let servers: Vec<_> = servers.iter().filter_map(|server| {
+            let endpoints = crate::remote_discovery::smithery_endpoints(server);
+            if endpoints.is_empty() { return None; }
+            let connections: Vec<_> = endpoints.iter().map(|url| serde_json::json!({"type":"http","deploymentUrl":url})).collect();
+            Some(serde_json::json!({"qualifiedName":server["qualifiedName"],"displayName":server["displayName"],"description":server["description"],"remote":true,"connections":connections,"connection_status":"not_connected","connectivity_verified":false}))
+        }).collect();
         Ok(
             serde_json::json!({"ok":true,"query":query,"count":servers.len(),"servers":servers,"pagination":response.get("pagination")}),
         )
@@ -1927,25 +1935,13 @@ impl NativeToolRegistry {
             return Err("server details do not describe the requested remote server".into());
         }
         let name = required_string(&details, "displayName")?;
+        let endpoints = crate::remote_discovery::smithery_endpoints(&details);
         let endpoint = if let Some(endpoint) = args.get("endpoint") {
-            endpoint.as_str().ok_or("endpoint must be a string")?
+            let endpoint = endpoint.as_str().ok_or("endpoint must be a string")?;
+            endpoints.iter().find(|candidate| candidate.as_str() == endpoint)
+                .ok_or("endpoint is not an advertised compatible hosted remote endpoint")?
         } else {
-            details
-                .get("connections")
-                .and_then(serde_json::Value::as_array)
-                .and_then(|connections| {
-                    connections.iter().find(|connection| {
-                        connection.get("type").and_then(serde_json::Value::as_str) == Some("http")
-                    })
-                })
-                .and_then(|connection| connection.get("deploymentUrl"))
-                .and_then(serde_json::Value::as_str)
-                .or_else(|| {
-                    details
-                        .get("deploymentUrl")
-                        .and_then(serde_json::Value::as_str)
-                })
-                .ok_or("server has no HTTP deployment URL")?
+            endpoints.first().ok_or("server has no compatible hosted Streamable HTTP endpoint")?
         };
         let tools = details
             .get("tools")
@@ -2029,7 +2025,7 @@ impl NativeToolRegistry {
             return Err(error);
         }
         Ok(
-            serde_json::json!({"ok":true,"app_id":app_id,"name":name,"server":server,"endpoint":endpoint,"path":root}),
+            serde_json::json!({"ok":true,"app_id":app_id,"name":name,"server":server,"endpoint":endpoint,"path":root,"connection_status":"not_connected","connectivity_verified":false}),
         )
     }
 
@@ -2417,7 +2413,7 @@ impl NativeToolRegistry {
                     .map(|s| s.to_mcp_value().to_json())
                     .collect();
                 let tiles: Vec<String> = reg
-                    .list_tiles()
+                    .tile_catalog()
                     .iter()
                     .map(|t| t.to_mcp_value().to_json())
                     .collect();
@@ -2468,7 +2464,7 @@ impl NativeToolRegistry {
                 let tile = {
                     let registry = self.mcp_registry.borrow();
                     registry
-                        .list_tiles()
+                        .tile_catalog()
                         .into_iter()
                         .find(|tile| tile.folder() == Some(app_id.as_str()))
                         .and_then(|tile| registry.render_tile(&tile.tile_id).ok())

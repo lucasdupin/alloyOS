@@ -1,7 +1,6 @@
 pub mod automation;
 pub mod packages;
-pub mod block;
-pub mod cobaltfs;
+pub use alloyos_fs::{block, cobaltfs};
 pub mod devfs;
 pub mod ramfs;
 pub mod vfs;

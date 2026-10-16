@@ -38,6 +38,7 @@ pub struct AgentRuntime {
     voice_model: String,
     gateway: ModelGateway,
     pinned_tile_ids: Vec<String>,
+    dashboard_catalog: Vec<alloyos_mcp::AppTile>,
     turn_tool_calls: usize,
     turn_tool_outputs: Vec<ToolExecutionOutput>,
     pending_tool_response: Option<(Response, usize)>,
@@ -67,6 +68,7 @@ impl AgentRuntime {
             voice_model: alloyos_forge::voice::DEFAULT_LIVE_MODEL.into(),
             gateway: ModelGateway::new(),
             pinned_tile_ids: Vec::new(),
+            dashboard_catalog: Vec::new(),
             turn_tool_calls: 0,
             turn_tool_outputs: Vec::new(),
             pending_tool_response: None,
@@ -101,6 +103,7 @@ impl AgentRuntime {
             voice_model: alloyos_forge::voice::DEFAULT_LIVE_MODEL.into(),
             gateway: ModelGateway::new(),
             pinned_tile_ids: Vec::new(),
+            dashboard_catalog: Vec::new(),
             turn_tool_calls: 0,
             turn_tool_outputs: Vec::new(),
             pending_tool_response: None,
@@ -1061,25 +1064,62 @@ impl AgentRuntime {
             }
             if !unique.contains(id) { unique.push(id.clone()); }
         }
+        let newly_pinned: Vec<_> = unique.iter().filter(|id| !self.pinned_tile_ids.contains(id)).cloned().collect();
+        let mut synthesis = self.ui_synthesizer.clone();
+        self.render_dashboard_tiles(&newly_pinned, &mut synthesis)?;
         self.tool_registry.persist_ui_config(Self::DASHBOARD_CONFIG_PATH, &unique.join("\n"))
             .map_err(AiError::ConfigError)?;
+        self.ui_synthesizer = synthesis;
         self.pinned_tile_ids = unique;
         Ok(())
     }
 
-    /// Populate filesystem-discovered app cards without a model request.
+    /// Boot renders pinned widgets only; opening the catalog is a separate intent.
     pub fn initialize_dashboard_tiles(&mut self) -> Result<(), AiError> {
-        let descriptors = {
-            let registry = self.tool_registry.mcp_registry();
-            registry.list_tiles().into_iter().filter_map(|tile| registry.render_tile(&tile.tile_id).ok()).collect::<Vec<_>>()
-        };
-        for tile in descriptors {
-            let app = tile.folder().unwrap_or("").to_string();
-            let id = tile.tile_id.clone();
-            self.ui_synthesizer.synthesize_from_mcp_output_with_tile(
-                &crate::ui_synth::UiCallerOrigin::AiAgent, &app, &id, "{}", Some(tile))?;
+        let existing = self.synthesized_tiles();
+        let missing: Vec<_> = self.pinned_tile_ids.iter()
+            .filter(|id| !existing.iter().any(|tile| &tile.tile_id == *id)).cloned().collect();
+        let mut synthesis = self.ui_synthesizer.clone();
+        self.render_dashboard_tiles(&missing, &mut synthesis)?;
+        self.ui_synthesizer = synthesis;
+        Ok(())
+    }
+
+    fn render_dashboard_tiles(&self, ids: &[String], synthesis: &mut AgentUiSynthesizer) -> Result<(), AiError> {
+        let registry = self.tool_registry.mcp_registry();
+        for id in ids {
+            let app = id.split_once('.').map(|(app, _)| app).unwrap_or("");
+            // Retain unavailable app pins so reinstalling an app restores them.
+            if !registry.manifests().iter().any(|manifest| manifest.app_id == app) { continue; }
+            let tile = registry.render_tile(id).map_err(|error| AiError::InvalidToolArguments(error.message))?;
+            if tile.tile_id != *id {
+                return Err(AiError::PolicyViolation("app returned a different dashboard tile".into()));
+            }
+            synthesis.synthesize_from_mcp_output_with_tile(
+                &crate::ui_synth::UiCallerOrigin::AiAgent, app, id, "{}", Some(tile))?;
         }
         Ok(())
+    }
+
+    /// Called only when the user expands the available-widget list.
+    pub fn discover_dashboard_tiles(&mut self) -> Result<(), AiError> {
+        self.dashboard_catalog = self.tool_registry.mcp_registry().tile_catalog();
+        Ok(())
+    }
+
+    /// Unpinned choices contain metadata only, never render/action/image payloads.
+    pub fn available_dashboard_tiles(&self) -> Vec<alloyos_mcp::AppTile> {
+        let mut available = self.dashboard_catalog.clone();
+        for tile in self.synthesized_views().iter().filter_map(|view| view.tile.as_ref()) {
+            let entry = if self.pinned_tile_ids.contains(&tile.tile_id) { tile.clone() }
+                else { alloyos_mcp::AppTile {
+                    tile_id: tile.tile_id.clone(), title: tile.title.clone(), subtitle: tile.subtitle.clone(),
+                    refresh_resource_uri: None, items: Vec::new(), actions: Vec::new(),
+                } };
+            if let Some(existing) = available.iter_mut().find(|existing| existing.tile_id == tile.tile_id) { *existing = entry; }
+            else { available.push(entry); }
+        }
+        available
     }
 
     fn restore_dashboard(&mut self) {
@@ -1255,6 +1295,7 @@ mod tests {
     #[test]
     fn shared_action_requires_tile_identity_and_stale_actions_are_rejected() {
         let mut runtime = runtime_with_apps();
+        runtime.set_pinned_tile_ids(&["sample_timer.now".into()]).unwrap();
         runtime.initialize_dashboard_tiles().unwrap();
         let mut sample_timer = runtime.synthesized_tiles().into_iter().find(|tile| tile.tile_id == "sample_timer.now").unwrap();
         let action = sample_timer.actions[0].clone();
@@ -1267,6 +1308,95 @@ mod tests {
         runtime.ui_synthesizer.synthesize_from_mcp_output_with_tile(
             &crate::ui_synth::UiCallerOrigin::AiAgent, "sample_timer", "copy", "{}", Some(sample_timer)).unwrap();
         assert!(matches!(runtime.execute_tile_action_for("sample_timer.copy", &action), Err(AiError::PolicyViolation(_))));
+    }
+
+    fn lazy_dashboard_runtime() -> AgentRuntime {
+        let backend = crate::SharedMapVfsBackend::shared();
+        backend.borrow_mut().files.extend(fixture_apps::files());
+        backend.borrow_mut().files.insert("/etc/dashboard.conf".into(), "".into());
+        let path = "/apps/sample_timer/main.js";
+        let source = backend.borrow().files[path].replace("function renderTile(tileId) {", r#"function renderTile(tileId) {
+            let raw = AlloyOS.fs.read("/var/sample_timer/render-count");
+            let count = 0;
+            if (raw) { count = JSON.parse(raw); }
+            AlloyOS.fs.write("/var/sample_timer/render-count", JSON.stringify(count + 1));
+        "#);
+        backend.borrow_mut().files.insert(path.into(), source);
+        AgentRuntime::with_vfs_backend(backend)
+    }
+
+    fn dashboard_render_count(runtime: &AgentRuntime) -> i64 {
+        runtime.tool_registry.mcp_registry().runtime_files().get("/var/sample_timer/render-count")
+            .and_then(|count| count.parse().ok()).unwrap_or(0)
+    }
+
+    #[test]
+    fn dashboard_catalog_is_explicit_metadata_only_and_pin_renders_once() {
+        let mut runtime = lazy_dashboard_runtime();
+        runtime.initialize_dashboard_tiles().unwrap();
+        assert_eq!(dashboard_render_count(&runtime), 0);
+        assert!(runtime.available_dashboard_tiles().is_empty());
+        assert!(runtime.synthesized_tiles().is_empty());
+        runtime.discover_dashboard_tiles().unwrap();
+        let catalog = runtime.available_dashboard_tiles();
+        assert!(catalog.iter().any(|tile| tile.tile_id == "sample_timer.now"));
+        for tile in &catalog {
+            assert!(tile.items.is_empty());
+            assert!(tile.actions.is_empty());
+            assert!(tile.refresh_resource_uri.is_none());
+        }
+        assert_eq!(dashboard_render_count(&runtime), 0);
+        runtime.set_pinned_tile_ids(&["sample_timer.now".into(), "sample_timer.now".into()]).unwrap();
+        assert_eq!(runtime.pinned_tile_ids(), &["sample_timer.now"]);
+        assert_eq!(dashboard_render_count(&runtime), 1);
+        assert_eq!(runtime.synthesized_tiles().len(), 1);
+        assert!(!runtime.available_dashboard_tiles().iter().find(|tile| tile.tile_id == "sample_timer.now").unwrap().items.is_empty());
+        runtime.set_pinned_tile_ids(&["sample_timer.now".into()]).unwrap();
+        runtime.initialize_dashboard_tiles().unwrap();
+        assert_eq!(dashboard_render_count(&runtime), 1);
+        runtime.set_pinned_tile_ids(&[]).unwrap();
+        assert_eq!(dashboard_render_count(&runtime), 1);
+        let catalog = runtime.available_dashboard_tiles();
+        let unpinned = catalog.iter().find(|tile| tile.tile_id == "sample_timer.now").unwrap();
+        assert!(unpinned.items.is_empty() && unpinned.actions.is_empty());
+        runtime.discover_dashboard_tiles().unwrap();
+        assert_eq!(dashboard_render_count(&runtime), 1);
+        assert_eq!(runtime.available_dashboard_tiles().len(), catalog.len());
+        runtime.set_pinned_tile_ids(&["sample_timer.now".into()]).unwrap();
+        assert_eq!(dashboard_render_count(&runtime), 2);
+        assert_eq!(runtime.synthesized_tiles().len(), 1);
+    }
+
+    #[test]
+    fn dashboard_startup_renders_saved_pin_without_discovering_other_widgets() {
+        let mut runtime = lazy_dashboard_runtime();
+        runtime.tool_registry.vfs_write(AgentRuntime::DASHBOARD_CONFIG_PATH, "sample_timer.now");
+        runtime.restore_dashboard();
+        runtime.initialize_dashboard_tiles().unwrap();
+        assert_eq!(dashboard_render_count(&runtime), 1);
+        assert_eq!(runtime.available_dashboard_tiles().len(), 1);
+        assert_eq!(runtime.available_dashboard_tiles()[0].tile_id, "sample_timer.now");
+        runtime.discover_dashboard_tiles().unwrap();
+        assert!(runtime.available_dashboard_tiles().len() > 1);
+        assert_eq!(dashboard_render_count(&runtime), 1);
+    }
+
+    #[test]
+    fn dashboard_pin_render_failure_keeps_previous_pins_and_reports_error() {
+        let backend = crate::SharedMapVfsBackend::shared();
+        backend.borrow_mut().files.extend(fixture_apps::files());
+        backend.borrow_mut().files.insert("/etc/dashboard.conf".into(), "".into());
+        let path = "/apps/sample_timer/main.js";
+        let source = backend.borrow().files[path].replace("function renderTile(tileId) {", "function renderTile(tileId) { return \"invalid tile JSON\";");
+        backend.borrow_mut().files.insert(path.into(), source);
+        let mut runtime = AgentRuntime::with_vfs_backend(backend.clone());
+        runtime.initialize_dashboard_tiles().unwrap();
+        runtime.discover_dashboard_tiles().unwrap();
+        assert!(runtime.available_dashboard_tiles().iter().any(|tile| tile.tile_id == "sample_timer.now"));
+        assert!(runtime.set_pinned_tile_ids(&["sample_timer.now".into()]).is_err());
+        assert!(runtime.pinned_tile_ids().is_empty());
+        assert!(runtime.synthesized_tiles().is_empty());
+        assert_eq!(backend.borrow().files["/etc/dashboard.conf"], "");
     }
 
     #[test]
@@ -1284,6 +1414,7 @@ mod tests {
     #[test]
     fn resource_refresh_is_scoped_to_current_tile() {
         let mut runtime = runtime_with_apps();
+        runtime.set_pinned_tile_ids(&["sample_timer.now".into()]).unwrap();
         runtime.initialize_dashboard_tiles().unwrap();
         runtime.tick_scheduler(2000, None);
         let output = runtime.refresh_tile("sample_timer.now").unwrap();
@@ -2125,7 +2256,7 @@ mod tests {
 
         runtime.tool_registry.register_http_response(
             "https://api.smithery.ai/servers?q=github",
-            r#"{"servers":[{"qualifiedName":"smithery-ai/github","displayName":"GitHub MCP"}]}"#,
+            r#"{"servers":[{"qualifiedName":"smithery-ai/github","displayName":"GitHub MCP","remote":true,"deploymentUrl":"https://github.example/mcp"}]}"#,
         );
         runtime.tool_registry.register_http_response(
             "https://api.smithery.ai/servers/smithery-ai%2Fgithub",

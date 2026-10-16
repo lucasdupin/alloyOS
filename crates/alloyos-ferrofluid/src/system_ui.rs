@@ -53,6 +53,7 @@ pub struct FerrofluidSystemUi {
     voice_toggles: Rc<Cell<usize>>,
     voice_mutes: Rc<Cell<usize>>,
     output_mute_toggles: Rc<Cell<usize>>,
+    tile_discovery_requested: Rc<Cell<bool>>,
     tiles: Rc<RefCell<Vec<AppTile>>>,
     chat_items: Rc<RefCell<Vec<ChatItem>>>,
     available_tiles: Rc<RefCell<Vec<AppTile>>>,
@@ -178,6 +179,9 @@ impl FerrofluidSystemUi {
         let available_tiles = Rc::new(RefCell::new(Vec::<AppTile>::new()));
         let dashboard = Rc::new(RefCell::new(crate::DashboardState::default()));
         let tile_events = Rc::new(RefCell::new(VecDeque::new()));
+        let tile_discovery_requested = Rc::new(Cell::new(false));
+        let requested = tile_discovery_requested.clone();
+        ui.on_discover_tiles(move || requested.set(true));
         let state = dashboard.clone();
         let available = available_tiles.clone();
         let weak = ui.as_weak();
@@ -195,7 +199,7 @@ impl FerrofluidSystemUi {
                 state.borrow_mut().unpin(id.as_str());
             }
             if let Some(ui) = weak.upgrade() {
-                update_dashboard(&ui, &state.borrow().tiles(&available.borrow()));
+                update_dashboard(&ui, &state.borrow().tiles(&available.borrow()), &available.borrow());
             }
         });
         let state = dashboard.clone();
@@ -204,7 +208,7 @@ impl FerrofluidSystemUi {
         ui.on_move_pin(move |id| {
             state.borrow_mut().move_to(id.as_str(), 0);
             if let Some(ui) = weak.upgrade() {
-                update_dashboard(&ui, &state.borrow().tiles(&available.borrow()));
+                update_dashboard(&ui, &state.borrow().tiles(&available.borrow()), &available.borrow());
             }
         });
         let events = tile_events.clone();
@@ -309,6 +313,7 @@ impl FerrofluidSystemUi {
             voice_toggles,
             voice_mutes,
             output_mute_toggles,
+            tile_discovery_requested,
             tiles,
             chat_items,
             available_tiles,
@@ -393,8 +398,19 @@ impl FerrofluidSystemUi {
         update_dashboard(
             &self.ui,
             &self.dashboard.borrow().tiles(&self.available_tiles.borrow()),
+            &self.available_tiles.borrow(),
         );
     }
+
+    pub fn take_tile_discovery_request(&self) -> bool {
+        self.tile_discovery_requested.replace(false)
+    }
+
+    pub fn set_tile_discovery_status(&self, loaded: bool, error: &str) {
+        self.ui.set_tile_catalog_loaded(loaded);
+        self.ui.set_tile_catalog_error(error.into());
+    }
+
     /// Render semantic app descriptors in the chat thread.
     pub fn set_tiles(&self, tiles: &[AppTile]) {
         self.backdrop_dirty.set(true);
@@ -413,6 +429,7 @@ impl FerrofluidSystemUi {
         update_dashboard(
             &self.ui,
             &self.dashboard.borrow().tiles(&self.available_tiles.borrow()),
+            &self.available_tiles.borrow(),
         );
     }
     pub fn set_chat_items(&self, items: &[ChatItem]) {
@@ -440,6 +457,7 @@ impl FerrofluidSystemUi {
         update_dashboard(
             &self.ui,
             &self.dashboard.borrow().tiles(&self.available_tiles.borrow()),
+            &self.available_tiles.borrow(),
         );
     }
     pub fn chat_items(&self) -> Vec<ChatItem> {
@@ -473,6 +491,7 @@ impl FerrofluidSystemUi {
         update_dashboard(
             &self.ui,
             &self.dashboard.borrow().tiles(&self.available_tiles.borrow()),
+            &self.available_tiles.borrow(),
         );
     }
     pub fn take_tile_event(&self) -> Option<crate::TileEvent> {
@@ -817,8 +836,22 @@ impl FerrofluidSystemUi {
     }
 }
 
-fn update_dashboard(ui: &SystemUi, tiles: &[AppTile]) {
+fn update_dashboard(ui: &SystemUi, tiles: &[AppTile], available: &[AppTile]) {
+    // Discovery is independent of chat: a filesystem-provided descriptor is
+    // immediately available even when Welder has never embedded it in a reply.
     use slint::Model;
+    let unpinned: Vec<_> = available.iter().filter(|candidate|
+        !tiles.iter().any(|pin| pin.tile_id == candidate.tile_id)).collect();
+    let current = ui.get_available_tiles();
+    let unchanged = current.row_count() == unpinned.len() && unpinned.iter().enumerate().all(|(index, tile)|
+        current.row_data(index).is_some_and(|row| row.tile_id == tile.tile_id.as_str() && row.title == tile.title.as_str()));
+    if !unchanged {
+        // Discovery never copies item/action models or image references. Keep
+        // the model stable during periodic refreshes that only change content.
+        ui.set_available_tiles(ModelRc::new(VecModel::from(unpinned.iter().map(|tile| AvailableTileView {
+            tile_id: tile.tile_id.as_str().into(), title: tile.title.as_str().into(),
+        }).collect::<Vec<_>>())));
+    }
     let pins = tile_views(tiles);
     ui.set_dashboard_pins(pins.clone());
     if !ui.get_sidebar_open() || ui.get_reduced_motion() {
@@ -2000,6 +2033,123 @@ mod tests {
         ui.set_reduced_motion(true);
         ui.ui.invoke_pin_tile("fixture.now".into(), false);
         assert_eq!(ui.ui.get_dashboard_tiles().row_count(), 0);
+
+        // Discovery works before an app has ever appeared in chat. Pinning its
+        // actual exposed descriptor makes its actions available in the drawer.
+        let launcher_tile = AppTile {
+            tile_id: "discovery.board".into(),
+            title: "Project board".into(),
+            subtitle: "Track the next steps".into(),
+            refresh_resource_uri: Some("mcp://discovery/board".into()),
+            items: Vec::new(),
+            actions: vec![TileAction::new("list", "Show tasks", "discovery.list", Default::default())],
+        };
+        ui.set_chat_items(&[]);
+        ui.set_tiles(&[]);
+        ui.restore_dashboard(&[]);
+        ui.set_available_tiles(&[]);
+        ui.set_tile_discovery_status(false, "");
+        assert!(ui.chat_items().is_empty());
+        assert_eq!(ui.ui.get_available_tiles().row_count(), 0);
+        ui.ui.set_sidebar_open(true);
+        ui.render(ui.now.get() + Duration::from_millis(16));
+        assert!(!ui.ui.get_available_tiles_expanded(), "discovery starts collapsed");
+        assert!(!ui.take_tile_discovery_request(), "opening the drawer never loads the catalog");
+        for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
+            ui.handle_input(InputEvent { kind, code: 0x110, x: 900, y: 710 });
+        }
+        assert!(ui.dashboard_state().pinned_ids().is_empty(), "collapsed discovery has no pin target");
+        for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
+            ui.handle_input(InputEvent { kind, code: 0x110, x: 450, y: 500 });
+        }
+        ui.render(ui.now.get() + Duration::from_millis(16));
+        assert!(ui.ui.get_available_tiles_expanded(), "disclosure opens by pointer");
+        assert!(ui.take_tile_discovery_request(), "expansion requests catalog metadata");
+        assert!(!ui.take_tile_discovery_request(), "discovery requests coalesce and drain");
+        // Simulate the host's asynchronous discovery reply.
+        ui.set_available_tiles(&[launcher_tile.clone()]);
+        ui.set_tile_discovery_status(true, "");
+        ui.render(ui.now.get() + Duration::from_millis(16));
+        assert_eq!(ui.ui.get_available_tiles().row_count(), 1);
+        assert_eq!(ui.ui.get_available_tiles().row_data(0).unwrap().title.as_str(), "Project board");
+        if let Ok(path) = std::env::var("ALLOYOS_DISCOVERY_SCREENSHOT") {
+            let file = std::fs::File::create(path).unwrap();
+            let mut encoder = png::Encoder::new(file, ui.size.width, ui.size.height);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let bytes: Vec<u8> = ui.pixels().iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8, 255]).collect();
+            encoder.write_header().unwrap().write_image_data(&bytes).unwrap();
+        }
+        // The add control is a real pointer target in the discovery row, rather
+        // than relying on chat to expose the pin action.
+        for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
+            ui.handle_input(InputEvent { kind, code: 0x110, x: 900, y: 660 });
+        }
+        ui.render(ui.now.get() + Duration::from_millis(16));
+        assert_eq!(ui.dashboard_state().pinned_ids(), &[String::from("discovery.board")]);
+        assert_eq!(ui.ui.get_available_tiles().row_count(), 0);
+        ui.ui.invoke_tile_action("discovery.board".into(), "list".into());
+        assert_eq!(ui.take_tile_event(), Some(crate::TileEvent::Action {
+            tile_id: "discovery.board".into(), action: launcher_tile.actions[0].clone(),
+        }));
+        ui.ui.invoke_pin_tile("discovery.board".into(), false);
+        assert_eq!(ui.ui.get_available_tiles().row_count(), 1);
+        ui.ui.set_available_tiles_expanded(false);
+        ui.ui.set_sidebar_open(false);
+        ui.render(ui.now.get() + Duration::from_millis(16));
+        ui.ui.set_sidebar_open(true);
+        ui.render(ui.now.get() + Duration::from_millis(16));
+        assert!(!ui.ui.get_available_tiles_expanded(), "reopening the drawer preserves collapsed discovery");
+        ui.set_available_tiles(&[]);
+        assert_eq!(ui.ui.get_available_tiles().row_count(), 0, "removed packages leave discovery");
+
+        // Count actual Slint model reads to check virtualization at runtime.
+        // A normal repeated layout requests every row; ListView must request
+        // only rows around its bounded viewport, even with a large catalog.
+        struct CountedCatalog {
+            rows: Vec<AvailableTileView>,
+            reads: RefCell<alloc::collections::BTreeSet<usize>>,
+        }
+        impl slint::Model for CountedCatalog {
+            type Data = AvailableTileView;
+            fn row_count(&self) -> usize { self.rows.len() }
+            fn row_data(&self, row: usize) -> Option<Self::Data> {
+                self.reads.borrow_mut().insert(row);
+                self.rows.get(row).cloned()
+            }
+            fn model_tracker(&self) -> &dyn slint::ModelTracker { &() }
+        }
+        let catalog = Rc::new(CountedCatalog {
+            rows: (0..128).map(|i| AvailableTileView {
+                tile_id: alloc::format!("catalog.tile-{i}").into(),
+                title: alloc::format!("Catalog tile {i}").into(),
+            }).collect(),
+            reads: RefCell::new(Default::default()),
+        });
+        ui.ui.set_available_tiles(ModelRc::from(catalog.clone()));
+        ui.ui.set_available_tiles_expanded(false);
+        ui.render(ui.now.get() + Duration::from_millis(16));
+        assert!(catalog.reads.borrow().is_empty(), "collapsed list reads no rows");
+        ui.ui.set_available_tiles_expanded(true);
+        ui.render(ui.now.get() + Duration::from_millis(16));
+        let initial_reads = catalog.reads.borrow().len();
+        assert!(initial_reads > 0 && initial_reads <= 8, "bounded initial realization: {initial_reads}");
+        catalog.reads.borrow_mut().clear();
+        ui.window.dispatch_event(WindowEvent::PointerScrolled {
+            position: LogicalPosition::new(150.0, 230.0), delta_x: 0.0, delta_y: -100_000.0,
+        });
+        ui.render(ui.now.get() + Duration::from_millis(16));
+        let bottom_reads = catalog.reads.borrow();
+        assert!(bottom_reads.contains(&127), "scrolling reaches the final catalog row");
+        assert!(bottom_reads.len() <= 12, "scrolling realizes a bounded viewport: {}", bottom_reads.len());
+        drop(bottom_reads);
+        ui.ui.set_sidebar_open(false);
+        ui.render(ui.now.get() + Duration::from_millis(16));
+        assert!(!ui.ui.get_available_tiles_expanded(), "closing drawer collapses discovery");
+        catalog.reads.borrow_mut().clear();
+        ui.ui.set_sidebar_open(true);
+        ui.render(ui.now.get() + Duration::from_millis(16));
+        assert!(catalog.reads.borrow().is_empty(), "reopening collapsed discovery reads no rows");
 
         // Key releases retain the original character even if Shift changes.
         let mut keys = EvdevKeyboard::default();

@@ -475,6 +475,7 @@ pub mod knowledge;
 pub mod personality;
 pub mod session;
 pub mod setup;
+mod remote_discovery;
 pub mod runtime;
 pub mod voice;
 pub mod tools;

@@ -19,8 +19,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 use spin::Mutex;
 
-use crate::fs::block::BlockDevice;
-use crate::fs::vfs::{FileSystem, FsError, Inode, InodeKind};
+use crate::block::BlockDevice;
+use crate::vfs::{FileSystem, FsError, Inode, InodeKind};
 use disk::{
     BlockGroupDescriptor, DiskInode, FT_CHRDEV, FT_DIR, FT_REG_FILE,
     ROOT_INO, S_IFCHR, S_IFDIR, S_IFREG, Superblock, r32, w32, w16,

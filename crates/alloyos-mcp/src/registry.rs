@@ -51,6 +51,16 @@ pub trait McpApp {
     fn tiles(&self) -> Vec<AppTile> {
         Vec::new()
     }
+    /// Metadata for an explicitly opened widget catalog. Implementations with
+    /// executable tile handlers must override this without invoking render_tile.
+    fn tile_catalog(&self) -> Vec<AppTile> {
+        self.tiles().into_iter().map(|mut tile| {
+            tile.items.clear();
+            tile.actions.clear();
+            tile.refresh_resource_uri = None;
+            tile
+        }).collect()
+    }
     fn call_tool(
         &mut self,
         tool_name: &str,
@@ -493,6 +503,27 @@ impl McpRegistry {
             }
         }
         all_tiles
+    }
+
+    /// Discover metadata only, without executing JavaScript tile renderers.
+    pub fn tile_catalog(&self) -> Vec<AppTile> {
+        let mut tiles = Vec::new();
+        for (app_id, entry) in &self.apps {
+            if self.verify_package_revision(app_id).is_err()
+                || entry.guard.enforce_capability(&AppCapability::ExposeTiles).is_err() { continue; }
+            for mut tile in entry.app.tile_catalog().into_iter().take(128) {
+                if tiles.len() == 128 { return tiles; }
+                if tile.tile_id.len() > 128 || !tile.tile_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+                    || tile.folder() != Some(app_id.as_str()) || tiles.iter().any(|existing: &AppTile| existing.tile_id == tile.tile_id) { continue; }
+                tile.title = tile.title.chars().take(128).collect();
+                tile.subtitle = tile.subtitle.chars().take(256).collect();
+                tile.items.clear();
+                tile.actions.clear();
+                tile.refresh_resource_uri = None;
+                tiles.push(tile);
+            }
+        }
+        tiles
     }
 
     /// Render a live declarative `AppTile` by `tile_id` (`<app_id>.<tile_name>`).

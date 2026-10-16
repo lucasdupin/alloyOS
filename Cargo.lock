@@ -66,6 +66,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "alloyos-fs"
+version = "0.1.0"
+dependencies = [
+ "spin",
+]
+
+[[package]]
 name = "alloyos-js"
 version = "0.1.0"
 dependencies = [
@@ -79,6 +86,7 @@ dependencies = [
  "alloyos-boot",
  "alloyos-ferrofluid",
  "alloyos-forge",
+ "alloyos-fs",
  "alloyos-js",
  "alloyos-mcp",
  "alloyos-proto",
@@ -4967,7 +4975,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "alloyos-dev-harness",
- "alloyos-kernel",
+ "alloyos-fs",
  "alloyos-mcp",
  "alloyos-proto",
  "anyhow",

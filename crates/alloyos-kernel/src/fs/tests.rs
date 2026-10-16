@@ -274,6 +274,25 @@ pub mod tests {
     }
 
     #[test]
+    fn cobaltfs_packaged_app_is_discovered_and_executes_without_rust_registration() {
+        let filesystem = CobaltFS::mount(MemBlockDevice::new_formatted_large()).unwrap();
+        let vfs = Vfs::with_root(Arc::new(filesystem), "CobaltFS");
+        vfs.root_fs.create("/apps/arbitrary", InodeKind::Directory).unwrap();
+        for (path, bytes) in [
+            ("/apps/arbitrary/arbitrary.mcp", &b"name=Fixture\nversion=1\ncapabilities=ExposeMcpTools\n"[..]),
+            ("/apps/arbitrary/main.js", &br#"function callTool(name,args) { return JSON.stringify({ value: 73 }); }"#[..]),
+        ] {
+            let file = vfs.root_fs.create(path, InodeKind::File).unwrap();
+            assert_eq!(vfs.root_fs.write(file.ino, 0, bytes).unwrap(), bytes.len());
+        }
+        let snapshot = crate::fs::packages::snapshot(&vfs).unwrap();
+        let mut registry = alloyos_mcp::McpRegistry::new();
+        registry.discover_and_register_packages(&snapshot, None).unwrap();
+        let result = registry.call_tool("arbitrary.answer", &alloc::collections::BTreeMap::new()).unwrap();
+        assert_eq!(result.as_map().unwrap()["value"].as_i64(), Some(73));
+    }
+
+    #[test]
     fn cobaltfs_mount_create_write_read_unlink() {
         let dev = MemBlockDevice::new_formatted();
         let fs = CobaltFS::mount(dev).expect("Mount CobaltFS should succeed");

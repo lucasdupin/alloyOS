@@ -378,6 +378,15 @@ impl DisplayProxy {
     pub fn set_available_tiles(&self, v: &[AppTile]) {
         self.state.borrow_mut().available = v.to_vec();
     }
+    pub fn set_tile_discovery_status(&self, loaded: bool, error: &str) {
+        let mut state = self.state.borrow_mut();
+        state.tile_catalog_loaded = loaded;
+        state.tile_catalog_error = error.into();
+        trim_text(&mut state.tile_catalog_error, 512);
+    }
+    pub fn take_tile_discovery_request(&self) -> bool {
+        self.take(|event| matches!(event, Event::DiscoverTiles)).is_some()
+    }
     pub fn set_tiles(&self, v: &[AppTile]) {
         self.state.borrow_mut().tiles = v.to_vec();
     }
@@ -631,7 +640,9 @@ mod tests {
             ),
             -22
         );
-        let event = serde_json::to_vec(&Event::Ready).unwrap();
+        // Catalog discovery uses the same authenticated, bounded channel as
+        // other display intents; opening the drawer itself sends no request.
+        let event = serde_json::to_vec(&Event::DiscoverTiles).unwrap();
         space.copy_out(address, &event).unwrap();
         for _ in 0..64 {
             assert_eq!(

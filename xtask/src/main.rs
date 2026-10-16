@@ -266,7 +266,7 @@ fn get_cobaltfs_image_path(workspace_root: &Path, release: bool) -> PathBuf {
         .join("cobaltfs.img")
 }
 
-/// Formats a fresh 4 MiB CobaltFS (ext2-compatible) disk image in pure Rust so
+/// Formats a fresh 128 MiB CobaltFS (ext2-compatible) disk image in pure Rust so
 /// no external `mkfs.ext2` binary is required on macOS.
 fn ensure_cobaltfs_image(path: &Path) -> Result<()> {
     // Interrupted migration packaging is rolled back before retrying.
@@ -318,84 +318,7 @@ fn ensure_cobaltfs_image(path: &Path) -> Result<()> {
         path.display()
     );
 
-    let bs = 4096usize;
-    let total_blocks = 32768u32; // 128 MiB
-    let inodes_count = 256u32; // 256 * 128B = 32 KiB = 32 blocks (blocks 5..37)
-    let reserved_blocks = 13u32; // 0:boot, 1:SB, 2:BGD, 3:bmap, 4:imap, 5..37:itable, 37:root dir
-    let mut img = vec![0u8; bs * total_blocks as usize];
-
-    let w16 = |b: &mut [u8], o: usize, v: u16| {
-        let x = v.to_le_bytes();
-        b[o] = x[0];
-        b[o + 1] = x[1];
-    };
-    let w32 = |b: &mut [u8], o: usize, v: u32| {
-        let x = v.to_le_bytes();
-        b[o..o + 4].copy_from_slice(&x);
-    };
-
-    // Superblock at offset 1024 (Block 1)
-    {
-        let sb = &mut img[1024..2048];
-        w32(sb, 0, inodes_count);
-        w32(sb, 4, total_blocks);
-        w32(sb, 12, total_blocks - reserved_blocks);
-        w32(sb, 16, inodes_count - 11);
-        w32(sb, 20, 0); // first_data_block = 1
-        w32(sb, 24, 2); // log_block_size = 0 (1024 B)
-        w32(sb, 32, total_blocks);
-        w32(sb, 40, inodes_count);
-        w16(sb, 56, 0xEF53); // COBALTFS_MAGIC
-        w32(sb, 76, 0); // rev 0
-    }
-
-    // Block Group Descriptor at Block 2 (offset 2048)
-    {
-        let bgd = &mut img[bs..bs + 32];
-        w32(bgd, 0, 2); // block_bitmap = 3
-        w32(bgd, 4, 3); // inode_bitmap = 4
-        w32(bgd, 8, 4); // inode_table = 5
-        w16(bgd, 12, (total_blocks - reserved_blocks) as u16);
-        w16(bgd, 14, (inodes_count - 11) as u16);
-        w16(bgd, 16, 1); // used_dirs_count = 1 (root)
-    }
-
-    // Block bitmap at Block 3 (offset 3072): mark blocks 0..reserved_blocks used
-    for b in 0..reserved_blocks as usize {
-        img[2*bs + b / 8] |= 1u8 << (b % 8);
-    }
-
-    // Inode bitmap at Block 4 (offset 4096): mark inodes 1..=11 used
-    img[3*bs] = 0xFF;
-    img[3*bs+1] = 0b0000_0111;
-
-    // Root inode (ino 2 -> index 1 in inode table at Block 5, offset 5120 + 128)
-    {
-        let root_off = 4*bs + 128;
-        let ino = &mut img[root_off..root_off + 128];
-        w16(ino, 0, 0x4000 | 0o755); // S_IFDIR | 0755
-        w32(ino, 4, bs as u32); // size_lo = 1024
-        w16(ino, 26, 2); // links_count = 2
-        w32(ino, 28, 8); // blocks_512 = 2
-        w32(ino, 40, 12); // block[0] = 37
-    }
-
-    // Root directory data block at Block 37: "." and ".."
-    {
-        let dir = &mut img[12 * bs..13 * bs];
-        w32(dir, 0, 2);
-        w16(dir, 4, 12);
-        dir[6] = 1;
-        dir[7] = 2; // FT_DIR
-        dir[8] = b'.';
-
-        w32(dir, 12, 2);
-        w16(dir, 16, (bs - 12) as u16);
-        dir[18] = 2;
-        dir[19] = 2; // FT_DIR
-        dir[20] = b'.';
-        dir[21] = b'.';
-    }
+    let img = alloyos_fs::image::development_image();
 
     std::fs::write(path, &img)
         .with_context(|| format!("Failed to write CobaltFS image to {}", path.display()))?;
@@ -407,6 +330,15 @@ fn build_crates(release: bool, debug_shell: bool) -> Result<PathBuf> {
 }
 
 fn build_crates_mode(release: bool, debug_shell: bool, forge: bool) -> Result<PathBuf> {
+    build_crates_mode_with_disk(release, debug_shell, forge, None)
+}
+
+fn build_crates_mode_with_disk(
+    release: bool,
+    debug_shell: bool,
+    forge: bool,
+    disk: Option<&Path>,
+) -> Result<PathBuf> {
     let workspace_root = get_workspace_root()?;
 
     println!("[xtask] Building kernel crate for aarch64-unknown-none...");
@@ -445,7 +377,8 @@ fn build_crates_mode(release: bool, debug_shell: bool, forge: bool) -> Result<Pa
         kernel_bin.display()
     );
 
-    let cobalt_image = get_cobaltfs_image_path(&workspace_root, release);
+    let cobalt_image = disk.map(Path::to_path_buf)
+        .unwrap_or_else(|| get_cobaltfs_image_path(&workspace_root, release));
     ensure_cobaltfs_image(&cobalt_image)?;
     package_processes(&workspace_root, release, &cobalt_image)?;
 
@@ -786,7 +719,11 @@ fn run_ci() -> Result<()> {
     let assets = Command::new("python3").current_dir(&workspace_root).args(["-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py"]).status().context("Failed to run model asset and launcher tests")?;
     if !assets.success() { return Err(anyhow!("model asset tests failed")); }
     println!("[xtask] Step 2: Building alloyOS (aarch64) and executing E2E tests...");
-    let kernel_image = build_crates(false, true)?;
+    // The build stage packages executables too; isolate it just like the QEMU
+    // stage rather than touching a developer's active CobaltFS volume.
+    let volume = E2eVolume::new()?;
+    let disk = volume.0.join("cobaltfs.img");
+    let kernel_image = build_crates_mode_with_disk(false, true, false, Some(&disk))?;
     run_e2e_tests(&kernel_image, Duration::from_secs(60))?;
     Ok(())
 }

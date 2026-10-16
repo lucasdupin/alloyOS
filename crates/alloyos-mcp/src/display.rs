@@ -77,6 +77,10 @@ pub struct State {
     pub voice_caption: String,
     #[serde(default)]
     pub voice_error: String,
+    #[serde(default)]
+    pub tile_catalog_loaded: bool,
+    #[serde(default)]
+    pub tile_catalog_error: String,
     pub fault_probe: bool,
     pub booting: bool,
     pub pending: bool,
@@ -92,6 +96,7 @@ pub struct State {
 }
 #[derive(Serialize, Deserialize)]
 pub enum Event {
+    DiscoverTiles,
     OutputMuteToggle,
     VoiceToggle,
     VoiceMute,

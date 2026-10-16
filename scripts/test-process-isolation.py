@@ -5,6 +5,7 @@ import pathlib
 import select
 import subprocess
 import time
+from process_acceptance import acceptance_errors, has_fatal_failure
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--accel', choices=['tcg', 'hvf'], default='tcg')
@@ -28,15 +29,12 @@ try:
             if not chunk:
                 break
             output += chunk
-            if b'kernel survival\n' in output or b'panicked at' in output:
+            if not acceptance_errors(output, isolation=True) or has_fatal_failure(output):
                 break
     print(output.decode(errors='replace'))
-    if b'intentional EL0 panic' not in output:
-        raise SystemExit('Protected-process panic message missing')
-    if b'[crash] exception domain=user' not in output or b'[crash] frame=2' not in output:
-        raise SystemExit('Protected-process fault diagnostics missing')
-    if b'kernel survival\n' not in output:
-        raise SystemExit('Protected-process guest acceptance failed')
+    errors = acceptance_errors(output, isolation=True)
+    if errors:
+        raise SystemExit('Protected-process guest acceptance failed; ' + '; '.join(errors))
 finally:
     process.terminate()
     try:

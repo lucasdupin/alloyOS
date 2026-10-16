@@ -1,0 +1,7 @@
+[package]
+name = "alloyos-fs"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+spin = "0.9"

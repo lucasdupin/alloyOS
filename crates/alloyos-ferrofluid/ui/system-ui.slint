@@ -1,5 +1,5 @@
 import { SoftKeyboard, AlloyPalette } from "@alloyos-keyboard/keyboard.slint";
-import { VerticalBox, HorizontalBox, ScrollView } from "std-widgets.slint";
+import { VerticalBox, HorizontalBox, ScrollView, ListView } from "std-widgets.slint";
 import "../../../assets/fonts/Quicksand-Medium.ttf";
 import "../../../assets/fonts/Quicksand-Bold.ttf";
 import { QuicksandGlyphCoverage } from "../../../assets/fonts/quicksand-coverage.slint";
@@ -113,6 +113,7 @@ export struct TileItemView {
     id: string, title: string, subtitle: string, badge: string, status: string,
 }
 export struct TileActionView { id: string, label: string }
+export struct AvailableTileView { tile-id: string, title: string }
 export struct TileView {
     tile-id: string, title: string, subtitle: string,
     items: [TileItemView], actions: [TileActionView], refreshable: bool,
@@ -426,6 +427,7 @@ export component SystemUi inherits Window {
     default-font-size: 16px;
     QuicksandGlyphCoverage {}
     in-out property <bool> sidebar-open: false;
+    changed sidebar-open => { if !root.sidebar-open { root.available-tiles-expanded = false; } }
     in-out property <bool> sidebar-dragging: false;
     in-out property <length> sidebar-drag-reveal: 0px;
     in property <bool> sidebar-layer-visible: true;
@@ -446,6 +448,11 @@ export component SystemUi inherits Window {
     in property <[MarkdownBlockView]> formatted-transcript;
     in property <[ChatItemView]> chat-items;
     in property <[TileView]> dashboard-tiles;
+    in property <[AvailableTileView]> available-tiles;
+    in-out property <bool> available-tiles-expanded: false;
+    in property <bool> tile-catalog-loaded: false;
+    in property <string> tile-catalog-error;
+    callback discover-tiles();
     in property <[TileView]> dashboard-pins;
     pure callback tile-is-pinned(string, [TileView]) -> bool;
     callback pin-tile(string, bool);
@@ -839,14 +846,16 @@ export component SystemUi inherits Window {
                         content-height: max(self.visible-height, pin-stream.preferred-height);
                         pin-stream := VerticalBox {
                             width: pin-scroll.visible-width;
-                            height: self.preferred-height;
+                            height: max(pin-scroll.visible-height, self.preferred-height);
                             padding: 0px;
                             padding-bottom: 16px;
                             spacing: 0px;
+                            alignment: start;
                             if root.dashboard-tiles.length == 0: Text {
-                                text: "Pin a tile from the conversation to keep it here.";
+                                text: "Pin an available app tile below or add one from the conversation.";
                                 color: AlloyPalette.muted;
                                 wrap: word-wrap;
+                                vertical-stretch: 0;
                             }
                             for tile in root.dashboard-tiles: PinnedTileRow {
                                 tile: tile; pending: root.reply-pending;
@@ -857,6 +866,52 @@ export component SystemUi inherits Window {
                                 finished => { root.finish-unpin(tile.tile-id); }
                                 move => { root.move-pin(tile.tile-id); }
                                 refresh => { root.refresh-tile(tile.tile-id); }
+                            }
+                            VerticalBox {
+                                vertical-stretch: 0;
+                                padding: 0px;
+                                padding-top: 20px;
+                                spacing: 12px;
+                                AlloyButton {
+                                    text: (root.available-tiles-expanded ? "− " : "+ ") + "Available tiles" + (root.tile-catalog-loaded ? " (" + root.available-tiles.length + ")" : "");
+                                    button-label: (root.available-tiles-expanded ? "Collapse" : "Expand") + " available tiles, " + root.available-tiles.length + " available";
+                                    clicked => {
+                                        root.available-tiles-expanded = !root.available-tiles-expanded;
+                                        if root.available-tiles-expanded { root.discover-tiles(); }
+                                    }
+                                }
+                                if root.available-tiles-expanded && root.tile-catalog-error != "": Text {
+                                    text: root.tile-catalog-error; color: AlloyPalette.muted; wrap: word-wrap;
+                                }
+                                if root.available-tiles-expanded && !root.tile-catalog-loaded && root.tile-catalog-error == "": Text {
+                                    text: "Loading available tiles…"; color: AlloyPalette.muted;
+                                }
+                                if root.available-tiles-expanded && root.tile-catalog-loaded && root.available-tiles.length == 0: Text {
+                                    text: "No additional tiles available."; color: AlloyPalette.muted; wrap: word-wrap;
+                                }
+                                if root.available-tiles-expanded && root.available-tiles.length > 0: ListView {
+                                  height: min(280px, root.available-tiles.length * 72px);
+                                  vertical-stretch: 0;
+                                  horizontal-scrollbar-policy: always-off;
+                                  mouse-drag-pan-enabled: true;
+                                  for tile in root.available-tiles: HorizontalBox {
+                                    height: 72px;
+                                    spacing: 10px;
+                                    VerticalBox {
+                                        padding: 0px;
+                                        spacing: 3px;
+                                        horizontal-stretch: 1;
+                                        Text { text: tile.title; color: AlloyPalette.text; wrap: word-wrap; }
+                                        Text { text: tile.tile-id; color: AlloyPalette.muted; font-size: 12px; wrap: word-wrap; }
+                                    }
+                                    AlloyButton {
+                                        text: "+";
+                                        button-label: "Pin " + tile.title;
+                                        enabled: !root.reply-pending;
+                                        clicked => { root.pin-tile(tile.tile-id, true); }
+                                    }
+                                  }
+                                }
                             }
                         }
                     }

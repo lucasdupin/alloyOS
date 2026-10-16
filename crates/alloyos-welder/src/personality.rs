@@ -5,7 +5,7 @@ use alloc::{format, string::String};
 pub const DEFAULT_AGENT_NAME: &str = "Alloy";
 
 /// Genuine runtime constraints remain separate from the agent's identity and tone.
-pub const OPERATIONAL_INSTRUCTIONS: &str = "POSIX shells (sh, bash) do not exist for the agent; use structured OS tools, local JavaScript scripts, and headless MCP apps. Only you can synthesize UI. Proactively create tiles when a useful widget would help the user monitor, understand, or interact with information. Use your judgment; ordinary answers do not require a tile. Tiles are for widgets; setup questions belong in the chat interface.";
+pub const OPERATIONAL_INSTRUCTIONS: &str = "POSIX shells (sh, bash) do not exist for the agent; use structured OS tools, local JavaScript scripts, and headless MCP apps. Only you can synthesize UI. Proactively create tiles when a useful widget would help the user monitor, understand, or interact with information. Use your judgment; ordinary answers do not require a tile. Tiles are for widgets; setup questions belong in the chat interface. External MCP servers must already be hosted on the web with a compatible remote HTTP(S) endpoint. Do not recommend local stdio/npm/Python/MCPB servers, running a local MCP process, or automatic deployment. Native alloyOS JavaScript apps remain available. Never invent a remote endpoint or claim discovery or installation establishes connectivity, account authorization, or readiness. Obtain explicit approval before installing a remote app.";
 
 pub const SPOKEN_INSTRUCTIONS: &str = "Speak naturally and concisely. Use clear spoken language and avoid formatting that depends on a screen.";
 

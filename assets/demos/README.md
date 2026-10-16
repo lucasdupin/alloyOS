@@ -8,6 +8,7 @@ recordings of a live model session.
 | --- | --- | --- | --- | --- |
 | `liquid-boot.gif` | Real boot animation and transition out of boot state | 5 s | 480 × 1044 | 129 KB |
 | `liquid-keyboard.gif` | Keyboard reveal, typed draft, held-key feedback, dismissal | 7 s | 480 × 1044 | 255 KB |
+| `mic-detail.gif` | Mic activation, simulated voice levels, listening, responding, mute, and dismissal | 12 s | 480 × 564 | 819 KB |
 | `liquid-keyboard-detail.gif` | Cropped view of the same keyboard recording | 7 s | 480 × 564 | 234 KB |
 | `setup-wizard.gif` | Real onboarding controller transitions, rendered as conversation | 22.4 s | 480 × 1044 | 321 KB |
 | `memory-controls.gif` | Review demo knowledge, open keyboard, scroll, and pause learning | 12 s | 480 × 1044 | 862 KB |
@@ -83,6 +84,17 @@ The keyboard detail uses `crop=iw:1416:0:1206,scale=480:-2:flags=lanczos`
 in place of the full-frame scaling filter. Inspect representative frames at the
 README's display size, especially the beginning/end of long messages, after any
 renderer or typography change.
+
+## Mic detail demo
+
+`mic-detail.gif` uses the real Ferrofluid renderer and verifies the mic button callback.
+Voice states, captions, and input levels are scripted. Its crop matches the keyboard
+detail demo, focusing on the controls. Reproduce it with:
+
+```sh
+cargo run -p alloyos-ferrofluid --example readme_capture -- voice /tmp/alloyos-readme-capture/voice
+sh scripts/encode-mic-demo.sh /tmp/alloyos-readme-capture/voice
+```
 
 ## Pending live recordings
 

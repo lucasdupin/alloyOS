@@ -18,10 +18,10 @@ and Clock app.
 
 <img src="assets/demos/weather-pin-sidebar.gif" alt="Typing a weather question, pinning the Weather widget, and pulling open the sidebar to reveal it" width="220" />
 
-| Keyboard | Boot |
-| :---: | :---: |
-| <img src="assets/demos/liquid-keyboard-detail.gif" alt="Keyboard revealing, responding to key presses, and dismissing" width="320" /> | <img src="assets/demos/liquid-boot.gif" alt="Ferrofluid loading logo and droplets transitioning to the workspace" width="220" /> |
-| Reveal, key feedback, and dismissal. | Loading animation and workspace transition. |
+| Keyboard | Mic (simulated input) | Boot |
+| :---: | :---: | :---: |
+| <img src="assets/demos/liquid-keyboard-detail.gif" alt="Keyboard revealing, responding to key presses, and dismissing" width="320" /> | <img src="assets/demos/mic-detail.gif" alt="Mic activation, animated voice levels, and listening, responding, and muted states with simulated input" width="320" /> | <img src="assets/demos/liquid-boot.gif" alt="Ferrofluid loading logo and droplets transitioning to the workspace" width="220" /> |
+| Reveal, key feedback, and dismissal. | Activation, voice levels, and mute. | Loading animation and workspace transition. |
 
 ### Setup Wizard
 

@@ -8,6 +8,7 @@ fn probe(words: &[u32]) -> Arc<Task> {
 }
 
 pub fn run() {
+    super::web_runtime_selftest::run();
     scheduler::start_preemption();
     // getpid; exit(returned pid)
     let pid = probe(&[0xd28004e8, 0xd4000001, 0xd2800788, 0xd4000001]);

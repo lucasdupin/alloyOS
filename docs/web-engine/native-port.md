@@ -47,7 +47,7 @@ cmake --build /tmp/alloyos-jsc --target JavaScriptCore
 ```
 
 This is a proposed cross configuration, **not a passing build recipe**. There is
-no alloyOS toolchain file or guest C++ sysroot yet. Do not use a Darwin or Linux
+no full alloyOS toolchain file or guest C++ sysroot yet. Do not use a Darwin or Linux
 sysroot and label its output native alloyOS. Private feature switches require
 rechecking on engine upgrades. The first acceptance binary should create a JS
 context through `JavaScriptCore/JavaScript.h`, evaluate `6 * 7`, validate `42`,
@@ -80,6 +80,47 @@ Installing CMake would remove a host-tool blocker, not the missing target ABI.
 Next implement the target runtime and sysroot, cross-build ICU into that sysroot,
 and introduce explicit alloyOS platform selection in WTF rather than defining
 `__linux__` to take unsupported Linux code paths.
+
+### Verified freestanding C++ compiler foundation
+
+```sh
+python3 scripts/web-engine/build-native-probe.py --output /tmp/alloyos-cxx-probe
+```
+
+This script cross-compiles two C++23 translation units with Apple Clang 17 for
+`aarch64-unknown-none`, without host C++ headers, exceptions, or RTTI. It uses the
+active Rust toolchain's bundled `rust-lld` and the existing protected-process
+linker layout to produce `cxx-probe.elf`. `--cxx` and `--linker` allow explicit
+tool selection. It rejects dynamic linkage, a non-AArch64 executable, a bad entry
+point, and writable executable segments, and records the actual tools and ELF
+segments in `report.json`.
+
+The build passed on 2026-10-18 with Clang 17 and Rust's LLD 23.1.3. The executable
+contains a cross-translation-unit virtual method call computing `6 * 7`, checks
+process ABI version 1, reports `CXX_NATIVE_PASS virtual-dispatch=42`, and exits with
+status zero on success. Failure exit statuses are 72 (ABI mismatch), 73 (wrong
+expression result), and 74 (diagnostic report failed). The protected ABI denies
+stdout, so this uses bounded `PANIC_REPORT` syscall 403, which returns zero and
+currently prefixes all messages with `[crash] user-panic`; the probe itself exits
+normally. The loader provides the initial stack;
+the probe takes the existing heap/length entry arguments but does not allocate.
+The compiler script itself does **not execute the ELF**. Native execution was
+separately verified on 2026-10-18 through the real protected ELF launcher in QEMU:
+
+```sh
+CARGO_TARGET_DIR=/private/tmp/alloyos-web-guest-target \
+  python3 scripts/check_web_runtime_qemu.py --build --require-cxx \
+  --output /private/tmp/alloyos-web-runtime-acceptance
+```
+
+The guest reported `CXX_NATIVE_PASS virtual-dispatch=42`, exited zero, and its
+private address space was released. The same acceptance run passed bounded
+private-memory and original process-isolation probes. Reproduction artifacts
+are `guest.log`, `artifact.json` and `cxx/report.json` in the output directory;
+the manifest records the exact kernel hash and QEMU command. This remains a
+compiler/linker and native-execution foundation, not a C++ standard library,
+a libc sysroot, constructors, thread-local storage or a JavaScriptCore build.
+An additional LLVM download is unnecessary for these first native C++ objects.
 
 ## Full WPE milestone
 

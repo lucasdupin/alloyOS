@@ -108,6 +108,12 @@ fn allocate_flags(count: usize, value: bool) -> Result<Vec<bool>, Error> {
 /// Real three-level ARMv8 tables and private page backing. Kernel identity mappings
 /// retain EL1-only AP permissions; only the dedicated high user window grants EL0.
 /// Physical addresses assume the current kernel's identity-mapped allocator.
+struct PrivateReservation {
+    first: usize,
+    pages: Vec<Option<Box<Page>>>,
+    writable: Vec<bool>,
+}
+
 pub struct AddressSpace {
     root: Box<L1PageTable>,
     _middle: Box<Table>,
@@ -116,6 +122,8 @@ pub struct AddressSpace {
     writable: Vec<bool>,
     mapped: Vec<bool>,
     heap_start: u64,
+    max_pages: usize,
+    reservations: Vec<PrivateReservation>,
 }
 impl AddressSpace {
     pub fn prepare(image: &[u8], writable_pages: usize, max_pages: usize) -> Result<Self, Error> {
@@ -189,6 +197,8 @@ impl AddressSpace {
             writable,
             mapped,
             heap_start: USER_BASE + (code_pages * PAGE_SIZE) as u64,
+            max_pages,
+            reservations: Vec::new(),
         })
     }
     /// Load a static ELF64 AArch64 executable. Reject dynamic images, ELF TLS,
@@ -371,20 +381,195 @@ impl AddressSpace {
     pub fn stack_top(&self) -> u64 {
         USER_BASE + (self.pages.len() * PAGE_SIZE) as u64
     }
+    /// Reserve anonymous private address space without allocating physical backing.
+    /// Image, initial heap/stack, and reservations share the process page quota.
+    pub fn reserve_private(&mut self, length: usize) -> Result<u64, Error> {
+        let count = Self::page_count(length)?;
+        let used = self
+            .reservations
+            .iter()
+            .try_fold(self.pages.len(), |n, r| {
+                n.checked_add(r.pages.len()).ok_or(Error::MemoryLimit)
+            })?;
+        if count > self.max_pages.saturating_sub(used) {
+            return Err(Error::MemoryLimit);
+        }
+        let mut first = self.pages.len();
+        for reservation in &self.reservations {
+            if reservation.first.saturating_sub(first) >= count {
+                break;
+            }
+            first = reservation.first + reservation.pages.len();
+        }
+        let end = first.checked_add(count).ok_or(Error::MemoryLimit)?;
+        if end > 512 * 512 {
+            return Err(Error::MemoryLimit);
+        }
+        let mut pages = Vec::new();
+        pages
+            .try_reserve_exact(count)
+            .map_err(|_| Error::MemoryLimit)?;
+        pages.resize_with(count, || None);
+        let writable = allocate_flags(count, false)?;
+        self.reservations
+            .try_reserve(1)
+            .map_err(|_| Error::MemoryLimit)?;
+        // Allocate table storage before publishing the reservation. Empty table
+        // entries expose no physical memory, including gaps between reservations.
+        let needed = end.div_ceil(512);
+        self._leaf
+            .try_reserve(needed.saturating_sub(self._leaf.len()))
+            .map_err(|_| Error::MemoryLimit)?;
+        while self._leaf.len() < needed {
+            let table = allocate_box(Table([0; 512]))?;
+            let index = self._leaf.len();
+            self._middle.0[index] = (&*table as *const Table as u64 & ADDRESS_MASK) | 3;
+            self._leaf.push(table);
+        }
+        let index = self.reservations.partition_point(|r| r.first < first);
+        self.reservations.insert(
+            index,
+            PrivateReservation {
+                first,
+                pages,
+                writable,
+            },
+        );
+        Ok(USER_BASE + (first * PAGE_SIZE) as u64)
+    }
+
+    fn page_count(length: usize) -> Result<usize, Error> {
+        if length == 0 || length % PAGE_SIZE != 0 {
+            return Err(Error::InvalidRange);
+        }
+        Ok(length / PAGE_SIZE)
+    }
+
+    fn private_interval(
+        &self,
+        address: u64,
+        length: usize,
+    ) -> Result<(usize, usize, usize), Error> {
+        let count = Self::page_count(length)?;
+        let offset = address.checked_sub(USER_BASE).ok_or(Error::InvalidRange)?;
+        if offset % PAGE_SIZE as u64 != 0 {
+            return Err(Error::InvalidRange);
+        }
+        let first = usize::try_from(offset / PAGE_SIZE as u64).map_err(|_| Error::InvalidRange)?;
+        let end = first.checked_add(count).ok_or(Error::InvalidRange)?;
+        self.reservations
+            .iter()
+            .enumerate()
+            .find_map(|(index, r)| {
+                (first >= r.first && end <= r.first + r.pages.len())
+                    .then(|| (index, first - r.first, count))
+            })
+            .ok_or(Error::InvalidRange)
+    }
+
+    /// Commit zero-filled pages, or change existing committed pages to RO/RW.
+    /// Allocation failure leaves the entire requested interval unchanged.
+    pub fn commit_private(
+        &mut self,
+        address: u64,
+        length: usize,
+        writable: bool,
+    ) -> Result<(), Error> {
+        let (index, offset, count) = self.private_interval(address, length)?;
+        let reservation = &mut self.reservations[index];
+        let mut fresh = Vec::new();
+        fresh
+            .try_reserve_exact(count)
+            .map_err(|_| Error::MemoryLimit)?;
+        for i in offset..offset + count {
+            if reservation.pages[i].is_none() {
+                fresh.push((i, allocate_box(Page([0; PAGE_SIZE]))?));
+            }
+        }
+        for (i, page) in fresh {
+            reservation.pages[i] = Some(page);
+        }
+        for i in offset..offset + count {
+            reservation.writable[i] = writable;
+            let physical = &**reservation.pages[i].as_ref().unwrap() as *const Page as u64;
+            let page_index = reservation.first + i;
+            let permissions = (if writable { 1 } else { 3 }) << 6 | (3 << 53);
+            self._leaf[page_index / 512].0[page_index % 512] =
+                (physical & ADDRESS_MASK) | 3 | (1 << 2) | (3 << 8) | (1 << 10) | permissions;
+        }
+        Self::flush_private_tables();
+        Ok(())
+    }
+
+    pub fn decommit_private(&mut self, address: u64, length: usize) -> Result<(), Error> {
+        let (index, offset, count) = self.private_interval(address, length)?;
+        let reservation = &mut self.reservations[index];
+        for i in offset..offset + count {
+            let page_index = reservation.first + i;
+            self._leaf[page_index / 512].0[page_index % 512] = 0;
+        }
+        // Invalidate translations before backing can return to the allocator.
+        Self::flush_private_tables();
+        for i in offset..offset + count {
+            reservation.pages[i] = None;
+            reservation.writable[i] = false;
+        }
+        Ok(())
+    }
+
+    pub fn release_private(&mut self, address: u64, length: usize) -> Result<(), Error> {
+        let (index, offset, count) = self.private_interval(address, length)?;
+        if offset != 0 || count != self.reservations[index].pages.len() {
+            return Err(Error::InvalidRange);
+        }
+        self.decommit_private(address, length)?;
+        self.reservations.remove(index);
+        Ok(())
+    }
+
+    fn flush_private_tables() {
+        #[cfg(all(target_arch = "aarch64", target_os = "none"))]
+        unsafe {
+            core::arch::asm!("dsb ishst", "tlbi vmalle1is", "dsb ish", "isb");
+        }
+    }
+
+    fn page(&self, index: usize, write: bool) -> Result<&Page, Error> {
+        if index < self.pages.len() {
+            if self.mapped[index] && (!write || self.writable[index]) {
+                return Ok(&self.pages[index]);
+            }
+        } else {
+            for r in &self.reservations {
+                if index >= r.first && index - r.first < r.pages.len() {
+                    let offset = index - r.first;
+                    if !write || r.writable[offset] {
+                        return r.pages[offset].as_deref().ok_or(Error::InvalidRange);
+                    }
+                    break;
+                }
+            }
+        }
+        Err(Error::InvalidRange)
+    }
+
     pub fn validate_range(&self, address: u64, length: usize, write: bool) -> Result<(), Error> {
         let offset = address.checked_sub(USER_BASE).ok_or(Error::InvalidRange)?;
         let end = offset
             .checked_add(length as u64)
             .ok_or(Error::InvalidRange)?;
-        if end > (self.pages.len() * PAGE_SIZE) as u64 {
+        if end > (512 * 512 * PAGE_SIZE) as u64 {
             return Err(Error::InvalidRange);
         }
-        if length != 0 {
-            for index in offset as usize / PAGE_SIZE..=((end - 1) as usize / PAGE_SIZE) {
-                if !self.mapped[index] || (write && !self.writable[index]) {
-                    return Err(Error::InvalidRange);
-                }
+        if length == 0 {
+            // Retain the original empty-range convention at the static end.
+            if offset <= (self.pages.len() * PAGE_SIZE) as u64 {
+                return Ok(());
             }
+            return self.page(offset as usize / PAGE_SIZE, write).map(|_| ());
+        }
+        for index in offset as usize / PAGE_SIZE..=((end - 1) as usize / PAGE_SIZE) {
+            self.page(index, write)?;
         }
         Ok(())
     }
@@ -394,7 +579,17 @@ impl AddressSpace {
         self.validate_range(address, bytes.len(), true)?;
         let mut offset = (address - USER_BASE) as usize;
         for byte in bytes {
-            self.pages[offset / PAGE_SIZE].0[offset % PAGE_SIZE] = *byte;
+            let index = offset / PAGE_SIZE;
+            if index < self.pages.len() {
+                self.pages[index].0[offset % PAGE_SIZE] = *byte;
+            } else {
+                let r = self
+                    .reservations
+                    .iter_mut()
+                    .find(|r| index >= r.first && index - r.first < r.pages.len())
+                    .unwrap();
+                r.pages[index - r.first].as_mut().unwrap().0[offset % PAGE_SIZE] = *byte;
+            }
             offset += 1;
         }
         Ok(())
@@ -404,7 +599,7 @@ impl AddressSpace {
         self.validate_range(address, bytes.len(), false)?;
         let mut offset = (address - USER_BASE) as usize;
         for byte in bytes {
-            *byte = self.pages[offset / PAGE_SIZE].0[offset % PAGE_SIZE];
+            *byte = self.page(offset / PAGE_SIZE, false)?.0[offset % PAGE_SIZE];
             offset += 1;
         }
         Ok(())
@@ -485,6 +680,131 @@ impl AppProcess {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn private_reservations_commit_protect_decommit_and_reuse_within_quota() {
+        let mut space = AddressSpace::prepare(&[1], 2, 8).unwrap();
+        let address = space.reserve_private(3 * PAGE_SIZE).unwrap();
+        assert_eq!(address, space.stack_top());
+        assert_eq!(
+            space.validate_range(address, 1, false),
+            Err(Error::InvalidRange)
+        );
+        space.commit_private(address, 2 * PAGE_SIZE, true).unwrap();
+        let mut bytes = [1; 4];
+        space
+            .copy_in(address + PAGE_SIZE as u64 - 2, &mut bytes)
+            .unwrap();
+        assert_eq!(bytes, [0; 4]);
+        space
+            .copy_out(address + PAGE_SIZE as u64 - 2, b"test")
+            .unwrap();
+        space.commit_private(address, 2 * PAGE_SIZE, false).unwrap();
+        assert_eq!(space.copy_out(address, b"x"), Err(Error::InvalidRange));
+        space
+            .copy_in(address + PAGE_SIZE as u64 - 2, &mut bytes)
+            .unwrap();
+        assert_eq!(&bytes, b"test");
+        let index = ((address - USER_BASE) / PAGE_SIZE as u64) as usize;
+        assert_eq!(space._leaf[index / 512].0[index % 512] & (3 << 53), 3 << 53);
+        space.decommit_private(address, PAGE_SIZE).unwrap();
+        assert_eq!(
+            space.validate_range(address, 1, false),
+            Err(Error::InvalidRange)
+        );
+        space.commit_private(address, PAGE_SIZE, true).unwrap();
+        space.copy_in(address, &mut bytes).unwrap();
+        assert_eq!(bytes, [0; 4]);
+        assert_eq!(
+            space.reserve_private(3 * PAGE_SIZE),
+            Err(Error::MemoryLimit)
+        );
+        assert_eq!(
+            space.release_private(address, PAGE_SIZE),
+            Err(Error::InvalidRange)
+        );
+        space.release_private(address, 3 * PAGE_SIZE).unwrap();
+        assert_eq!(
+            space.validate_range(address, 1, false),
+            Err(Error::InvalidRange)
+        );
+        assert_eq!(space.reserve_private(3 * PAGE_SIZE).unwrap(), address);
+    }
+
+    #[test]
+    fn private_operations_reject_static_unaligned_overflow_and_cross_reservation_ranges() {
+        let mut space = AddressSpace::prepare(&[1], 2, 1028).unwrap();
+        assert_eq!(space.reserve_private(0), Err(Error::InvalidRange));
+        assert_eq!(
+            space.reserve_private(PAGE_SIZE - 1),
+            Err(Error::InvalidRange)
+        );
+        let a = space.reserve_private(512 * PAGE_SIZE).unwrap();
+        let b = space.reserve_private(PAGE_SIZE).unwrap();
+        assert_eq!(
+            space.commit_private(USER_BASE, PAGE_SIZE, true),
+            Err(Error::InvalidRange)
+        );
+        assert_eq!(
+            space.decommit_private(space.heap_start(), PAGE_SIZE),
+            Err(Error::InvalidRange)
+        );
+        assert_eq!(
+            space.commit_private(a + 1, PAGE_SIZE, true),
+            Err(Error::InvalidRange)
+        );
+        assert_eq!(
+            space.commit_private(u64::MAX - 4095, PAGE_SIZE, true),
+            Err(Error::InvalidRange)
+        );
+        assert_eq!(
+            space.commit_private(b - PAGE_SIZE as u64, 2 * PAGE_SIZE, true),
+            Err(Error::InvalidRange)
+        );
+        space
+            .commit_private(a + 508 * PAGE_SIZE as u64, 2 * PAGE_SIZE, true)
+            .unwrap();
+        space
+            .copy_out(a + 509 * PAGE_SIZE as u64 - 1, b"ok")
+            .unwrap();
+        let mut bytes = [0; 2];
+        space
+            .copy_in(a + 509 * PAGE_SIZE as u64 - 1, &mut bytes)
+            .unwrap();
+        assert_eq!(&bytes, b"ok");
+        assert_ne!(space._middle.0[1], 0);
+        space.release_private(a, 512 * PAGE_SIZE).unwrap();
+        // Releasing one reservation does not revoke adjacent private backing.
+        space.commit_private(b, PAGE_SIZE, true).unwrap();
+        space.copy_out(b, b"peer").unwrap();
+        assert_eq!(space.reserve_private(PAGE_SIZE).unwrap(), a);
+        let mut result = [0; 4];
+        space.copy_in(b, &mut result).unwrap();
+        assert_eq!(&result, b"peer");
+    }
+
+    #[test]
+    fn private_dynamic_pages_belong_to_one_process_and_drop_with_its_address_space() {
+        let mut first = AddressSpace::prepare(&[1], 2, 4).unwrap();
+        let mut second = AddressSpace::prepare(&[1], 2, 4).unwrap();
+        let address = first.reserve_private(PAGE_SIZE).unwrap();
+        assert_eq!(second.reserve_private(PAGE_SIZE).unwrap(), address);
+        first.commit_private(address, PAGE_SIZE, true).unwrap();
+        second.commit_private(address, PAGE_SIZE, true).unwrap();
+        first.copy_out(address, b"one").unwrap();
+        second.copy_out(address, b"two").unwrap();
+        let index = ((address - USER_BASE) / PAGE_SIZE as u64) as usize;
+        assert_ne!(
+            first._leaf[index / 512].0[index % 512] & ADDRESS_MASK,
+            second._leaf[index / 512].0[index % 512] & ADDRESS_MASK
+        );
+        let mut process = AppProcess::prepared(81, first, 100);
+        process.terminate(ExitReason::Fault);
+        assert!(process.address_space.is_none());
+        let mut bytes = [0; 3];
+        second.copy_in(address, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"two");
+    }
+
     fn space() -> AddressSpace {
         AddressSpace::prepare(&[0xc0, 3, 0x5f, 0xd6], 2, 3).unwrap()
     }
@@ -525,8 +845,7 @@ mod tests {
         image[header..header + 4].copy_from_slice(&7u32.to_le_bytes());
         image[header + 4..header + 8].copy_from_slice(&4u32.to_le_bytes());
         image[header + 8..header + 16].copy_from_slice(&0x2000u64.to_le_bytes());
-        image[header + 16..header + 24]
-            .copy_from_slice(&(USER_BASE + 8192).to_le_bytes());
+        image[header + 16..header + 24].copy_from_slice(&(USER_BASE + 8192).to_le_bytes());
         image[header + 32..header + 40].copy_from_slice(&4u64.to_le_bytes());
         image[header + 40..header + 48].copy_from_slice(&8u64.to_le_bytes());
         image[header + 48..header + 56].copy_from_slice(&8u64.to_le_bytes());

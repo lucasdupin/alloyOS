@@ -433,6 +433,7 @@ capability-gated syscalls. Existing userland code remains unchanged until those
 services are available. This phase does not displace the hosted MCP priority above.
 
 - [ ] **Establish the userland runtime**
+  - Implemented foundation: protected-process private page reservations with quota-limited zero-filled RO/RW commitment, decommit/release and non-executable mappings; this does not provide libc, threads or Rust `std`
   - Audit candidate engines' requirements before expanding the syscall ABI; implement the required allocation/memory mapping, threads, synchronization, clocks, file I/O, networking and C/C++ runtime support
   - Bring up one protected Rust `std` executable and one representative native dependency on ARM64; verify denied capabilities, resource limits and fault recovery
   - Provide familiar library interfaces over authorized resources without granting unrestricted filesystem or network access

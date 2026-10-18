@@ -5,6 +5,8 @@ pub mod pcb;
 pub mod scheduler;
 #[cfg(feature = "process-selftest")]
 pub mod selftest;
+#[cfg(feature = "process-selftest")]
+mod web_runtime_selftest;
 
 #[cfg(test)]
 pub mod tests;

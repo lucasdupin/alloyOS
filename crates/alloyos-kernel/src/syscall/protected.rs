@@ -17,6 +17,22 @@ pub fn dispatch(number: u64, a1: u64, a2: u64, a3: u64) -> i64 {
     if (120..=122).contains(&number) {
         return crate::task::js_process::dispatch(task.pid, space, number, a1, a2, a3);
     }
+    if (alloyos_proto::process::MEMORY_RESERVE..=alloyos_proto::process::MEMORY_RELEASE).contains(&number) {
+        use alloyos_proto::process::*;
+        use crate::task::app_process::Error;
+        let result = match number {
+            MEMORY_RESERVE if a2 == 0 && a3 == 0 => space.reserve_private(a1 as usize).map(|address| address as i64),
+            MEMORY_COMMIT if a3 == MEMORY_READ || a3 == MEMORY_READ_WRITE =>
+                space.commit_private(a1, a2 as usize, a3 == MEMORY_READ_WRITE).map(|_| 0),
+            MEMORY_DECOMMIT if a3 == 0 => space.decommit_private(a1, a2 as usize).map(|_| 0),
+            MEMORY_RELEASE if a3 == 0 => space.release_private(a1, a2 as usize).map(|_| 0),
+            _ => return super::handlers::EINVAL,
+        };
+        return result.unwrap_or_else(|error| match error {
+            Error::MemoryLimit => -12,
+            _ => super::handlers::EINVAL,
+        });
+    }
     if number == alloyos_proto::process::PANIC_REPORT {
         if a2 > 1024 { return -90; }
         let mut bytes = [0u8; 1024];

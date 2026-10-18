@@ -12,3 +12,19 @@ pub const QUERY_ABI_VERSION: u64 = 402;
 /// Report at most 1024 bytes from the caller's private memory before trapping.
 /// x0 = message pointer, x1 = length. This grants no descriptor access.
 pub const PANIC_REPORT: u64 = 403;
+
+/// Private anonymous page reservation. x0 = nonzero page-aligned byte length.
+/// Returns an inaccessible address or a negative error; the supervisor's process
+/// page quota includes static memory and all outstanding reservations.
+pub const MEMORY_RESERVE: u64 = 404;
+/// Commit zeroed private pages or change existing pages' read/write permission.
+/// x0 = address, x1 = page-aligned length, x2 = MEMORY_READ or MEMORY_READ_WRITE.
+/// Existing committed bytes are preserved; executable memory is unsupported.
+pub const MEMORY_COMMIT: u64 = 405;
+/// Discard backing and make a reservation interval inaccessible. x0/x1 = range.
+/// Recommit returns zeroed memory. The virtual reservation remains charged.
+pub const MEMORY_DECOMMIT: u64 = 406;
+/// Release exactly one whole reservation (x0 address, x1 length).
+pub const MEMORY_RELEASE: u64 = 407;
+pub const MEMORY_READ: u64 = 1;
+pub const MEMORY_READ_WRITE: u64 = 3;

@@ -70,6 +70,14 @@ pub trait McpApp {
         Poll::Ready(self.call_tool(name, args))
     }
     fn cancel_pending_tool(&mut self) {}
+    fn poll_connect(&mut self) -> Poll<Result<Vec<McpTool>, McpError>> {
+        Poll::Ready(Err(McpError::invalid_params("app does not support remote connection")))
+    }
+    fn connection_status(&self) -> crate::RemoteConnectionStatus { crate::RemoteConnectionStatus::Disconnected }
+    fn set_trusted_bearer(&mut self, _:Option<String>)->Result<(),McpError> {Err(McpError::invalid_params("app does not support account credentials"))}
+    fn set_credential_reference(&mut self, _: Option<String>) -> Result<(), McpError> {
+        Err(McpError::invalid_params("app does not support remote credentials"))
+    }
     fn read_resource(&self, uri: &str) -> Result<McpResourceContent, McpError>;
     fn get_prompt(&self, name: &str, args: &BTreeMap<String, String>) -> Result<String, McpError>;
     fn render_tile(&self, tile_id: &str) -> Result<AppTile, McpError> {
@@ -359,6 +367,30 @@ impl McpRegistry {
     /// App writes captured by the host; the OS owner persists these after calls.
     pub fn runtime_files(&self) -> BTreeMap<String, String> {
         self.runtime_files.borrow().clone()
+    }
+
+    /// Welder's OS-owned remote connection path; no app-supplied caller identity.
+    pub fn poll_connect_remote(&mut self, app_id: &str) -> Poll<Result<Vec<McpTool>, McpError>> {
+        if let Err(error) = self.verify_package_revision(app_id) { return Poll::Ready(Err(error)); }
+        let Some(entry) = self.apps.get_mut(app_id).filter(|entry| entry.app.manifest().is_remote()) else {
+            return Poll::Ready(Err(McpError::invalid_params("remote app is not installed")));
+        };
+        entry.app.poll_connect()
+    }
+    pub fn remote_connection_status(&self, app_id: &str) -> Option<crate::RemoteConnectionStatus> {
+        self.apps.get(app_id).filter(|entry| entry.app.manifest().is_remote()).map(|entry| entry.app.connection_status())
+    }
+    pub fn set_remote_trusted_bearer(&mut self, app_id:&str,bearer:Option<String>)->Result<(),McpError> {
+        self.verify_package_revision(app_id)?;
+        let entry=self.apps.get_mut(app_id).filter(|entry|entry.app.manifest().is_remote())
+            .ok_or_else(||McpError::invalid_params("remote app is not installed"))?;
+        entry.app.set_trusted_bearer(bearer)
+    }
+    pub fn set_remote_credential_reference(&mut self, app_id: &str, reference: Option<String>) -> Result<(), McpError> {
+        self.verify_package_revision(app_id)?;
+        let entry = self.apps.get_mut(app_id).filter(|entry| entry.app.manifest().is_remote())
+            .ok_or_else(|| McpError::invalid_params("remote app is not installed"))?;
+        entry.app.set_credential_reference(reference)
     }
 
     /// Number of registered MCP apps.

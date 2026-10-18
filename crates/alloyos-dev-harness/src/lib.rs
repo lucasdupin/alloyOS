@@ -1,5 +1,6 @@
 //! The development harness's bounded, loopback-only development endpoint and guest serial transport.
 pub mod credentials;
+pub mod browser_assist;
 pub mod crash;
 pub mod https;
 pub mod voice;

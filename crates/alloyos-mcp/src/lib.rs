@@ -11,6 +11,7 @@ extern crate self as alloyos_mcp;
 #[path = "../../../tests/support/apps.rs"]
 mod fixture_apps;
 
+pub mod browser;
 pub mod apps;
 pub mod clock;
 pub mod process;
@@ -23,7 +24,7 @@ pub mod transport;
 mod remote;
 
 pub use apps::{JsApp, RemoteMcpApp};
-pub use remote::parse_remote_tools;
+pub use remote::{parse_remote_tools, RemoteConnectionStatus};
 pub use protocol::{
     mcp_map, methods, tool_text_result, AppSkill, AppTile, McpError, McpParamSpec, McpPrompt,
     McpRequest, McpResource, McpResourceContent, McpResponse, McpTool, McpValue, TileAction,

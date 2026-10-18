@@ -13,6 +13,52 @@ use core::cell::RefCell;
 use core::task::Poll;
 
 pub const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
+pub const MAX_BEARER_BYTES: usize = 4000;
+pub const MAX_HTTP_HEADERS: usize = 16;
+pub const MAX_HTTP_HEADER_BYTES: usize = 8192;
+
+pub fn valid_headers(headers: &[(String, String)]) -> bool {
+    headers.len() <= MAX_HTTP_HEADERS
+        && headers.iter().map(|(n,v)| n.len() + v.len()).sum::<usize>() <= MAX_HTTP_HEADER_BYTES
+        && headers.iter().all(|(name,value)| !name.is_empty() && name.len() <= 128
+            && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
+            && value.len() <= 4096 && !value.bytes().any(|b| b.is_ascii_control()))
+        && headers.iter().enumerate().all(|(i,(name,_))|
+            !headers[..i].iter().any(|(other,_)| other.eq_ignore_ascii_case(name)))
+}
+
+/// Production remote MCP requires TLS and a DNS authority; DNS results are
+/// separately validated and pinned by the host relay before connecting.
+pub fn remote_mcp_authority(url: &str) -> Option<(&str, u16)> {
+    if url.len() > 8192 || url.bytes().any(|b| b.is_ascii_control() || b.is_ascii_whitespace())
+        || url.contains(['@', '#', '\\', '{', '}']) { return None; }
+    let authority = url.strip_prefix("https://")?.split(['/', '?']).next()?;
+    let (host, port) = match authority.split_once(':') {
+        Some((host,port)) => (host,port.parse::<u16>().ok().filter(|p| *p != 0)?),
+        None => (authority,443),
+    };
+    let lower = host.to_ascii_lowercase();
+    if host.len() > 253 || !host.contains('.') || host.ends_with('.')
+        || host.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+        || ["localhost","local","localdomain","internal","lan","home"].iter()
+            .any(|s| lower == *s || lower.ends_with(&format!(".{s}")))
+        || !host.split('.').all(|label| !label.is_empty() && label.len() <= 63
+            && !label.starts_with('-') && !label.ends_with('-')
+            && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')) { return None; }
+    Some((host,port))
+}
+
+pub fn allowed_remote_mcp(request: &HttpRequest) -> bool {
+    if request.method != "POST" || remote_mcp_authority(&request.url).is_none()
+        || request.body.len() > MAX_HTTP_BODY_BYTES || !valid_headers(&request.headers) { return false; }
+    if !request.headers.iter().all(|(name,_)| ["content-type","accept","mcp-protocol-version","mcp-session-id","mcp-method","mcp-name","x-alloyos-app-id","x-alloyos-credential-ref","x-alloyos-trusted-bearer"]
+        .iter().any(|allowed| name.eq_ignore_ascii_case(allowed)) || name.to_ascii_lowercase().starts_with("mcp-param-")) { return false; }
+    let Ok(value) = McpValue::from_json(&request.body) else { return false; };
+    let Some(map) = value.as_map() else { return false; };
+    map.get("jsonrpc").and_then(McpValue::as_str) == Some("2.0")
+        && matches!(map.get("method").and_then(McpValue::as_str),
+            Some("initialize" | "notifications/initialized" | "tools/list" | "tools/call" | "resources/read" | "prompts/get"))
+}
 
 /// Fixed public endpoints accepted by the QEMU relay. Search queries must be
 /// percent-encoded: no credentials, alternate hosts, or extra URL parameters.
@@ -46,7 +92,7 @@ pub fn allowed_public_request(request: &HttpRequest) -> bool {
     }
 }
 
-#[derive(serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 pub struct HttpRequest {
     pub method: &'static str,
     pub url: String,
@@ -62,7 +108,8 @@ pub struct HttpResponse {
     pub body: String,
 }
 
-/// Hosts own network I/O and credentials. They must bound requests and avoid
+/// Hosts own network I/O. The OS owns credentials; development TLS relays see
+/// trusted bearer bytes transiently and must never log or persist them. Bound requests and avoid
 /// blocking the kernel UI; the synchronous tool interface does not supply a driver.
 pub trait HttpTransport {
     fn request(&mut self, request: &HttpRequest) -> Result<HttpResponse, String>;
@@ -81,6 +128,31 @@ pub struct HttpClient {
 }
 
 impl HttpClient {
+    /// Status-preserving API for protocol/authentication state machines. Unlike
+    /// get/post, a401 is a bounded response rather than a lost auth challenge.
+    pub fn start_request(&mut self, request: &HttpRequest) -> Poll<Result<HttpResponse, McpError>> {
+        if request.body.len() > MAX_HTTP_BODY_BYTES || !valid_headers(&request.headers) {
+            return Poll::Ready(Err(McpError::invalid_params("HTTP request exceeds bounds")));
+        }
+        match &mut self.transport {
+            Some(transport) => transport.start_request(request).map(Self::bounded_response),
+            None => Poll::Ready(self.request(request)),
+        }
+    }
+    pub fn poll_request(&mut self) -> Poll<Result<HttpResponse, McpError>> {
+        match &mut self.transport {
+            Some(transport) => transport.poll_request().map(Self::bounded_response),
+            None => Poll::Ready(Err(McpError::internal_error("no pending HTTP transport"))),
+        }
+    }
+    pub fn cancel_request(&mut self) { self.cancel_get(); }
+    fn bounded_response(response: Result<HttpResponse, String>) -> Result<HttpResponse, McpError> {
+        let response = response.map_err(McpError::internal_error)?;
+        if response.body.len() > MAX_HTTP_BODY_BYTES || !valid_headers(&response.headers) {
+            return Err(McpError::internal_error("HTTP response exceeds bounds"));
+        }
+        Ok(response)
+    }
     pub fn new(routes: Rc<RefCell<BTreeMap<String, String>>>) -> Self {
         Self {
             routes,
@@ -91,7 +163,7 @@ impl HttpClient {
         self.transport = Some(transport);
     }
     pub fn request(&mut self, request: &HttpRequest) -> Result<HttpResponse, McpError> {
-        if request.body.len() > MAX_HTTP_BODY_BYTES {
+        if request.body.len() > MAX_HTTP_BODY_BYTES || !valid_headers(&request.headers) {
             return Err(McpError::invalid_params("HTTP request body exceeds limit"));
         }
         let response = if let Some(transport) = &mut self.transport {
@@ -127,7 +199,7 @@ impl HttpClient {
                 body,
             }
         };
-        if response.body.len() > MAX_HTTP_BODY_BYTES {
+        if response.body.len() > MAX_HTTP_BODY_BYTES || !valid_headers(&response.headers) {
             return Err(McpError::internal_error("HTTP response body exceeds limit"));
         }
         if !(200..300).contains(&response.status) {
@@ -197,8 +269,22 @@ impl HttpClient {
     }
     fn check_response(response: Result<HttpResponse, String>) -> Result<HttpResponse, McpError> {
         let response = response.map_err(McpError::internal_error)?;
-        if response.body.len() > MAX_HTTP_BODY_BYTES { return Err(McpError::internal_error("HTTP response body exceeds limit")); }
+        if response.body.len() > MAX_HTTP_BODY_BYTES || !valid_headers(&response.headers) { return Err(McpError::internal_error("HTTP response body/headers exceed limit")); }
         if !(200..300).contains(&response.status) { return Err(McpError::internal_error(format!("HTTP request failed with status {}", response.status))); }
         Ok(response)
     }
+}
+
+/// OS account-network requests only. The dedicated kernel adapter supplies the
+/// private marker; model/JS networking cannot select this route.
+pub fn allowed_oauth_http(request:&HttpRequest)->bool {
+    remote_mcp_authority(&request.url).is_some() && valid_headers(&request.headers)
+        && request.body.len()<=64*1024
+        && request.headers.iter().any(|(n,v)|n.eq_ignore_ascii_case("x-alloyos-oauth")&&v=="1")
+        && request.headers.iter().all(|(n,_)|["content-type","accept","x-alloyos-oauth"].iter().any(|a|n.eq_ignore_ascii_case(a)))
+        && match request.method {
+            "GET"=>request.body.is_empty(),
+            "POST"=>request.headers.iter().any(|(n,v)|n.eq_ignore_ascii_case("content-type")&&v=="application/x-www-form-urlencoded"),
+            _=>false,
+        }
 }

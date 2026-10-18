@@ -4,7 +4,22 @@ use crate::{
     McpResourceContent, McpSandboxError, McpTool, McpValue, RuntimeCapabilityGuard,
 };
 use alloc::{collections::BTreeMap, format, rc::Rc, string::String, vec, vec::Vec};
-use core::cell::{Cell, RefCell};
+use core::{cell::{Cell, RefCell}, task::Poll};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RemoteConnectionStatus {
+    Disconnected,
+    Connecting,
+    Ready,
+    AuthorizationRequired { challenge: String },
+    Error,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ConnectPhase { Probe, Initialize, Initialized, Tools, Ready }
+struct TrustedBearer(String);
+impl Drop for TrustedBearer {fn drop(&mut self) {unsafe {self.0.as_bytes_mut().fill(0);}}}
+struct PendingWire { id: i64, method: String }
 
 pub struct RemoteMcpApp {
     manifest: AppManifest,
@@ -16,6 +31,17 @@ pub struct RemoteMcpApp {
     client: Option<Rc<RefCell<HttpClient>>>,
     next_id: Cell<i64>,
     session: RefCell<Option<(String, Option<String>)>>,
+    phase: ConnectPhase,
+    modern: bool,
+    status: RemoteConnectionStatus,
+    pending_wire: Option<PendingWire>,
+    pending_call: Option<(String, BTreeMap<String, McpValue>)>,
+    catalog: Vec<McpTool>,
+    catalog_cursor: Option<String>,
+    catalog_pages: usize,
+    catalog_bytes: usize,
+    credential_reference: Option<String>,
+    trusted_bearer: Option<TrustedBearer>,
 }
 
 pub fn parse_remote_tools(json: &str) -> Result<Vec<McpTool>, String> {
@@ -148,6 +174,17 @@ impl RemoteMcpApp {
             client: None,
             next_id: Cell::new(1),
             session: RefCell::new(None),
+            phase: ConnectPhase::Probe,
+            modern: true,
+            status: RemoteConnectionStatus::Disconnected,
+            pending_wire: None,
+            pending_call: None,
+            catalog: Vec::new(),
+            catalog_cursor: None,
+            catalog_pages: 0,
+            catalog_bytes: 0,
+            credential_reference: None,
+            trusted_bearer: None,
         })
     }
     pub fn with_http_client(mut self, client: Rc<RefCell<HttpClient>>) -> Self {
@@ -350,7 +387,7 @@ impl RemoteMcpApp {
         let params = BTreeMap::from([
             (
                 "protocolVersion".into(),
-                McpValue::Text("2025-06-18".into()),
+                McpValue::Text("2025-11-25".into()),
             ),
             ("capabilities".into(), McpValue::Map(BTreeMap::new())),
             (
@@ -381,7 +418,7 @@ impl RemoteMcpApp {
         let version = map
             .get("protocolVersion")
             .and_then(McpValue::as_str)
-            .filter(|version| matches!(*version, "2025-06-18" | "2025-03-26"))
+            .filter(|version| matches!(*version, "2025-11-25" | "2025-06-18" | "2025-03-26"))
             .ok_or_else(|| {
                 McpError::internal_error("unsupported or missing MCP protocol version")
             })?;
@@ -411,6 +448,289 @@ impl RemoteMcpApp {
             }
         }
     }
+
+    pub fn connection_status(&self) -> RemoteConnectionStatus { self.status.clone() }
+    pub fn negotiated_protocol_version(&self)->Option<String> {
+        if self.phase!=ConnectPhase::Ready {None}
+        else if self.modern {Some("2026-07-28".into())}
+        else {self.session.borrow().as_ref().map(|(version,_)|version.clone())}
+    }
+
+    /// Trusted OS configuration only. Public opaque references identify private
+    /// OS records; they are never resolved by the host HTTP relay.
+    pub fn set_credential_reference(&mut self, reference: Option<String>) -> Result<(), McpError> {
+        if self.credential_reference==reference {return Ok(());}
+        if reference.as_ref().is_some_and(|value| value.is_empty() || value.len() > 256
+            || !value.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))) {
+            return Err(McpError::invalid_params("invalid credential reference"));
+        }
+        self.cancel_pending_tool();
+        self.credential_reference = reference;
+        Ok(())
+    }
+
+    /// OS account service only; never expose this setter through model/JS tools.
+    pub fn set_trusted_bearer(&mut self, bearer: Option<String>) -> Result<(),McpError> {
+        if bearer.as_ref().is_some_and(|v|v.is_empty()||v.len()>crate::transport::MAX_BEARER_BYTES||!v.bytes().all(|b|b.is_ascii_graphic())) {
+            return Err(McpError::invalid_params("invalid account credential"));
+        }
+        if self.trusted_bearer.as_ref().map(|v|&v.0)==bearer.as_ref() {return Ok(());}
+        self.cancel_pending_tool();
+        self.trusted_bearer=bearer.map(TrustedBearer);
+        Ok(())
+    }
+
+    fn poll_send(&mut self, method: &str, params: BTreeMap<String,McpValue>, notification: bool)
+        -> Poll<Result<(McpValue,Vec<(String,String)>),McpError>> {
+        if let Err(error) = self.guard.enforce_capability(&AppCapability::ScopedNetwork) {
+            return Poll::Ready(Err(error.to_mcp_error()));
+        }
+        let Some(client) = self.client.clone() else {
+            return Poll::Ready(Err(McpError::internal_error("HTTP transport unavailable")));
+        };
+        let response;
+        let id;
+        let mut params=params;
+        if let Some(pending) = &self.pending_wire {
+            if pending.method != method {
+                return Poll::Ready(Err(McpError::invalid_params("different remote operation pending")));
+            }
+            id = pending.id;
+            response = client.borrow_mut().poll_request();
+        } else {
+            id = self.next_id.get();
+            let Some(next) = id.checked_add(1) else {
+                return Poll::Ready(Err(McpError::internal_error("RPC request ID exhausted")));
+            };
+            self.next_id.set(next);
+            if self.modern {
+                params.insert("_meta".into(),McpValue::Map(BTreeMap::from([
+                    ("io.modelcontextprotocol/protocolVersion".into(),McpValue::Text("2026-07-28".into())),
+                    ("io.modelcontextprotocol/clientCapabilities".into(),McpValue::Map(BTreeMap::new())),
+                    ("io.modelcontextprotocol/clientInfo".into(),McpValue::Map(BTreeMap::from([
+                        ("name".into(),McpValue::Text("alloyOS".into())),("version".into(),McpValue::Text("0.1.0".into()))]))),
+                ])));
+            }
+            let mut rpc = BTreeMap::from([
+                ("jsonrpc".into(), McpValue::Text("2.0".into())),
+                ("method".into(), McpValue::Text(method.into())),
+                ("params".into(),McpValue::Map(params)),
+            ]);
+            if !notification { rpc.insert("id".into(),McpValue::Int(id)); }
+            let mut headers = vec![("Content-Type".into(),"application/json".into()),
+                ("Accept".into(),"application/json, text/event-stream".into())];
+            if self.modern {
+                headers.push(("MCP-Protocol-Version".into(),"2026-07-28".into()));
+                headers.push(("Mcp-Method".into(),method.into()));
+                if let Some(name)=rpc.get("params").and_then(McpValue::as_map).and_then(|p|p.get("name").or_else(||p.get("uri"))).and_then(McpValue::as_str) {
+                    headers.push(("Mcp-Name".into(),encode_header_value(name)));
+                }
+                if method=="tools/call" {
+                    if let Err(error)=append_tool_headers(&self.tools,&rpc,&mut headers) {return Poll::Ready(Err(error));}
+                }
+            } else if let Some((version,session)) = &*self.session.borrow() {
+                headers.push(("MCP-Protocol-Version".into(),version.clone()));
+                if let Some(session) = session { headers.push(("Mcp-Session-Id".into(),session.clone())); }
+            }
+            if let Some(bearer)=&self.trusted_bearer {headers.push(("X-AlloyOS-Trusted-Bearer".into(),bearer.0.clone()));}
+            if let Some(reference) = &self.credential_reference {
+                headers.push(("X-AlloyOS-App-Id".into(),self.manifest.app_id.clone()));
+                headers.push(("X-AlloyOS-Credential-Ref".into(),reference.clone()));
+            }
+            let request = HttpRequest { method:"POST", url:self.manifest.endpoint.clone().unwrap_or_default(),
+                headers, body:McpValue::Map(rpc).to_json() };
+            self.pending_wire = Some(PendingWire {id,method:method.into()});
+            response = client.borrow_mut().start_request(&request);
+        }
+        let response = match response { Poll::Pending => return Poll::Pending, Poll::Ready(response) => response };
+        self.pending_wire = None;
+        let response = match response { Ok(response) => response, Err(error) => return Poll::Ready(Err(error)) };
+        if response.status==400 && self.phase==ConnectPhase::Probe {
+            let error=McpValue::from_json(&response.body).ok().and_then(|v|v.as_map().and_then(|m|m.get("error")).cloned());
+            let code=error.as_ref().and_then(McpValue::as_map).and_then(|m|m.get("code")).and_then(McpValue::as_i64);
+            let recognized=matches!(code,Some(-32020|-32021|-32022));
+            let legacy_supported=error.as_ref().and_then(McpValue::as_map).and_then(|m|m.get("data")).and_then(McpValue::as_map)
+                .and_then(|m|m.get("supported")).and_then(McpValue::as_array).is_some_and(|versions|
+                    versions.iter().filter_map(McpValue::as_str).any(|v|matches!(v,"2025-11-25"|"2025-06-18"|"2025-03-26")));
+            if !recognized || (code==Some(-32022) && legacy_supported) {
+                self.modern=false;self.phase=ConnectPhase::Initialize;return Poll::Pending;
+            }
+        }
+        if response.status == 401 {
+            self.status = RemoteConnectionStatus::AuthorizationRequired { challenge: response.headers.iter()
+                .find(|(name,_)|name.eq_ignore_ascii_case("www-authenticate"))
+                .map(|(_,value)|value.clone()).unwrap_or_default() };
+            return Poll::Ready(Err(McpError::internal_error("remote account authorization required")));
+        }
+        if response.status == 404 && !self.modern {
+            *self.session.borrow_mut() = None;
+            self.phase = ConnectPhase::Initialize;
+            self.status = RemoteConnectionStatus::Disconnected;
+            return Poll::Ready(Err(McpError::internal_error("remote session expired; reconnect before retrying")));
+        }
+        if !(200..300).contains(&response.status) {
+            return Poll::Ready(Err(McpError::internal_error(format!("remote HTTP status {}",response.status))));
+        }
+        if notification {
+            if response.status != 202 || !response.body.is_empty() {
+                return Poll::Ready(Err(McpError::internal_error("invalid notification acknowledgement")));
+            }
+            Poll::Ready(Ok((McpValue::Null,response.headers)))
+        } else {
+            Poll::Ready(rpc_response(&response.body,id).map(|result|(result,response.headers)))
+        }
+    }
+
+    /// Each poll performs at most one bounded transport step. No synchronous
+    /// transport fallback or retries of potentially completed tool calls.
+    pub fn poll_connect(&mut self) -> Poll<Result<Vec<McpTool>,McpError>> {
+        if self.phase == ConnectPhase::Ready { return Poll::Ready(Ok(self.tools.clone())); }
+        self.status = RemoteConnectionStatus::Connecting;
+        let method;
+        let params;
+        match self.phase {
+            ConnectPhase::Probe => {method="tools/list";params=BTreeMap::new();}
+            ConnectPhase::Initialize => {
+                method = "initialize";
+                params = BTreeMap::from([
+                    ("protocolVersion".into(),McpValue::Text("2025-11-25".into())),
+                    ("capabilities".into(),McpValue::Map(BTreeMap::new())),
+                    ("clientInfo".into(),McpValue::Map(BTreeMap::from([
+                        ("name".into(),McpValue::Text("alloyOS".into())),
+                        ("version".into(),McpValue::Text("0.1.0".into()))]))),
+                ]);
+            }
+            ConnectPhase::Initialized => { method="notifications/initialized"; params=BTreeMap::new(); }
+            ConnectPhase::Tools => { method="tools/list"; params = self.catalog_cursor.as_ref()
+                .map(|cursor|BTreeMap::from([("cursor".into(),McpValue::Text(cursor.clone()))])).unwrap_or_default(); }
+            ConnectPhase::Ready => unreachable!(),
+        }
+        let (result,headers) = match self.poll_send(method,params,self.phase == ConnectPhase::Initialized) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Err(error)) => {
+                if !matches!(self.status, RemoteConnectionStatus::AuthorizationRequired {..}) { self.status=RemoteConnectionStatus::Error; }
+                self.phase=if self.modern {ConnectPhase::Probe}else{ConnectPhase::Initialize};
+                *self.session.borrow_mut()=None;
+                self.catalog.clear();self.catalog_cursor=None;self.catalog_pages=0;self.catalog_bytes=0;
+                return Poll::Ready(Err(error));
+            }
+            Poll::Ready(Ok(response)) => response,
+        };
+        if self.phase==ConnectPhase::Probe {self.phase=ConnectPhase::Tools;}
+        let processed = (|| -> Result<(),McpError> {
+            match self.phase {
+                ConnectPhase::Initialize => {
+                    let map=result.as_map().ok_or_else(||McpError::internal_error("invalid MCP initialize result"))?;
+                    let version=map.get("protocolVersion").and_then(McpValue::as_str)
+                        .filter(|v|matches!(*v,"2025-11-25"|"2025-06-18"|"2025-03-26"))
+                        .ok_or_else(||McpError::internal_error("unsupported MCP protocol version"))?;
+                    if map.get("capabilities").and_then(McpValue::as_map).and_then(|c|c.get("tools")).and_then(McpValue::as_map).is_none()
+                        || !map.get("serverInfo").and_then(McpValue::as_map).is_some_and(|info|
+                            info.get("name").and_then(McpValue::as_str).is_some() && info.get("version").and_then(McpValue::as_str).is_some()) {
+                        return Err(McpError::internal_error("remote server does not advertise tools"));
+                    }
+                    let session=headers.iter().find(|(name,_)|name.eq_ignore_ascii_case("mcp-session-id")).map(|(_,value)|value.clone());
+                    if session.as_ref().is_some_and(|v| v.is_empty() || v.len()>256 || !v.bytes().all(|b|(0x21..=0x7e).contains(&b))) {
+                        return Err(McpError::internal_error("invalid MCP session ID"));
+                    }
+                    *self.session.borrow_mut()=Some((version.into(),session));
+                    self.phase=ConnectPhase::Initialized;
+                    self.catalog.clear();self.catalog_cursor=None;self.catalog_pages=0;self.catalog_bytes=0;
+                }
+                ConnectPhase::Initialized => self.phase=ConnectPhase::Tools,
+                ConnectPhase::Tools => {
+                    let map=result.as_map().ok_or_else(||McpError::internal_error("invalid tools/list result"))?;
+                    let tools=map.get("tools").ok_or_else(||McpError::internal_error("missing tools/list tools"))?;
+                    let json=tools.to_json();
+                    self.catalog_bytes=self.catalog_bytes.saturating_add(json.len());
+                    if self.catalog_bytes>crate::transport::MAX_HTTP_BODY_BYTES {return Err(McpError::internal_error("remote tool catalog byte budget exceeded"));}
+                    let mut page=parse_remote_tools(&json).map_err(McpError::internal_error)?;
+                    if self.modern {page.retain(|tool|tool_header_bindings(tool).is_ok());}
+                    if self.catalog.len()+page.len()>1000 || page.iter().any(|tool|self.catalog.iter().any(|old|old.name==tool.name)) {
+                        return Err(McpError::internal_error("remote tool catalog exceeds bounds or duplicates names"));
+                    }
+                    self.catalog.extend(page);self.catalog_pages+=1;
+                    self.catalog_cursor=match map.get("nextCursor") {
+                        None => None,
+                        Some(McpValue::Text(cursor)) if !cursor.is_empty() && cursor.len()<=1024 && self.catalog_pages<16 => Some(cursor.clone()),
+                        _ => return Err(McpError::internal_error("invalid or excessive tools/list cursor")),
+                    };
+                    if self.catalog_cursor.is_none() {
+                        self.tools=core::mem::take(&mut self.catalog);
+                        self.phase=ConnectPhase::Ready;self.status=RemoteConnectionStatus::Ready;
+                    }
+                }
+                ConnectPhase::Probe=>unreachable!(),
+                ConnectPhase::Ready => {},
+            }
+            Ok(())
+        })();
+        if let Err(error)=processed { self.cancel_pending_tool();self.status=RemoteConnectionStatus::Error;return Poll::Ready(Err(error)); }
+        if self.phase==ConnectPhase::Ready {Poll::Ready(Ok(self.tools.clone()))} else {Poll::Pending}
+    }
+}
+
+fn encode_header_value(value:&str)->String {
+    if value.trim()==value && value.bytes().all(|b|(0x20..=0x7e).contains(&b))
+        && !(value.starts_with("=?base64?") && value.ends_with("?=")) {return value.into();}
+    const ABC:&[u8]=b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result=String::from("=?base64?");
+    for chunk in value.as_bytes().chunks(3) {
+        let n=((chunk[0]as u32)<<16)|((chunk.get(1).copied().unwrap_or(0)as u32)<<8)|chunk.get(2).copied().unwrap_or(0)as u32;
+        result.push(ABC[(n>>18)as usize]as char);result.push(ABC[((n>>12)&63)as usize]as char);
+        result.push(if chunk.len()>1 {ABC[((n>>6)&63)as usize]as char}else{'='});
+        result.push(if chunk.len()>2 {ABC[(n&63)as usize]as char}else{'='});
+    }
+    result.push_str("?=");result
+}
+
+type HeaderBinding=(String,Vec<String>,String);
+fn tool_header_bindings(tool:&McpTool)->Result<Vec<HeaderBinding>,McpError> {
+    fn visit(value:&McpValue,path:&mut Vec<String>,reachable:bool,depth:usize,out:&mut Vec<HeaderBinding>)->Result<(),McpError> {
+        if depth>32 {return Err(McpError::invalid_params("tool schema nesting exceeds limit"));}
+        if let Some(map)=value.as_map() {
+            if let Some(header)=map.get("x-mcp-header") {
+                let header=header.as_str().ok_or_else(||McpError::invalid_params("invalid tool header annotation"))?;
+                let kind=map.get("type").and_then(McpValue::as_str).unwrap_or("");
+                if !reachable || path.is_empty() || header.len()>64 || header.is_empty()
+                    || !header.bytes().all(|b|b.is_ascii_alphanumeric()||b"!#$%&'*+-.^_`|~".contains(&b))
+                    || !matches!(kind,"string"|"integer"|"boolean") || out.iter().any(|(name,_,_)|name.eq_ignore_ascii_case(header)) {
+                    return Err(McpError::invalid_params("invalid tool header annotation"));
+                }
+                out.push((header.into(),path.clone(),kind.into()));
+            }
+            for (key,child) in map {
+                if key=="properties" {
+                    if let Some(properties)=child.as_map() {for (key,child) in properties {
+                        path.push(key.clone());visit(child,path,reachable,depth+1,out)?;path.pop();
+                    }}
+                } else if key!="x-mcp-header" {visit(child,path,false,depth+1,out)?;}
+            }
+        } else if let Some(array)=value.as_array() {for child in array {visit(child,path,false,depth+1,out)?;}}
+        Ok(())
+    }
+    let mut bindings=Vec::new();
+    if let Some(schema)=&tool.input_schema {visit(schema,&mut Vec::new(),true,0,&mut bindings)?;}
+    Ok(bindings)
+}
+
+fn append_tool_headers(tools:&[McpTool],rpc:&BTreeMap<String,McpValue>,headers:&mut Vec<(String,String)>)->Result<(),McpError> {
+    let params=rpc.get("params").and_then(McpValue::as_map).ok_or_else(||McpError::invalid_params("missing tool parameters"))?;
+    let name=params.get("name").and_then(McpValue::as_str).unwrap_or("");
+    let tool=tools.iter().find(|tool|tool.name==name).ok_or_else(||McpError::method_not_found("unknown remote tool"))?;
+    for (header,path,kind) in tool_header_bindings(tool)? {
+        let mut value=params.get("arguments");
+        for key in path {value=value.and_then(McpValue::as_map).and_then(|map|map.get(&key));}
+        let value=match value {None|Some(McpValue::Null)=>continue,Some(value)=>value};
+        let text=match kind.as_str() {
+            "string"=>value.as_str().map(String::from),
+            "boolean"=>value.as_bool().map(|value|if value {"true".into()}else{"false".into()}),
+            "integer"=>value.as_i64().filter(|value|(-9_007_199_254_740_991..=9_007_199_254_740_991).contains(value)).map(|value|format!("{value}")),
+            _=>None,
+        }.ok_or_else(||McpError::invalid_params("invalid mirrored tool argument"))?;
+        headers.push((format!("Mcp-Param-{header}"),encode_header_value(&text)));
+    }
+    Ok(())
 }
 
 fn rpc_response(body: &str, id: i64) -> Result<McpValue, McpError> {
@@ -454,7 +774,13 @@ fn rpc_response(body: &str, id: i64) -> Result<McpValue, McpError> {
         ));
     }
     match (map.get("result"), map.get("error")) {
-        (Some(result), None) => Ok(result.clone()),
+        (Some(result), None) => {
+            if result.as_map().and_then(|map|map.get("resultType")).and_then(McpValue::as_str)
+                .is_some_and(|kind|kind!="complete") {
+                return Err(McpError::internal_error("remote result requires unsupported client input or extension"));
+            }
+            Ok(result.clone())
+        },
         (None, Some(error)) => Err(McpError::internal_error(format!(
             "remote MCP error: {}",
             error.to_json()
@@ -466,6 +792,46 @@ fn rpc_response(body: &str, id: i64) -> Result<McpValue, McpError> {
 }
 
 impl McpApp for RemoteMcpApp {
+    fn poll_connect(&mut self) -> Poll<Result<Vec<McpTool>,McpError>> { RemoteMcpApp::poll_connect(self) }
+    fn connection_status(&self) -> RemoteConnectionStatus { RemoteMcpApp::connection_status(self) }
+    fn set_trusted_bearer(&mut self, bearer:Option<String>)->Result<(),McpError> {RemoteMcpApp::set_trusted_bearer(self,bearer)}
+    fn set_credential_reference(&mut self, reference:Option<String>) -> Result<(),McpError> {
+        RemoteMcpApp::set_credential_reference(self,reference)
+    }
+    fn poll_call_tool(&mut self, tool_name:&str,args:&BTreeMap<String,McpValue>) -> Poll<Result<McpValue,McpError>> {
+        if let Err(error)=self.guard.enforce_capability(&AppCapability::ExposeMcpTools) {return Poll::Ready(Err(error.to_mcp_error()));}
+        if let Some((name,pending_args))=&self.pending_call {
+            if name!=tool_name || pending_args!=args {return Poll::Ready(Err(McpError::invalid_params("different remote call pending")));}
+        } else {self.pending_call=Some((tool_name.into(),args.clone()));}
+        match self.poll_connect() {
+            Poll::Pending=>return Poll::Pending,
+            Poll::Ready(Err(error))=>{self.pending_call=None;return Poll::Ready(Err(error));},
+            Poll::Ready(Ok(_))=>{},
+        }
+        let prefix=format!("{}.",self.manifest.app_id);
+        let name=tool_name.strip_prefix(&prefix).unwrap_or(tool_name);
+        if !self.tools.iter().any(|tool|tool.name==name) {
+            self.pending_call=None;return Poll::Ready(Err(McpError::method_not_found("unknown remote tool")));
+        }
+        let response=self.poll_send("tools/call",BTreeMap::from([
+            ("name".into(),McpValue::Text(name.into())),("arguments".into(),McpValue::Map(args.clone()))]),false);
+        if response.is_ready() {self.pending_call=None;}
+        match response {
+            Poll::Pending=>Poll::Pending,
+            Poll::Ready(Ok((value,_)))=>Poll::Ready(Ok(value)),
+            Poll::Ready(Err(error))=>{
+                if !matches!(self.status,RemoteConnectionStatus::AuthorizationRequired{..}) {self.status=RemoteConnectionStatus::Error;}
+                self.phase=if self.modern {ConnectPhase::Probe}else{ConnectPhase::Initialize};*self.session.borrow_mut()=None;
+                Poll::Ready(Err(error))
+            }
+        }
+    }
+    fn cancel_pending_tool(&mut self) {
+        if self.pending_wire.take().is_some() {if let Some(client)=&self.client {client.borrow_mut().cancel_request();}}
+        self.pending_call=None;self.phase=ConnectPhase::Probe;self.modern=true;
+        self.status=RemoteConnectionStatus::Disconnected;*self.session.borrow_mut()=None;
+        self.catalog.clear();self.catalog_cursor=None;self.catalog_pages=0;self.catalog_bytes=0;
+    }
     fn manifest(&self) -> &AppManifest {
         &self.manifest
     }

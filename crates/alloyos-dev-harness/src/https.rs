@@ -169,6 +169,24 @@ pub fn registry_get(url: &str) -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({"status":status,"headers":[],"body":body}))
 }
 
+pub(crate) fn public_image_address(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            let [a,b,c,_] = ip.octets();
+            !(ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_broadcast()
+                || ip.is_documentation() || a == 0 || a >= 224 || (a == 100 && (64..=127).contains(&b))
+                || (a == 192 && b == 0) || (a == 198 && (b == 18 || b == 19))
+                || (a == 192 && b == 88 && c == 99))
+        }
+        std::net::IpAddr::V6(ip) => {
+            let s = ip.segments();
+            // Global unicast only. Exclude protocol assignments, documentation and 6to4.
+            (s[0] & 0xe000) == 0x2000 && !(s[0] == 0x2001 && (s[1] < 0x200 || s[1] == 0xdb8))
+                && s[0] != 0x2002 && !(s[0] == 0x3fff && s[1] < 0x1000)
+        }
+    }
+}
+
 pub fn registry_post(url: &str, body: &str, headers: &[(String, String)]) -> Result<serde_json::Value, String> {
     if !alloyos_mcp::transport::allowed_public_post(url) { return Err("registry destination rejected".into()); }
     if body.len() > 1024 * 1024 || headers.len() > 8 { return Err("registry request too large".into()); }
@@ -222,6 +240,126 @@ pub fn registry_post(url: &str, body: &str, headers: &[(String, String)]) -> Res
     Ok(serde_json::json!({"status": status, "headers": [], "body": body_resp}))
 }
 
+/// Hosted MCP uses the same private bounded worker as search, but retains
+/// protocol/authentication response metadata. Never retry a tool POST: a lost
+/// response does not establish that the server did not execute the operation.
+pub fn mcp_post(request: &alloyos_mcp::transport::HttpRequest) -> Result<serde_json::Value, String> {
+    mcp_post_with_id(request,0)
+}
+fn mcp_post_with_id(request: &alloyos_mcp::transport::HttpRequest,id:u64) -> Result<serde_json::Value, String> {
+    use alloyos_mcp::transport::{remote_mcp_authority, MAX_HTTP_BODY_BYTES, MAX_HTTP_HEADER_BYTES};
+    use std::net::ToSocketAddrs;
+    if !alloyos_mcp::transport::allowed_remote_mcp(request) && !alloyos_mcp::transport::allowed_oauth_http(request) { return Err("invalid hosted MCP request".into()); }
+    let (host,port) = remote_mcp_authority(&request.url).ok_or("invalid hosted MCP endpoint")?;
+    let addresses: Vec<_> = (host,port).to_socket_addrs().map_err(|_|"MCP DNS failed")?.collect();
+    if addresses.is_empty() || addresses.iter().any(|address|!public_image_address(address.ip())) {
+        return Err("MCP destination is not public".into());
+    }
+    let ip = match addresses[0].ip() {
+        std::net::IpAddr::V4(ip)=>ip.to_string(), std::net::IpAddr::V6(ip)=>format!("[{ip}]"),
+    };
+    let bearer=request.headers.iter().find(|(name,_)|name.eq_ignore_ascii_case("x-alloyos-trusted-bearer")).map(|(_,value)|value);
+    if bearer.is_some_and(|v|v.is_empty()||v.len()>alloyos_mcp::transport::MAX_BEARER_BYTES||!v.bytes().all(|b|b.is_ascii_graphic())) {return Err("invalid trusted credential".into());}
+    let mut config=format!("url = {}\nrequest = \"POST\"\nproto = \"=https\"\nnoproxy = \"*\"\nresolve = {}\nconnect-timeout = 10\nmax-time = 45\nmax-filesize = {}\nsilent\ninclude\nwrite-out = \"\\n%{{http_code}}\"\n",quote(&request.url),quote(&format!("{host}:{port}:{ip}")),MAX_HTTP_BODY_BYTES);
+    if request.method=="GET" {config=config.replace("request = \"POST\"","request = \"GET\"");}
+    for (name,value) in &request.headers {
+        if name.to_ascii_lowercase().starts_with("x-alloyos-") {continue;}
+        config.push_str(&format!("header = {}\n",quote(&format!("{name}: {value}"))));
+    }
+    if let Some(bearer)=&bearer {
+        config.push_str(&format!("header = {}\n",quote(&format!("Authorization: Bearer {bearer}"))));
+    }
+    if request.method=="POST" {config.push_str(&format!("data = {}\n",quote(&request.body)));}
+    let mut child=Command::new("curl").args(["--disable","--config","-"]).env_clear()
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null())
+        .spawn().map_err(|_|"MCP HTTPS client unavailable")?;
+    let written=child.stdin.take().ok_or("MCP stdin unavailable")?.write_all(config.as_bytes());
+    unsafe {config.as_bytes_mut().fill(0);}
+    if written.is_err() {let _=child.kill();let _=child.wait();return Err("MCP request write failed".into());}
+    let output=child.stdout.take().ok_or("MCP stdout unavailable")?;
+    let child=std::sync::Arc::new(std::sync::Mutex::new(child));
+    register_mcp_child(id,child.clone())?;
+    let limit=MAX_HTTP_BODY_BYTES+MAX_HTTP_HEADER_BYTES+5;
+    let mut bytes=Vec::new();
+    let read=output.take(limit as u64).read_to_end(&mut bytes);
+    remove_mcp_child(id);
+    let mut child=child.lock().map_err(|_|"MCP process lock failed")?;
+    if read.is_err() || bytes.len()>=limit {let _=child.kill();let _=child.wait();return Err("MCP response exceeds bounds".into());}
+    if !child.wait().map_err(|_|"MCP HTTPS wait failed")?.success() {return Err("MCP HTTPS request failed".into());}
+    let response=bounded_http_response(&bytes,!alloyos_mcp::transport::allowed_oauth_http(request))?;
+    Ok(response)
+}
+
+#[derive(Default)]
+struct McpProcesses {
+    active:std::collections::BTreeMap<u64,std::sync::Arc<std::sync::Mutex<std::process::Child>>>,
+    cancelled:std::collections::VecDeque<u64>,
+}
+fn mcp_processes()->&'static std::sync::Mutex<McpProcesses> {
+    static PROCESSES:std::sync::OnceLock<std::sync::Mutex<McpProcesses>>=std::sync::OnceLock::new();
+    PROCESSES.get_or_init(Default::default)
+}
+fn register_mcp_child(id:u64,child:std::sync::Arc<std::sync::Mutex<std::process::Child>>)->Result<(),String> {
+    let mut processes=mcp_processes().lock().map_err(|_|"MCP process registry unavailable")?;
+    if let Some(index)=processes.cancelled.iter().position(|old|*old==id) {
+        processes.cancelled.remove(index);
+        if let Ok(mut child)=child.lock() {let _=child.kill();let _=child.wait();}
+        return Err("MCP request cancelled".into());
+    }
+    processes.active.insert(id,child);Ok(())
+}
+fn remove_mcp_child(id:u64) {if let Ok(mut processes)=mcp_processes().lock() {processes.active.remove(&id);}}
+/// Handle cancellation in the device pump, outside the blocked HTTPS worker.
+fn cancel_mcp_frame(line:&str)->bool {
+    let fields:Vec<_>=line.trim_end_matches(['\r','\n']).split('\t').collect();
+    if fields.len()!=3 || fields[0]!="MCPHTTP1" || fields[2]!="cancel" {return false;}
+    let Ok(id)=fields[1].parse::<u64>() else {return true;};
+    if let Ok(mut processes)=mcp_processes().lock() {
+        if let Some(child)=processes.active.remove(&id) {if let Ok(mut child)=child.lock() {let _=child.kill();}}
+        else {if processes.cancelled.len()==64 {processes.cancelled.pop_front();}processes.cancelled.push_back(id);}
+    }
+    true
+}
+
+#[cfg(test)]
+fn mcp_response(bytes:&[u8])->Result<serde_json::Value,String> {bounded_http_response(bytes,true)}
+fn bounded_http_response(bytes:&[u8],require_rpc:bool)->Result<serde_json::Value,String> {
+    use alloyos_mcp::transport::{MAX_HTTP_BODY_BYTES,MAX_HTTP_HEADER_BYTES,valid_headers};
+    let response=core::str::from_utf8(bytes).map_err(|_|"invalid MCP response encoding")?;
+    let (mut response,code)=response.rsplit_once('\n').ok_or("missing MCP status")?;
+    let status:u16=code.parse().map_err(|_|"invalid MCP status")?;
+    let mut header_bytes=0;
+    loop {
+        let (block,body)=response.split_once("\r\n\r\n").ok_or("invalid MCP headers")?;
+        header_bytes+=block.len()+4;
+        if header_bytes>MAX_HTTP_HEADER_BYTES {return Err("MCP response headers exceed bounds".into());}
+        let mut lines=block.split("\r\n");
+        let line=lines.next().ok_or("missing MCP status line")?;
+        if !line.starts_with("HTTP/") {return Err("invalid MCP status line".into());}
+        let header_status:u16=line.split_whitespace().nth(1).ok_or("missing MCP status code")?.parse().map_err(|_|"invalid MCP status code")?;
+        if (100..200).contains(&header_status) {response=body;continue;}
+        if header_status!=status || body.len()>MAX_HTTP_BODY_BYTES {return Err("MCP response status/body invalid".into());}
+        let mut headers:Vec<(String,String)>=Vec::new();
+        for line in lines {
+            let (name,value)=line.split_once(':').ok_or("malformed MCP response header")?;
+            let value=value.trim();
+            if ["mcp-session-id","mcp-protocol-version","www-authenticate","content-type"]
+                .iter().any(|allowed|name.eq_ignore_ascii_case(allowed)) {
+                if let Some((_,old))=headers.iter_mut().find(|(old,_)|old.eq_ignore_ascii_case(name)) {
+                    if !name.eq_ignore_ascii_case("www-authenticate") {return Err("duplicate MCP response header".into());}
+                    old.push_str(", ");old.push_str(value);
+                } else {headers.push((name.into(),value.into()));}
+            }
+        }
+        if !valid_headers(&headers) {return Err("invalid MCP response headers".into());}
+        if status==200 && (require_rpc || !body.is_empty()) && !headers.iter().any(|(name,value)|name.eq_ignore_ascii_case("content-type")
+            && matches!(value.split(';').next().unwrap_or("").trim(),"application/json"|"text/event-stream")) {
+            return Err("unsupported MCP response content type".into());
+        }
+        return Ok(serde_json::json!({"status":status,"headers":headers,"body":body}));
+    }
+}
+
 pub fn registry_relay(line: &str) -> Option<String> {
     if !line.starts_with("MCPHTTP1\t") { return None; }
     let fields: Vec<_> = line.trim_end_matches(['\r', '\n']).split('\t').collect();
@@ -230,6 +368,16 @@ pub fn registry_relay(line: &str) -> Option<String> {
         if fields.len() != 4 || line.len() > HTTP_FRAME_LIMIT { return Err("invalid registry frame".into()); }
         let value: serde_json::Value = serde_json::from_str(&decode_hex(fields[3]).map_err(|_| "invalid registry hex")?).map_err(|_| "invalid registry JSON")?;
         match fields[2] {
+            "mcp" | "authhttp" => {
+                if fields[2]=="mcp" && value["method"] != "POST" {return Err("invalid MCP HTTP method".into());}
+                let headers:Vec<(String,String)>=serde_json::from_value(value["headers"].clone()).map_err(|_|"invalid MCP headers")?;
+                let method=match value["method"].as_str() {Some("GET")=>"GET",Some("POST")=>"POST",_=>return Err("invalid account HTTP method".into())};
+                let request=alloyos_mcp::transport::HttpRequest {method,
+                    url:value["url"].as_str().ok_or("missing MCP endpoint")?.into(),headers,
+                    body:value["body"].as_str().ok_or("missing MCP request")?.into()};
+                if fields[2]=="authhttp" && !alloyos_mcp::transport::allowed_oauth_http(&request) {return Err("invalid account HTTP request".into());}
+                mcp_post_with_id(&request,id)
+            }
             "get" => {
                 if value["method"] != "GET" || value["body"] != "" || value["headers"].as_array().is_none_or(|headers| !headers.is_empty()) { return Err("invalid registry HTTP method/headers".into()); }
                 registry_get(value["url"].as_str().ok_or("missing registry URL")?)
@@ -257,6 +405,13 @@ pub fn registry_relay(line: &str) -> Option<String> {
         Ok(response) => format!("MCPHTTP1\t{id}\tok\t{}\n", encode_hex(&response.to_string())),
         Err(_) => format!("MCPHTTP1\t{id}\terror\tregistry_https_failed\n"),
     })
+}
+
+/// Obsolete host token-custody route is deliberately rejected.
+pub fn account_relay(line:&str)->Option<String> {
+    if !line.starts_with("ACCOUNT1\t") {return None;}
+    let id=line.split('\t').nth(1).and_then(|v|v.parse::<u64>().ok()).unwrap_or(0);
+    Some(format!("ACCOUNT1\t{id}\terror\tinvalid_account_request\n"))
 }
 
 /// Handle only the private cloud frame and never expose raw failure details.
@@ -343,7 +498,7 @@ pub fn run_ui(command: &mut Command) -> Result<(), String> {
         .unwrap_or_else(||std::path::PathBuf::from("target/alloyos-voice-helper"));
     let mut voice=crate::voice::HostVoice::launch(&helper).ok();
     let mut active_voice=0;
-    let (http_requests,http_replies)=relay_worker(|line|registry_relay(line).or_else(||relay(line,post)));
+    let (http_requests,http_replies)=relay_worker(|line|crate::browser_assist::relay_line(line).or_else(||account_relay(line)).or_else(||registry_relay(line)).or_else(||relay(line,post)));
     let status = loop {
         if crate::STOP.load(std::sync::atomic::Ordering::Relaxed) {
             let _ = child.kill();
@@ -408,7 +563,8 @@ pub fn run_ui(command: &mut Command) -> Result<(), String> {
             continue;
         }
         crate::crash::record(&line);
-        if line.starts_with("FORGEHTTP1\t") || line.starts_with("MCPHTTP1\t") {
+        if cancel_mcp_frame(&line) {continue;}
+        if line.starts_with("FORGEHTTP1\t") || line.starts_with("MCPHTTP1\t") || line.starts_with("ACCOUNT1\t") || line.starts_with("BROWSER1\t") {
             if http_requests.try_send(line.clone()).is_err() {
                 let reply=relay_busy(&line);
                 input.write_all(reply.as_bytes()).and_then(|_|input.flush()).map_err(|_|"guest pipe closed")?;
@@ -628,5 +784,41 @@ mod voice_relay_tests {
     #[test]
     fn saturation_reply_does_not_expose_request() {
         assert_eq!(relay_busy("FORGEHTTP1\t7\tpost\tsecret"),"FORGEHTTP1\t7\terror\thost_relay_busy\n");
+    }
+}
+
+#[cfg(test)]
+mod remote_http_tests {
+    use super::*;
+    #[test]
+    fn response_preserves_only_bounded_protocol_and_oauth_metadata() {
+        let bytes=b"HTTP/1.1 100 Continue\r\n\r\nHTTP/2 401 Unauthorized\r\nWWW-Authenticate: Bearer resource_metadata=\"https://auth.example.com/metadata\", scope=\"read\"\r\nSet-Cookie: private-secret\r\nMcp-Session-Id: session-a\r\nContent-Type: application/json\r\n\r\n{}\n401";
+        let response=mcp_response(bytes).unwrap();
+        assert_eq!(response["status"],401);
+        let encoded=response.to_string();assert!(encoded.contains("resource_metadata"));assert!(encoded.contains("session-a"));
+        assert!(!encoded.contains("private-secret"));
+        assert!(mcp_response(b"HTTP/2 200\r\nContent-Type: text/html\r\n\r\nunsafe\n200").is_err());
+        assert!(mcp_response(b"HTTP/2 200\r\nContent-Type: application/json\r\nMcp-Session-Id: a\r\nMcp-Session-Id: b\r\n\r\n{}\n200").is_err());
+        let oversized=format!("HTTP/2 401\r\nWWW-Authenticate: {}\r\n\r\n\n401","x".repeat(8192));
+        assert!(mcp_response(oversized.as_bytes()).is_err());
+    }
+    #[test]
+    fn invalid_account_frames_return_fixed_errors_without_echoing_secrets() {
+        for payload in ["nothex",&encode_hex("{\"secret\":\"private-secret\"}")] {
+            let response=account_relay(&format!("ACCOUNT1\t8\t{payload}\n")).unwrap();
+            assert_eq!(response,"ACCOUNT1\t8\terror\tinvalid_account_request\n");
+        }
+    }
+    #[test]
+    fn cancellation_closes_active_request_process_without_waiting_for_network_timeout() {
+        let child=Command::new("python3").args(["-c","import time; time.sleep(30)"]).stdout(Stdio::null()).spawn().unwrap();
+        let child=std::sync::Arc::new(std::sync::Mutex::new(child));
+        let id=u64::MAX-99;register_mcp_child(id,child.clone()).unwrap();
+        assert!(cancel_mcp_frame(&format!("MCPHTTP1\t{id}\tcancel\n")));
+        assert!(!child.lock().unwrap().wait().unwrap().success());
+        let id=id-1;
+        assert!(cancel_mcp_frame(&format!("MCPHTTP1\t{id}\tcancel\n")));
+        let child=Command::new("python3").args(["-c","import time; time.sleep(30)"]).stdout(Stdio::null()).spawn().unwrap();
+        assert!(register_mcp_child(id,std::sync::Arc::new(std::sync::Mutex::new(child))).is_err());
     }
 }

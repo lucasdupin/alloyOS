@@ -237,3 +237,25 @@ VirtIO-RNG. `/dev/urandom`, `getrandom` and OAuth use the fail-closed generator;
 timer-derived general randomness is separate and cannot enable it. A future
 hardware port must supply a trusted entropy source; this gate does not validate
 Raspberry Pi entropy hardware. The virtual entropy source trusts its hypervisor.
+
+### OS OAuth guest integration fixture
+
+```sh
+cargo build -p alloyos-kernel --target aarch64-unknown-none --release \
+  --features oauth-selftest --offline
+python3 scripts/check_oauth_guest_qemu.py \
+  --kernel target/aarch64-unknown-none/release/alloyos-kernel \
+  --disk /tmp/alloyos-native-consent-acceptance.img \
+  --output /tmp/alloyos-os-oauth-evidence
+```
+
+Supply a formatted CobaltFS image (for example, create a separate image with
+`cargo xtask processes --release --disk-image /tmp/alloyos-native-consent-acceptance.img`).
+The gate copies it and boots three times with synthetic UART responses. It runs
+the production OS broker, cryptographic entropy, PKCE, private store, browser and
+HTTP ports; checks authenticated MCP discovery/call, restoration after reboot,
+refresh and local revocation despite a provider failure. A final reboot must not
+restore revoked authority. Logs omit callback, token and authenticated request
+frames. The fixture uses no real accounts, browser, provider, DNS or network;
+it does not establish Gmail readiness or validate a provider's OAuth deployment.
+The self-test feature is opt-in and absent from ordinary builds.

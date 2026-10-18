@@ -30,6 +30,8 @@ forge = []
 crash-selftest = []
 process-selftest = []
 process-runtime-selftest = []
+remote-mcp-selftest = []
+oauth-selftest = []
 
 [lib]
 name = "alloyos_kernel"

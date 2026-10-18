@@ -319,6 +319,9 @@ impl AlloyOsHost for KernelVfsBackend {
 
     fn fs_write(&mut self, path: &str, content: &str) -> Result<(), String> {
         let norm = ScriptCapabilities::normalize_path(path);
+        if norm == "/apps" || norm.starts_with("/apps/") {
+            return Err("App packages are OS-managed; scripts cannot mutate /apps.".into());
+        }
         if norm == "/knowledge" || norm.starts_with("/knowledge/") {
             return Err(format!(
                 "Security violation: scripts and apps cannot directly write to user knowledge repository '{}'; profile updates are owned by Welder",
@@ -339,6 +342,9 @@ impl AlloyOsHost for KernelVfsBackend {
 
     fn fs_delete(&mut self, path: &str) -> Result<bool, String> {
         let norm = ScriptCapabilities::normalize_path(path);
+        if norm == "/apps" || norm.starts_with("/apps/") {
+            return Err("App packages are OS-managed; scripts cannot mutate /apps.".into());
+        }
         if norm == "/knowledge" || norm.starts_with("/knowledge/") {
             return Err(format!(
                 "Security violation: scripts and apps cannot directly delete user knowledge repository '{}'; profile updates are owned by Welder",
@@ -416,6 +422,14 @@ pub fn init_kernel_agent_runtime(forge: Rc<RefCell<Forge>>) -> AgentRuntime {
     let mut runtime = AgentRuntime::with_vfs_backend(backend);
     runtime.set_forge(forge);
     runtime.tool_registry.set_http_transport(alloc::boxed::Box::new(crate::drivers::mcp_https::HostRegistryHttp::default()));
+    let _ = runtime.tool_registry.set_account_broker(alloc::boxed::Box::new(
+        alloyos_welder::oauth::OsAccountBroker::new(
+            alloc::boxed::Box::new(super::accounts::KernelCredentialStore::global()),
+            alloc::boxed::Box::new(crate::drivers::mcp_accounts::HostBrowserAssistant::default()),
+            alloc::boxed::Box::new(crate::drivers::mcp_https::OAuthHttp::default()),
+            alloc::boxed::Box::new(crate::drivers::mcp_accounts::KernelOAuthCrypto),
+        ),
+    ));
     let _ = runtime.notify_system_boot();
     let _ = runtime.notify_network_online();
     runtime

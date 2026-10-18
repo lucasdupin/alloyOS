@@ -65,6 +65,8 @@ pub struct SetupAnswer { pub revision: u64, pub value: String }
 #[derive(Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct State {
     #[serde(default)]
+    pub pending_remote_install: Option<crate::install::PendingRemoteInstall>,
+    #[serde(default)]
     pub output_muted: bool,
     #[serde(default)]
     pub voice_state: VoiceState,
@@ -96,6 +98,7 @@ pub struct State {
 }
 #[derive(Serialize, Deserialize)]
 pub enum Event {
+    RemoteInstallDecision { id: String, approved: bool },
     DiscoverTiles,
     OutputMuteToggle,
     VoiceToggle,

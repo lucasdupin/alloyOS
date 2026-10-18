@@ -261,3 +261,157 @@ fn broker_protocol_rejects_cross_app_response_and_invalid_references() {
     }
 }
 
+#[derive(Default)]
+struct Wire {
+    requests: Vec<alloyos_mcp::transport::HttpRequest>,
+    fail_discovery: bool,
+}
+struct McpTransport(Rc<RefCell<Wire>>);
+impl alloyos_mcp::transport::HttpTransport for McpTransport {
+    fn request(
+        &mut self,
+        request: &alloyos_mcp::transport::HttpRequest,
+    ) -> Result<alloyos_mcp::transport::HttpResponse, String> {
+        use alloyos_mcp::transport::HttpResponse;
+        let mut wire = self.0.borrow_mut();
+        wire.requests.push(request.clone());
+        assert!(!request
+            .headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("Authorization")));
+        if !request
+            .headers
+            .iter()
+            .any(|(name, value)| name == "X-AlloyOS-Credential-Ref" && value == REFERENCE)
+        {
+            return Ok(HttpResponse { status:401, headers:vec![("WWW-Authenticate".into(), "Bearer resource_metadata=\"https://mail.example/.well-known/oauth-protected-resource\"".into())], body:String::new() });
+        }
+        let rpc: serde_json::Value = serde_json::from_str(&request.body).unwrap();
+        let method = rpc["method"].as_str().unwrap();
+        if method == "notifications/initialized" {
+            return Ok(HttpResponse {
+                status: 202,
+                headers: vec![],
+                body: String::new(),
+            });
+        }
+        let result = match method {
+            "initialize" => {
+                serde_json::json!({"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"mail","version":"1"}})
+            }
+            "tools/list" => {
+                if wire.fail_discovery {
+                    return Ok(HttpResponse {
+                        status: 503,
+                        headers: vec![],
+                        body: String::new(),
+                    });
+                }
+                serde_json::json!({"tools":[{"name":"read_mail","inputSchema":{"type":"object","properties":{}}}]})
+            }
+            _ => panic!("unexpected method {method}"),
+        };
+        Ok(HttpResponse {
+            status: 200,
+            headers: vec![],
+            body: serde_json::json!({"jsonrpc":"2.0","id":rpc["id"],"result":result}).to_string(),
+        })
+    }
+}
+fn tool_registry(
+    fail_discovery: bool,
+) -> (
+    alloyos_welder::NativeToolRegistry,
+    Rc<RefCell<alloyos_welder::SharedMapVfsBackend>>,
+    Rc<RefCell<Wire>>,
+) {
+    let backend = alloyos_welder::SharedMapVfsBackend::shared();
+    backend.borrow_mut().files.insert("/apps/mail/mail.mcp".into(), "name=Mail\nversion=1\ncapabilities=ExposeMcpTools,ScopedNetwork\nendpoint=https://mail.example/mcp\ntransport=streamable-http\n".into());
+    backend
+        .borrow_mut()
+        .files
+        .insert("/apps/mail/tools.json".into(), "[]".into());
+    let mut registry = alloyos_welder::NativeToolRegistry::with_vfs_backend(backend.clone());
+    let wire = Rc::new(RefCell::new(Wire {
+        fail_discovery,
+        ..Wire::default()
+    }));
+    registry.set_http_transport(Box::new(McpTransport(wire.clone())));
+    registry
+        .set_account_broker(Box::new(Broker {
+            outcomes: Rc::new(RefCell::new(
+                vec![
+                    AccountOutcome::Error {
+                        error: AccountError::CredentialUnavailable,
+                    },
+                    AccountOutcome::Authorizing {
+                        attempt: "attempt123456789012345".into(),
+                    },
+                    authorized(),
+                    AccountOutcome::Disconnected {
+                        remote_revoked: false,
+                    },
+                ]
+                .into(),
+            )),
+            requests: Rc::new(RefCell::new(Vec::new())),
+            pending: None,
+            delayed: true,
+        }))
+        .unwrap();
+    (registry, backend, wire)
+}
+fn drive_tool(registry: &mut alloyos_welder::NativeToolRegistry, name: &str) -> serde_json::Value {
+    let call = alloyos_forge::provider::ToolCall::new(name, name, "{\"app\":\"mail\"}");
+    let mut ui = alloyos_welder::AgentUiSynthesizer::new();
+    for _ in 0..100 {
+        match registry.poll_execute_tool(&call, &mut ui) {
+            Poll::Pending => {}
+            Poll::Ready(Ok(output)) => {
+                assert!(!output.output_json.contains(REFERENCE));
+                return serde_json::from_str(&output.output_json).unwrap();
+            }
+            Poll::Ready(Err(error)) => panic!("{error}"),
+        }
+    }
+    panic!("connection did not complete within bounded fixture polls")
+}
+#[test]
+fn user_connection_tools_dispatch_broker_then_verify_mcp_and_never_expose_capabilities() {
+    let (mut registry, backend, wire) = tool_registry(false);
+    let initial = drive_tool(&mut registry, "mcp_connection_status");
+    assert_eq!(initial["connection"]["phase"], "installed");
+    let connected = drive_tool(&mut registry, "mcp_connect");
+    assert_eq!(connected["ok"], true);
+    assert_eq!(connected["connection"]["phase"], "ready");
+    assert!(wire
+        .borrow()
+        .requests
+        .iter()
+        .any(|request| request.body.contains("tools/list")));
+    assert!(backend
+        .borrow()
+        .files
+        .values()
+        .all(|content| !content.contains(REFERENCE)));
+    let disconnected = drive_tool(&mut registry, "mcp_disconnect");
+    assert_eq!(disconnected["connection"]["phase"], "disconnected");
+    assert_eq!(
+        disconnected["connection"]["remote_revocation_confirmed"],
+        false
+    );
+    assert_eq!(
+        disconnected["connection"]["last_error"],
+        "revocation_failed"
+    );
+    let restored = alloyos_welder::NativeToolRegistry::with_vfs_backend(backend);
+    assert!(!format!("{restored:?}").contains(REFERENCE));
+}
+#[test]
+fn successful_oauth_with_failed_mcp_discovery_never_reports_connection_ready() {
+    let (mut registry, _, _) = tool_registry(true);
+    let connected = drive_tool(&mut registry, "mcp_connect");
+    assert_eq!(connected["ok"], false);
+    assert_eq!(connected["connection"]["phase"], "error");
+    assert_eq!(connected["connection"]["last_error"], "transport_failed");
+}

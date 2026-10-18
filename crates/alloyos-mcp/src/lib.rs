@@ -13,6 +13,7 @@ mod fixture_apps;
 
 pub mod account;
 pub mod browser;
+pub mod install;
 pub mod apps;
 pub mod clock;
 pub mod process;

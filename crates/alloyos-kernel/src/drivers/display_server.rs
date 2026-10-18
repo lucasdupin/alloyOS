@@ -387,6 +387,15 @@ impl DisplayProxy {
     pub fn take_tile_discovery_request(&self) -> bool {
         self.take(|event| matches!(event, Event::DiscoverTiles)).is_some()
     }
+    pub fn set_pending_remote_install(&self, pending: Option<&alloyos_mcp::install::PendingRemoteInstall>) {
+        self.state.borrow_mut().pending_remote_install = pending.filter(|p|p.is_valid()).cloned();
+    }
+    pub fn take_remote_install_decision(&self) -> Option<(String, bool)> {
+        match self.take(|event| matches!(event, Event::RemoteInstallDecision { .. }))? {
+            Event::RemoteInstallDecision { id, approved } => Some((id, approved)),
+            _ => None,
+        }
+    }
     pub fn set_tiles(&self, v: &[AppTile]) {
         self.state.borrow_mut().tiles = v.to_vec();
     }
@@ -550,6 +559,8 @@ pub fn syscall(
                 return -22;
             };
             match &e {
+                Event::RemoteInstallDecision { id, .. } if id.is_empty() || id.len() > 64
+                    || !id.bytes().all(|b|b.is_ascii_alphanumeric() || b == b'-') => return -90,
                 Event::Submit(s) if s.len() > 16384 => return -90,
                 Event::Dashboard(ids) if ids.len() > 64 || ids.iter().any(|id| id.len() > 128) => {
                     return -90
@@ -640,9 +651,8 @@ mod tests {
             ),
             -22
         );
-        // Catalog discovery uses the same authenticated, bounded channel as
-        // other display intents; opening the drawer itself sends no request.
-        let event = serde_json::to_vec(&Event::DiscoverTiles).unwrap();
+        // Package approval shares the authenticated, bounded display channel.
+        let event = serde_json::to_vec(&Event::RemoteInstallDecision { id: "install-1".into(), approved: true }).unwrap();
         space.copy_out(address, &event).unwrap();
         for _ in 0..64 {
             assert_eq!(
@@ -677,5 +687,7 @@ mod tests {
             syscall(display::DISPLAY_INFO, address, 0, 0, &task, &mut space),
             -1
         );
+        assert_eq!(syscall(display::DISPLAY_EVENT, address, event.len() as u64, 0, &task, &mut space), -1,
+            "an unauthorized process cannot approve package changes");
     }
 }

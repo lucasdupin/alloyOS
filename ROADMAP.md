@@ -34,6 +34,14 @@ optional discovery adapter, not a required provider or runtime dependency.
   remains session-only. No account connection or Gmail action has been executed
   as part of current fixture validation.
 
+Completed gates cover native Install/Cancel consent, fail-closed platform entropy,
+public hosted MCP discovery/tool calls, and a three-boot synthetic OAuth flow
+through the OS broker and CobaltFS private store, including refresh and durable
+local disconnect after provider failure. Credentials are unencrypted at rest;
+optional QEMU browser assistance stores no credentials, while the development
+HTTPS relay can transiently see protected request plaintext. Provider selection,
+client registration and real Gmail authorization remain unverified.
+
 Existing public-registry search, remote package install/uninstall and remote MCP
 fixtures are foundations, not proof of production account connectivity. Optional
 conversational app onboarding during first-run setup remains deferred; it is

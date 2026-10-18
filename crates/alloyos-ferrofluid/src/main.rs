@@ -89,6 +89,7 @@ pub extern "C" fn _start(heap_start: usize, heap_length: usize) -> ! {
                     ui.set_transcript(&s.transcript);
                     ui.set_available_tiles(&s.available);
                     ui.set_tile_discovery_status(s.tile_catalog_loaded, &s.tile_catalog_error);
+                    ui.set_pending_remote_install(s.pending_remote_install.as_ref());
                     ui.set_tiles(&s.tiles);
                     ui.set_chat_items(&s.items);
                     if s.pinned != pins {
@@ -140,6 +141,9 @@ pub extern "C" fn _start(heap_start: usize, heap_length: usize) -> ! {
         }
         if ui.take_tile_discovery_request() {
             send(Event::DiscoverTiles);
+        }
+        while let Some((id, approved)) = ui.take_remote_install_decision() {
+            send(Event::RemoteInstallDecision { id, approved });
         }
         while let Some(e) = ui.take_tile_event() {
             send(Event::Tile(e))

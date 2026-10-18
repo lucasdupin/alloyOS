@@ -2,81 +2,10 @@
 use alloc::{string::String, vec::Vec};
 use serde_json::Value;
 
-/// Web-hosted HTTP(S), excluding local/private addresses. Reuse manifest URL
-/// validation before applying the narrower hosted-server product boundary.
+/// Match production remote MCP transport compatibility. DNS results still need
+/// host validation/pinning; metadata does not prove connectivity or authorization.
 pub(crate) fn hosted_endpoint(url: &str) -> bool {
-    if url.len() > 8192 || url.contains(['{', '}', '<', '>']) {
-        return false;
-    }
-    let manifest = alloyos_mcp::AppManifest::new_remote(
-        "candidate",
-        "Candidate",
-        "1",
-        alloc::vec![
-            alloyos_mcp::AppCapability::ExposeMcpTools,
-            alloyos_mcp::AppCapability::ScopedNetwork,
-        ],
-        url,
-        Some("streamable-http".into()),
-    );
-    if alloyos_mcp::validate_app_manifest(&manifest).is_err() {
-        return false;
-    }
-    let Some((_, rest)) = url.split_once("://") else {
-        return false;
-    };
-    let authority = rest.split(['/', '?']).next().unwrap_or("");
-    if authority.starts_with('[') {
-        let Some(end) = authority.find(']') else {
-            return false;
-        };
-        let Ok(ip) = authority[1..end].parse::<core::net::Ipv6Addr>() else {
-            return false;
-        };
-        // Global-unicast IPv6 only; excludes loopback, mapped IPv4, local/link local.
-        return ip.segments()[0] & 0xe000 == 0x2000;
-    }
-    let host = authority
-        .split(':')
-        .next()
-        .unwrap_or("")
-        .trim_end_matches('.');
-    if let Ok(ip) = host.parse::<core::net::Ipv4Addr>() {
-        let [a, b, _, _] = ip.octets();
-        return !(matches!(a, 0 | 10 | 127)
-            || a >= 224
-            || (a == 169 && b == 254)
-            || (a == 172 && (16..=31).contains(&b))
-            || (a == 192 && b == 168)
-            || (a == 100 && (64..=127).contains(&b))
-            || (a == 198 && matches!(b, 18 | 19)));
-    }
-    let lower = host.to_ascii_lowercase();
-    if host.len() > 253
-        || !host.contains('.')
-        || host.bytes().all(|b| b.is_ascii_digit() || b == b'.')
-        || [
-            "localhost",
-            "local",
-            "localdomain",
-            "internal",
-            "lan",
-            "home",
-        ]
-        .iter()
-        .any(|suffix| lower == *suffix || lower.ends_with(&alloc::format!(".{suffix}")))
-    {
-        return false;
-    }
-    host.split('.').all(|label| {
-        !label.is_empty()
-            && label.len() <= 63
-            && !label.starts_with('-')
-            && !label.ends_with('-')
-            && label
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-    })
+    !url.contains(['<', '>']) && alloyos_mcp::transport::remote_mcp_authority(url).is_some()
 }
 
 pub(crate) fn official_remotes(server: &Value) -> Vec<Value> {
@@ -142,13 +71,14 @@ mod tests {
     fn hosted_url_policy_rejects_local_addresses_and_malformed_authorities() {
         for url in [
             "https://gmail.example/mcp",
-            "http://public.example:8080/mcp",
-            "https://8.8.8.8/mcp",
-            "https://[2606:4700:4700::1111]/mcp",
+            "https://public.example:8443/mcp",
         ] {
             assert!(hosted_endpoint(url), "{url}");
         }
         for url in [
+            "http://public.example/mcp",
+            "https://8.8.8.8/mcp",
+            "https://[2606:4700:4700::1111]/mcp",
             "stdio://server",
             "file:///tmp/mcp",
             "https://localhost/mcp",

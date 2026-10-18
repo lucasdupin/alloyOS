@@ -1051,6 +1051,19 @@ impl AgentRuntime {
         Ok(output)
     }
 
+    pub fn take_package_change_result(&mut self) -> Option<Result<ToolExecutionOutput,AiError>> {
+        self.tool_registry.take_package_change_result()
+    }
+
+    pub fn pending_remote_install(&self) -> Option<alloyos_mcp::install::PendingRemoteInstall> {
+        self.tool_registry.pending_remote_install()
+    }
+
+    /// Trusted display approval route; intentionally absent from model tools.
+    pub fn confirm_remote_install(&mut self, id: &str, approved: bool) -> Result<ToolExecutionOutput, AiError> {
+        self.tool_registry.confirm_remote_install(id, approved)
+    }
+
     pub fn pinned_tile_ids(&self) -> &[String] {
         &self.pinned_tile_ids
     }
@@ -2293,8 +2306,10 @@ mod tests {
             .tool_registry
             .execute_tool(&install_call, &mut ui)
             .expect("smithery_install must succeed");
-        assert!(install_out.output_json.contains(r#""ok":true"#));
-        assert!(install_out.output_json.contains("/apps/github/"));
+        assert!(install_out.output_json.contains(r#""awaiting_user_approval":true"#));
+        assert!(runtime.tool_registry.vfs_read("/apps/github/github.mcp").is_none());
+        let proposal = runtime.pending_remote_install().unwrap();
+        runtime.confirm_remote_install(&proposal.id, true).unwrap();
 
         // Verify files were created on CobaltFS
         assert!(runtime.tool_registry.vfs_read("/apps/github/github.mcp").is_some());
@@ -2331,7 +2346,19 @@ mod tests {
             .tool_registry
             .execute_tool(&uninstall_call, &mut ui)
             .expect("smithery_uninstall must succeed");
-        assert!(uninstall_out.output_json.contains(r#""ok":true"#));
+        assert!(uninstall_out.output_json.contains(r#""awaiting_user_approval":true"#));
+        // This fixture host confirms local credential cleanup; no real account.
+        struct CleanupBroker;
+        impl crate::accounts::AccountBroker for CleanupBroker {
+            fn start(&mut self,request:&alloyos_mcp::account::AccountRequest)->Poll<Result<alloyos_mcp::account::AccountResponse,alloyos_mcp::account::AccountError>> {
+                Poll::Ready(Ok(alloyos_mcp::account::AccountResponse{request_id:request.request_id,app_id:request.app_id.clone(),endpoint:request.endpoint.clone(),outcome:alloyos_mcp::account::AccountOutcome::Disconnected{remote_revoked:false}}))
+            }
+            fn poll(&mut self)->Poll<Result<alloyos_mcp::account::AccountResponse,alloyos_mcp::account::AccountError>> {panic!("cleanup fixture is immediate")}
+            fn cancel(&mut self){}
+        }
+        runtime.tool_registry.set_account_broker(alloc::boxed::Box::new(CleanupBroker)).unwrap();
+        let review=runtime.pending_remote_install().unwrap();
+        runtime.confirm_remote_install(&review.id,true).unwrap();
 
         // 7. Verify mcp_list_tools no longer lists github
         let list_out2 = runtime

@@ -25,7 +25,7 @@ fn official_discovery_filters_local_only_and_preserves_only_compatible_hosted_re
             {"type":"streamable-http","url":"https://gmail.example/mcp"},
             {"type":"sse","url":"https://gmail.example/sse"}
         ]}},
-        {"server":{"name":"remote","remotes":[{"type":"streamable-http","url":"http://public.example/mcp"}]}}
+        {"server":{"name":"remote","remotes":[{"type":"streamable-http","url":"https://public.example/mcp"}]}}
     ]}).to_string());
     let result = execute(
         &mut registry,
@@ -130,7 +130,11 @@ fn install_uses_only_an_advertised_hosted_endpoint_without_claiming_connection()
         json!({"server":"acme/gmail","endpoint":"https://gmail.example/mcp"}),
     )
     .unwrap();
-    assert_eq!(result["endpoint"], "https://gmail.example/mcp");
+    assert_eq!(result["proposal"]["endpoint"], "https://gmail.example/mcp");
+    assert_eq!(result["installed"], false);
+    assert!(registry.vfs_read("/apps/gmail/gmail.mcp").is_none());
+    let id = result["proposal"]["id"].as_str().unwrap();
+    registry.confirm_remote_install(id, true).unwrap();
     assert_eq!(result["connectivity_verified"], false);
     assert_eq!(result["connection_status"], "not_connected");
     let manifest = registry.vfs_read("/apps/gmail/gmail.mcp").unwrap();

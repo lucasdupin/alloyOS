@@ -453,6 +453,15 @@ export component SystemUi inherits Window {
     in property <bool> tile-catalog-loaded: false;
     in property <string> tile-catalog-error;
     callback discover-tiles();
+    in property <string> pending-install-id;
+    in property <bool> pending-install-removal;
+    in property <string> pending-install-name;
+    in property <string> pending-install-endpoint;
+    in property <string> pending-install-source;
+    in property <string> pending-install-publisher;
+    property <bool> install-decision-sent: false;
+    changed pending-install-id => { root.install-decision-sent = false; }
+    callback remote-install-decision(string, bool);
     in property <[TileView]> dashboard-pins;
     pure callback tile-is-pinned(string, [TileView]) -> bool;
     callback pin-tile(string, bool);
@@ -939,6 +948,53 @@ export component SystemUi inherits Window {
                 accessible-role: button;
                 accessible-label: root.sidebar-open ? "Close pinned tiles" : "Open pinned tiles";
                 clicked => { root.release-editor(); root.sidebar-open = !root.sidebar-open; }
+            }
+        }
+        if root.pending-install-id != "": Rectangle {
+            width: parent.width; height: parent.height;
+            background: #000000dd;
+            // Approval is a native user action, separate from app/model tools.
+            TouchArea { width: parent.width; height: parent.height; }
+            Rectangle {
+                width: min(parent.width - 32px, 520px);
+                height: min(parent.height - 64px, 500px);
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                background: AlloyPalette.charcoal;
+                border-color: AlloyPalette.silver; border-width: 1px; border-radius: 18px;
+                VerticalBox {
+                    padding: 20px; spacing: 16px;
+                    Text { text: root.pending-install-removal ? "Remove app?" : "Install web-hosted MCP service?"; color: AlloyPalette.text; wrap: word-wrap; font-size: 22px; font-weight: 700; font-family: "Quicksand Bold"; vertical-stretch: 0; }
+                    review-scroll := ScrollView {
+                        vertical-stretch: 1;
+                        horizontal-scrollbar-policy: always-off;
+                        content-width: self.visible-width;
+                        mouse-drag-pan-enabled: true;
+                        VerticalBox {
+                            width: review-scroll.visible-width;
+                            padding: 0px; spacing: 12px;
+                            Text { text: root.pending-install-name; color: AlloyPalette.text; font-weight: 700; wrap: word-wrap; }
+                            if root.pending-install-endpoint != "": Text { text: "Endpoint: " + root.pending-install-endpoint; color: AlloyPalette.text; wrap: char-wrap; }
+                            Text { text: "Source: " + root.pending-install-source; color: AlloyPalette.muted; wrap: word-wrap; }
+                            Text { text: "Publisher (unverified): " + (root.pending-install-publisher == "" ? "Not provided" : root.pending-install-publisher); color: AlloyPalette.muted; wrap: word-wrap; }
+                            Text { text: root.pending-install-removal ? "Removal deletes this app package. It does not revoke access at the provider." : "Installation saves this connection. It does not connect an account or start OAuth."; color: AlloyPalette.muted; wrap: word-wrap; }
+                        }
+                    }
+                    HorizontalBox {
+                        spacing: 12px; vertical-stretch: 0;
+                        AlloyButton {
+                            text: "Cancel"; button-label: root.pending-install-removal ? "Cancel app removal" : "Cancel service installation";
+                            enabled: !root.install-decision-sent;
+                            clicked => { root.remote-install-decision(root.pending-install-id, false); root.install-decision-sent = true; }
+                        }
+                        AlloyButton {
+                            text: root.install-decision-sent ? "Waiting…" : root.pending-install-removal ? "Remove" : "Install";
+                            button-label: root.pending-install-removal ? "Remove app" : "Install web-hosted MCP service";
+                            enabled: !root.install-decision-sent;
+                            clicked => { root.remote-install-decision(root.pending-install-id, true); root.install-decision-sent = true; }
+                        }
+                    }
+                }
             }
         }
     }

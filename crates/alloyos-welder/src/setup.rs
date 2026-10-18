@@ -578,6 +578,9 @@ impl AgentRuntime {
                                     serde_json::from_str(&output.output_json).map_err(|_| {
                                         invalid("Invalid app installation response")
                                     })?;
+                                if body["awaiting_user_approval"] == true {
+                                    next.catalog_message = "Review the remote app details and select Install or Cancel in the native confirmation. No app has been installed yet.".into();
+                                } else {
                                 let id = body["app_id"].as_str().ok_or_else(|| {
                                     invalid("Installation did not report an app ID")
                                 })?;
@@ -591,6 +594,7 @@ impl AgentRuntime {
                                 }
                                 next.search_results.remove(server);
                                 next.catalog_message = format!("Installed {id}. Its authorization and setup are handled by the app.");
+                                }
                             }
                             Err(error) => {
                                 next.catalog_message = format!("Installation failed: {error}")
@@ -906,7 +910,7 @@ mod tests {
         assert!(runtime.synthesized_tiles().iter().all(|tile|tile.folder()!=Some("setup")));
     }
     #[test]
-    fn catalog_search_installs_only_an_explicitly_selected_result() {
+    fn catalog_search_requires_native_install_review_after_selected_result() {
         let (mut runtime, _) = runtime();
         runtime.begin_setup().unwrap();
         for answer in ["Wagner", "Alloy", "UTC", "24h"] {
@@ -924,11 +928,11 @@ mod tests {
         assert!(runtime.setup.search_results.contains_key("acme/service"));
         assert!(runtime.setup.selected_apps.is_empty());
         runtime.answer_setup("install:acme/service").unwrap();
-        assert!(runtime.setup.selected_apps.contains(&"service".into()));
-        assert!(runtime
-            .tool_registry
-            .vfs_read("/apps/service/service.mcp")
-            .is_some());
+        assert!(runtime.setup.selected_apps.is_empty());
+        assert!(runtime.tool_registry.vfs_read("/apps/service/service.mcp").is_none());
+        let proposal = runtime.pending_remote_install().unwrap();
+        runtime.confirm_remote_install(&proposal.id, true).unwrap();
+        assert!(runtime.tool_registry.vfs_read("/apps/service/service.mcp").is_some());
         assert_eq!(runtime.setup.stage, SetupStage::Apps);
     }
     #[test]

@@ -54,6 +54,7 @@ pub struct FerrofluidSystemUi {
     voice_mutes: Rc<Cell<usize>>,
     output_mute_toggles: Rc<Cell<usize>>,
     tile_discovery_requested: Rc<Cell<bool>>,
+    remote_install_decisions: Rc<RefCell<VecDeque<(String, bool)>>>,
     tiles: Rc<RefCell<Vec<AppTile>>>,
     chat_items: Rc<RefCell<Vec<ChatItem>>>,
     available_tiles: Rc<RefCell<Vec<AppTile>>>,
@@ -182,6 +183,16 @@ impl FerrofluidSystemUi {
         let tile_discovery_requested = Rc::new(Cell::new(false));
         let requested = tile_discovery_requested.clone();
         ui.on_discover_tiles(move || requested.set(true));
+        let remote_install_decisions = Rc::new(RefCell::new(VecDeque::new()));
+        let decisions = remote_install_decisions.clone();
+        let weak = ui.as_weak();
+        ui.on_remote_install_decision(move |id, approved| {
+            if let Some(ui) = weak.upgrade() {
+                if !id.is_empty() && id == ui.get_pending_install_id() && decisions.borrow().is_empty() {
+                    decisions.borrow_mut().push_back((String::from(id.as_str()), approved));
+                }
+            }
+        });
         let state = dashboard.clone();
         let available = available_tiles.clone();
         let weak = ui.as_weak();
@@ -314,6 +325,7 @@ impl FerrofluidSystemUi {
             voice_mutes,
             output_mute_toggles,
             tile_discovery_requested,
+            remote_install_decisions,
             tiles,
             chat_items,
             available_tiles,
@@ -404,6 +416,24 @@ impl FerrofluidSystemUi {
 
     pub fn take_tile_discovery_request(&self) -> bool {
         self.tile_discovery_requested.replace(false)
+    }
+    pub fn set_pending_remote_install(&self, pending: Option<&alloyos_mcp::install::PendingRemoteInstall>) {
+        let pending = pending.filter(|p|p.is_valid());
+        let id = pending.map(|p|p.id.as_str()).unwrap_or("");
+        if self.ui.get_pending_install_id().as_str() != id {
+            self.remote_install_decisions.borrow_mut().clear();
+            if pending.is_some() { self.ui.invoke_release_editor(); }
+        }
+        self.ui.set_pending_install_name(pending.map(|p|p.name.as_str()).unwrap_or("").into());
+        self.ui.set_pending_install_removal(pending.is_some_and(|p|p.action == alloyos_mcp::install::PackageChangeAction::Remove));
+        self.ui.set_pending_install_endpoint(pending.map(|p|p.endpoint.as_str()).unwrap_or("").into());
+        self.ui.set_pending_install_source(pending.map(|p|p.source.as_str()).unwrap_or("").into());
+        self.ui.set_pending_install_publisher(pending.map(|p|p.publisher.as_str()).unwrap_or("").into());
+        self.ui.set_pending_install_id(id.into());
+        if pending.is_some() { self.ui.set_sidebar_open(false); }
+    }
+    pub fn take_remote_install_decision(&self) -> Option<(String, bool)> {
+        self.remote_install_decisions.borrow_mut().pop_front()
     }
 
     pub fn set_tile_discovery_status(&self, loaded: bool, error: &str) {
@@ -2150,6 +2180,48 @@ mod tests {
         ui.ui.set_sidebar_open(true);
         ui.render(ui.now.get() + Duration::from_millis(16));
         assert!(catalog.reads.borrow().is_empty(), "reopening collapsed discovery reads no rows");
+
+        // Only native user controls can approve the immutable package proposal.
+        let mut review = alloyos_mcp::install::PendingRemoteInstall {
+            id: "install-1".into(), app_id: "mail".into(), name: "Mail service".into(),
+            endpoint: "https://mail.example/mcp".into(), source: "Direct endpoint".into(),
+            publisher: "Not verified".into(), action: alloyos_mcp::install::PackageChangeAction::Install,
+        };
+        ui.set_pending_remote_install(Some(&review));
+        ui.render(ui.now.get() + Duration::from_millis(16));
+        assert_eq!(ui.ui.get_pending_install_endpoint().as_str(), review.endpoint);
+        assert!(ui.take_remote_install_decision().is_none(), "displaying review does not approve it");
+        ui.ui.invoke_remote_install_decision("stale-id".into(), true);
+        assert!(ui.take_remote_install_decision().is_none(), "a stale proposal cannot be approved");
+        if let Ok(path) = std::env::var("ALLOYOS_INSTALL_SCREENSHOT") {
+            let file = std::fs::File::create(path).unwrap();
+            let mut encoder = png::Encoder::new(file, ui.size.width, ui.size.height);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let bytes: Vec<u8> = ui.pixels().iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8, 255]).collect();
+            encoder.write_header().unwrap().write_image_data(&bytes).unwrap();
+        }
+        for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
+            ui.handle_input(InputEvent { kind, code: 0x110, x: 850, y: 1945 });
+        }
+        assert_eq!(ui.take_remote_install_decision(), Some(("install-1".into(), true)));
+        for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
+            ui.handle_input(InputEvent { kind, code: 0x110, x: 850, y: 1945 });
+        }
+        assert!(ui.take_remote_install_decision().is_none(), "double approval is disabled");
+        ui.set_pending_remote_install(None);
+        review.id = "install-2".into();
+        review.action = alloyos_mcp::install::PackageChangeAction::Remove;
+        review.endpoint.clear();
+        review.source = "Installed alloyOS JavaScript SDK package".into();
+        ui.set_pending_remote_install(Some(&review));
+        ui.render(ui.now.get() + Duration::from_millis(16));
+        assert!(ui.ui.get_pending_install_removal());
+        for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
+            ui.handle_input(InputEvent { kind, code: 0x110, x: 350, y: 1945 });
+        }
+        assert_eq!(ui.take_remote_install_decision(), Some(("install-2".into(), false)));
+        ui.set_pending_remote_install(None);
 
         // Key releases retain the original character even if Shift changes.
         let mut keys = EvdevKeyboard::default();

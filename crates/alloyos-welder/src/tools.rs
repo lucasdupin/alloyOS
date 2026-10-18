@@ -1,3 +1,7 @@
+#[path = "account_tools.rs"]
+mod account_tools;
+#[path = "install_tools.rs"]
+mod install_tools;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::format;
 use alloc::rc::Rc;
@@ -45,6 +49,10 @@ fn validate_package_id(id: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn private_account_path(path: &str) -> bool {
+    let path = ScriptCapabilities::normalize_path(path);
+    path == "/system/accounts" || path.starts_with("/system/accounts/")
+}
 fn encode_url_component(text: &str) -> String {
     let mut encoded = String::new();
     for byte in text.bytes() {
@@ -217,6 +225,9 @@ pub struct NativeToolRegistry {
     http_routes: BTreeMap<String, String>,
     pending_service_search: Option<(ToolCall, String)>,
     pending_app_call: Option<ToolCall>,
+    accounts: Rc<RefCell<crate::accounts::AccountService>>,
+    pending_account_call: Option<account_tools::PendingAccountCall>,
+    remote_installs: Rc<RefCell<install_tools::InstallState>>,
     notifications: Vec<String>,
     logs: Vec<String>,
     execution_reports: Vec<ScriptExecutionReport>,
@@ -300,6 +311,9 @@ impl NativeToolRegistry {
             http_routes: BTreeMap::new(),
             pending_service_search: None,
             pending_app_call: None,
+            accounts: Rc::new(RefCell::new(crate::accounts::AccountService::new())),
+            pending_account_call: None,
+            remote_installs: Rc::new(RefCell::new(install_tools::InstallState::default())),
             notifications: Vec::new(),
             logs: Vec::new(),
             execution_reports: Vec::new(),
@@ -320,12 +334,15 @@ impl NativeToolRegistry {
     /// Connects a persistent `ToolVfsBackend` (such as CobaltFS / kernel VFS) and restores
     /// persisted configuration, scripts, schedules, and user knowledge.
     pub fn set_vfs_backend(&mut self, backend: Rc<RefCell<dyn ToolVfsBackend>>) {
+        // A native approval is bound to the currently attached volume.
+        self.clear_pending_remote_install();
         // Seed defaults on backend only if they don't already exist on persistent storage,
         // and sync all existing files from the backend into the in-memory cache.
         {
             let mut b = backend.borrow_mut();
             for existing_path in b.list_dir("/") {
                 let norm = ScriptCapabilities::normalize_path(&existing_path);
+                if private_account_path(&norm) { continue; }
                 if let Some(content) = b.read_file(&norm) {
                     self.vfs_files.insert(norm, content);
                 }
@@ -353,6 +370,7 @@ impl NativeToolRegistry {
         }
 
         self.vfs_backend = Some(backend);
+        self.restore_account_state();
         let _ = self.restore_automations_from_vfs();
         let _ = self.refresh_app_packages();
     }
@@ -624,7 +642,7 @@ impl NativeToolRegistry {
             ),
             ToolSpec::new(
                 "fs_write",
-                "Write UTF-8 file contents to CobaltFS or VFS path.",
+                "Write UTF-8 file contents to CobaltFS or VFS path; /apps package mutations require native installation approval.",
                 vec![
                     ToolParameter::new("path", "string", "Absolute file path on CobaltFS", true),
                     ToolParameter::new("content", "string", "File contents to persist", true),
@@ -813,7 +831,7 @@ impl NativeToolRegistry {
             ),
             ToolSpec::new(
                 "smithery_search",
-                "Search Smithery for web-hosted remote MCP servers with compatible HTTP(S) endpoint metadata. Excludes local stdio/npm/Python servers; discovery does not verify connectivity or account authorization.",
+                "Search Smithery for web-hosted remote MCP servers with compatible HTTPS endpoint metadata. Excludes local stdio/npm/Python servers; discovery does not verify connectivity or account authorization.",
                 vec![ToolParameter::new(
                     "query",
                     "string",
@@ -822,10 +840,15 @@ impl NativeToolRegistry {
                 ), ToolParameter::new("page", "integer", "Page number, starting at 1", false),
                 ToolParameter::new("page_size", "integer", "Results per page, 1 to 100", false)],
             ),
-            ToolSpec::new("mcp_search_services", "Search the official MCP Registry for web-hosted remote services such as Gmail. Only advertised compatible Streamable HTTP endpoints are returned; no local stdio/npm/Python/MCPB servers. Endpoint metadata is not verified connectivity or an authenticated account connection.", vec![ToolParameter::new("query", "string", "Service keyword, for example gmail", true)]),
+            ToolSpec::new("mcp_connect", "Connect an installed web-hosted remote MCP app only after the user explicitly requests account connection. May open the host browser for user authorization. Installation alone is not connection readiness.", vec![ToolParameter::new("app", "string", "Installed remote app ID", true), ToolParameter::new("scopes", "array", "OAuth scopes approved by the user", false)]),
+            ToolSpec::new("mcp_connection_status", "Inspect public remote app connection status without opening a browser or disclosing credentials.", vec![ToolParameter::new("app", "string", "Installed remote app ID", true)]),
+            ToolSpec::new("mcp_disconnect", "Disconnect a remote app immediately and request host credential revocation/removal.", vec![ToolParameter::new("app", "string", "Installed remote app ID", true)]),
+            ToolSpec::new("mcp_refresh_connection", "Refresh an already authorized remote app account and verify MCP readiness; never opens a new authorization browser.", vec![ToolParameter::new("app", "string", "Installed remote app ID", true)]),
+            ToolSpec::new("mcp_search_services", "Search the official MCP Registry for web-hosted remote services such as Gmail. Only advertised compatible HTTPS Streamable HTTP endpoints are returned; no local stdio/npm/Python/MCPB servers. Endpoint metadata is not verified connectivity or an authenticated account connection.", vec![ToolParameter::new("query", "string", "Service keyword, for example gmail", true)]),
+            ToolSpec::new("mcp_install_remote", "Propose registering a web-hosted remote MCP endpoint. Requires the user to review and select Install in the native confirmation control; this tool cannot approve or write a package. Does not authorize an account or verify connectivity.", vec![ToolParameter::new("app_id","string","New package ID",true),ToolParameter::new("name","string","Display name",true),ToolParameter::new("endpoint","string","Exact advertised hosted HTTPS MCP endpoint",true)]),
             ToolSpec::new(
                 "smithery_install",
-                "Register a web-hosted remote MCP server from Smithery under /apps/<app_id>. Does not run or deploy a local server, verify connectivity, or connect an account.",
+                "Propose a web-hosted remote MCP app from Smithery for native user Install/Cancel review. Writes no package without that trusted user decision. Does not authorize accounts, verify connectivity, or deploy servers.",
                 vec![
                     ToolParameter::new(
                         "server",
@@ -842,14 +865,15 @@ impl NativeToolRegistry {
                     ToolParameter::new(
                         "endpoint",
                         "string",
-                        "Optional advertised compatible HTTP(S) endpoint from this server metadata",
+                        "Optional advertised compatible HTTPS endpoint from this server metadata",
                         false,
                     ),
                 ],
             ),
+            ToolSpec::new("mcp_uninstall_app","Propose removal of an installed remote MCP or native alloyOS JavaScript SDK app. No files are removed without the user's native Remove confirmation; account cleanup must complete before remote package removal.",vec![ToolParameter::new("app_id","string","Installed app package ID",true)]),
             ToolSpec::new(
                 "smithery_uninstall",
-                "Uninstall an installed MCP application from /apps/<app_id> on CobaltFS.",
+                "Propose removal of an installed MCP application using the native Remove/Cancel review. Does not delete files directly.",
                 vec![ToolParameter::new(
                     "app_id",
                     "string",
@@ -1394,6 +1418,7 @@ impl NativeToolRegistry {
 
     fn read_vfs_string(&mut self, path: &str) -> Option<String> {
         let norm = ScriptCapabilities::normalize_path(path);
+        if private_account_path(&norm) { return None; }
         if let Some(backend) = &self.vfs_backend {
             if let Some(content) = backend.borrow_mut().read_file(&norm) {
                 self.vfs_files.insert(norm, content.clone());
@@ -1405,6 +1430,7 @@ impl NativeToolRegistry {
 
     fn write_vfs_raw(&mut self, path: &str, content: &str) -> Result<bool, String> {
         let norm = ScriptCapabilities::normalize_path(path);
+        if private_account_path(&norm) { return Err("Account storage is private to the OS.".into()); }
         let existed = if let Some(backend) = &self.vfs_backend {
             let had = backend.borrow_mut().read_file(&norm).is_some();
             backend.borrow_mut().write_file(&norm, content)?;
@@ -1423,6 +1449,7 @@ impl NativeToolRegistry {
 
     fn delete_vfs_raw(&mut self, path: &str) -> Result<bool, String> {
         let norm = ScriptCapabilities::normalize_path(path);
+        if private_account_path(&norm) { return Err("Account storage is private to the OS.".into()); }
         let removed_backend = if let Some(backend) = &self.vfs_backend {
             backend.borrow_mut().delete_file(&norm)?
         } else {
@@ -1461,7 +1488,7 @@ impl NativeToolRegistry {
                 set.insert(key.clone());
             }
         }
-        set.into_iter().collect()
+        set.into_iter().filter(|path| !private_account_path(path)).collect()
     }
 
     fn list_vfs_dir_child_names(&mut self, dir_path: &str) -> Vec<String> {
@@ -1492,6 +1519,7 @@ impl NativeToolRegistry {
     /// Reads a file directly from the CobaltFS / VFS state.
     pub fn vfs_read(&self, path: &str) -> Option<&str> {
         let norm = ScriptCapabilities::normalize_path(path);
+        if private_account_path(&norm) { return None; }
         self.vfs_files.get(&norm).map(|s| s.as_str())
     }
 
@@ -1788,6 +1816,7 @@ impl NativeToolRegistry {
 
     /// The UI polls network tools between frames, rather than blocking on HTTP.
     pub fn cancel_pending_tool(&mut self, id: &str) {
+        self.cancel_account_tool(id);
         if self.pending_app_call.as_ref().is_some_and(|call| call.id == id) {
             self.mcp_registry.borrow_mut().cancel_pending_tools();
             self.pending_app_call = None;
@@ -1798,6 +1827,9 @@ impl NativeToolRegistry {
         }
     }
     pub fn poll_execute_tool(&mut self, call: &ToolCall, ui: &mut AgentUiSynthesizer) -> Poll<Result<ToolExecutionOutput, AiError>> {
+        if matches!(call.name.as_str(), "mcp_connect" | "mcp_connection_status" | "mcp_disconnect" | "mcp_refresh_connection") {
+            return self.poll_account_tool(call);
+        }
         if self.pending_app_call.as_ref().is_some_and(|pending| pending != call)
             || self.pending_service_search.as_ref().is_some_and(|(pending, _)| pending != call) {
             return Poll::Ready(Err(AiError::PolicyViolation("another network tool is pending".into())));
@@ -1943,161 +1975,15 @@ impl NativeToolRegistry {
         } else {
             endpoints.first().ok_or("server has no compatible hosted Streamable HTTP endpoint")?
         };
-        let tools = details
-            .get("tools")
-            .filter(|tools| tools.is_array())
-            .ok_or("server has no tool metadata; refusing to invent tools")?
-            .to_string();
-        alloyos_mcp::parse_remote_tools(&tools)?;
-        let manifest = alloyos_mcp::AppManifest::new_remote(
-            &app_id,
-            name,
-            "1.0.0",
-            vec![
-                alloyos_mcp::AppCapability::ExposeMcpTools,
-                alloyos_mcp::AppCapability::ExposeSkills,
-                alloyos_mcp::AppCapability::ScopedNetwork,
-            ],
-            endpoint,
-            Some("streamable-http".into()),
-        );
-        alloyos_mcp::validate_app_manifest(&manifest)
-            .map_err(|error| error.to_mcp_error().message)?;
-        let files = BTreeMap::from([
-            (format!("{}{}.mcp", root, app_id), manifest.to_mcp_config()),
-            (format!("{}tools.json", root), tools),
-            (
-                format!("{}SKILL.md", root),
-                format!(
-                    "# {}\n\n{}\n\nRemote MCP package from Smithery: `{}`.\n",
-                    name,
-                    details
-                        .get("description")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or(""),
-                    server
-                ),
-            ),
-        ]);
-        let mut candidate = alloyos_mcp::PackageService::new();
-        candidate.apply_snapshot(alloyos_mcp::PackageSnapshot {
-            files: files.clone(),
-            directories: Vec::new(),
-        });
-        if !candidate.status(&app_id).is_some_and(|status| status.ready) {
-            return Err("remote package failed validation".into());
-        }
-        // Manifest last: a partial install is never discoverable as ready.
-        let manifest_path = format!("{}{}.mcp", root, app_id);
-        let mut paths: Vec<_> = files
-            .keys()
-            .filter(|path| **path != manifest_path)
-            .cloned()
-            .collect();
-        paths.push(manifest_path);
-        let result = (|| {
-            for path in &paths {
-                self.write_vfs_raw(path, &files[path])?;
-            }
-            self.refresh_app_packages()?;
-            if self.mcp_registry.borrow().guard_for(&app_id).is_none() {
-                return Err("installed package was not registered".into());
-            }
-            Ok(())
-        })();
-        if let Err(error) = result {
-            let mut rollback_errors = Vec::new();
-            for path in &paths {
-                if let Err(error) = self.delete_vfs_raw(path) {
-                    rollback_errors.push(error);
-                }
-            }
-            if let Err(error) = self.refresh_app_packages() {
-                rollback_errors.push(error);
-            }
-            if !rollback_errors.is_empty() {
-                return Err(format!(
-                    "{}; rollback failed: {}",
-                    error,
-                    rollback_errors.join(", ")
-                ));
-            }
-            return Err(error);
-        }
-        Ok(
-            serde_json::json!({"ok":true,"app_id":app_id,"name":name,"server":server,"endpoint":endpoint,"path":root,"connection_status":"not_connected","connectivity_verified":false}),
-        )
+        let tools = match details.get("tools") {
+            None => "[]".into(),
+            Some(tools) if tools.is_array() => tools.to_string(),
+            _ => return Err("invalid remote tool metadata".into()),
+        };
+        self.propose_remote_install(&app_id, name, endpoint, &format!("Smithery registry: {server}"), "Registry publisher not verified", &tools)
     }
 
-    fn smithery_uninstall(
-        &mut self,
-        args: &serde_json::Value,
-    ) -> Result<serde_json::Value, String> {
-        let app_id = required_string(args, "app_id")?;
-        validate_package_id(app_id)?;
-        let root = format!("/apps/{}/", app_id);
-        let snapshot = self.app_snapshot()?;
-        let files: BTreeMap<_, _> = snapshot
-            .files
-            .into_iter()
-            .filter(|(path, _)| path.starts_with(&root))
-            .collect();
-        if files.is_empty() {
-            return Err(format!("package '{}' is not installed", app_id));
-        }
-        if files
-            .keys()
-            .any(|path| ScriptCapabilities::normalize_path(path) != *path)
-        {
-            return Err("package contains noncanonical paths".into());
-        }
-        let mut directories: BTreeSet<String> = snapshot
-            .directories
-            .into_iter()
-            .filter(|path| path.starts_with(&root))
-            .collect();
-        directories.insert(root.trim_end_matches('/').into());
-        for path in files.keys() {
-            let mut parent = path.as_str();
-            while let Some((directory, _)) = parent.rsplit_once('/') {
-                if directory.len() < root.len() {
-                    break;
-                }
-                directories.insert(directory.into());
-                parent = directory;
-            }
-        }
-        let result = (|| {
-            for path in files.keys() {
-                self.delete_vfs_raw(path)?;
-            }
-            for directory in directories.iter().rev() {
-                self.delete_vfs_raw(directory)?;
-            }
-            self.refresh_app_packages()?;
-            Ok(())
-        })();
-        if let Err(error) = result {
-            let mut rollback_errors = Vec::new();
-            for (path, text) in &files {
-                if let Err(error) = self.write_vfs_raw(path, text) {
-                    rollback_errors.push(error);
-                }
-            }
-            if let Err(error) = self.refresh_app_packages() {
-                rollback_errors.push(error);
-            }
-            if !rollback_errors.is_empty() {
-                return Err(format!(
-                    "{}; rollback failed: {}",
-                    error,
-                    rollback_errors.join(", ")
-                ));
-            }
-            return Err(error);
-        }
-        Ok(serde_json::json!({"ok":true,"app_id":app_id,"deleted_files":files.len()}))
-    }
+    fn smithery_uninstall(&mut self,args:&serde_json::Value)->Result<serde_json::Value,String>{self.propose_app_removal(args)}
 
     pub fn execute_tool(
         &mut self,
@@ -2112,6 +1998,10 @@ impl NativeToolRegistry {
         }
 
         match call.name.as_str() {
+            "mcp_connect" | "mcp_connection_status" | "mcp_disconnect" | "mcp_refresh_connection" => loop {
+                if let Poll::Ready(result) = self.poll_account_tool(call) { return result; }
+                core::hint::spin_loop();
+            },
             "mcp_search_services" => {
                 loop {
                     if let Poll::Ready(result) = self.poll_execute_tool(call, ui_synth) { return result; }
@@ -2151,6 +2041,9 @@ impl NativeToolRegistry {
                     ));
                 }
                 let path = ScriptCapabilities::normalize_path(&raw_path);
+                if path == "/apps" || path.starts_with("/apps/") {
+                    return Err(AiError::PolicyViolation("App packages are OS-managed; use the native installation review.".into()));
+                }
                 let content = extract_json_string_field(&call.arguments_json, "content")
                     .ok_or_else(|| {
                         AiError::InvalidToolArguments("missing 'content'".to_string())
@@ -2250,6 +2143,9 @@ impl NativeToolRegistry {
                 let raw_path = extract_json_string_field(&call.arguments_json, "path")
                     .ok_or_else(|| AiError::InvalidToolArguments("missing 'path'".to_string()))?;
                 let path = ScriptCapabilities::normalize_path(&raw_path);
+                if path == "/apps" || path.starts_with("/apps/") {
+                    return Err(AiError::PolicyViolation("App packages are OS-managed; scripts cannot install or modify packages.".into()));
+                }
                 let source = extract_json_string_field(&call.arguments_json, "source")
                     .or_else(|| extract_json_string_field(&call.arguments_json, "code"))
                     .ok_or_else(|| AiError::InvalidToolArguments("missing 'source'".to_string()))?;
@@ -2681,11 +2577,13 @@ impl NativeToolRegistry {
                     synthesized_view: Some(view),
                 })
             }
-            "smithery_search" | "smithery_install" | "smithery_uninstall" => {
+            "mcp_install_remote" | "mcp_uninstall_app" | "smithery_search" | "smithery_install" | "smithery_uninstall" => {
                 let args: serde_json::Value = serde_json::from_str(&call.arguments_json)
                     .map_err(|_| AiError::InvalidToolArguments("invalid JSON arguments".into()))?;
                 if !args.is_object() { return Err(AiError::InvalidToolArguments("arguments must be an object".into())); }
                 let payload = match call.name.as_str() {
+                    "mcp_install_remote" => self.direct_remote_install(&args),
+                    "mcp_uninstall_app" => self.propose_app_removal(&args),
                     "smithery_search" => self.smithery_search(&args),
                     "smithery_install" => self.smithery_install(&args),
                     _ => self.smithery_uninstall(&args),
@@ -2755,6 +2653,9 @@ impl<'a> AlloyOsHost for RegistryHostAdapter<'a> {
 
     fn fs_write(&mut self, path: &str, content: &str) -> Result<(), String> {
         let norm = ScriptCapabilities::normalize_path(path);
+        if norm == "/apps" || norm.starts_with("/apps/") {
+            return Err("App packages are OS-managed; scripts cannot mutate /apps.".into());
+        }
         if is_knowledge_path(&norm) {
             return Err(format!(
                 "Direct script write to '{}' is forbidden; /knowledge/ is managed exclusively by Welder",
@@ -2774,6 +2675,9 @@ impl<'a> AlloyOsHost for RegistryHostAdapter<'a> {
 
     fn fs_delete(&mut self, path: &str) -> Result<bool, String> {
         let norm = ScriptCapabilities::normalize_path(path);
+        if norm == "/apps" || norm.starts_with("/apps/") {
+            return Err("App packages are OS-managed; scripts cannot mutate /apps.".into());
+        }
         if is_knowledge_path(&norm) {
             return Err(format!(
                 "Direct script deletion of '{}' is forbidden; /knowledge/ is managed exclusively by Welder",

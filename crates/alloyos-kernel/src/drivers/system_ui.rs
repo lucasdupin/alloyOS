@@ -90,6 +90,40 @@ pub fn run(
     ui.acceptance();
     loop {
         ui.poll();
+        while let Some((id, approved)) = ui.take_remote_install_decision() {
+            let proposal = agent.pending_remote_install().filter(|proposal|proposal.id == id);
+            let removing = proposal.as_ref().is_some_and(|p|p.action == alloyos_mcp::install::PackageChangeAction::Remove);
+            let name = proposal.map(|p|p.name).unwrap_or_else(||"the app".into());
+            let message = match agent.confirm_remote_install(&id, approved) {
+                Ok(output) if approved && removing && serde_json::from_str::<serde_json::Value>(&output.output_json)
+                    .ok().is_some_and(|value|value["pending_account_cleanup"].as_bool() == Some(true)) =>
+                    "Removal is waiting for account cleanup.".into(),
+                Ok(_) if approved && removing => alloc::format!("Removed {}.", name),
+                Ok(_) if approved => alloc::format!("Installed {}. No account was connected.", name),
+                Ok(_) => "App change canceled.".into(),
+                Err(error) => alloc::format!("Could not complete the app change: {}", error),
+            };
+            transcript.push_str(&alloc::format!("\n\n{}: {}", agent.agent_name(), message));
+            chat_items.push(ChatItem::Text(alloc::format!("{}: {}", agent.agent_name(), message)));
+            ui.set_transcript(&transcript);
+            ui.set_chat_items(&chat_items);
+        }
+        ui.set_pending_remote_install(agent.pending_remote_install().as_ref());
+        agent.tool_registry.poll_account_connections();
+        while let Some(result) = agent.take_package_change_result() {
+            let message = match result {
+                Ok(output) => {
+                    let value = serde_json::from_str::<serde_json::Value>(&output.output_json).ok();
+                    let name = value.as_ref().and_then(|v|v["name"].as_str()).unwrap_or("the app");
+                    alloc::format!("Removed {}.", name)
+                }
+                Err(error) => alloc::format!("Could not complete the removal: {}", error),
+            };
+            transcript.push_str(&alloc::format!("\n\n{}: {}", agent.agent_name(), message));
+            chat_items.push(ChatItem::Text(alloc::format!("{}: {}", agent.agent_name(), message)));
+            ui.set_transcript(&transcript);
+            ui.set_chat_items(&chat_items);
+        }
         if ui.take_tile_discovery_request() {
             discovery_requested = true;
             ui.set_tile_discovery_status(false, "");

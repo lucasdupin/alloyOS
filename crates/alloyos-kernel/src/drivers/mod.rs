@@ -28,3 +28,6 @@ pub mod display_server;
 pub mod rtc;
 
 pub mod virtio_rng;
+
+#[cfg(feature="oauth-selftest")]
+pub mod oauth_acceptance;

@@ -213,6 +213,11 @@ pub extern "C" fn aarch64_kernel_entry() -> ! {
     task::js_process::install();
     #[cfg(feature="process-runtime-selftest")]
     task::js_process::acceptance();
+    #[cfg(feature="remote-mcp-selftest")]
+    drivers::mcp_https::remote_acceptance();
+
+    #[cfg(feature="oauth-selftest")]
+    drivers::oauth_acceptance::run();
 
     // 14. Ferrofluid owns the Slint System UI and its execution context.
     #[cfg(not(feature = "debug-shell"))]

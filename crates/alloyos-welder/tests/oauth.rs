@@ -314,6 +314,148 @@ fn callback_rejects_duplicate_encoded_fields_and_wrong_issuer() {
     assert_eq!(decode_url(&form_encode("hello /+")), "hello /+")
 }
 
+struct McpWire {
+    fail: bool,
+    seen: Rc<RefCell<Vec<String>>>,
+}
+impl HttpTransport for McpWire {
+    fn request(&mut self, r: &HttpRequest) -> Result<HttpResponse, String> {
+        if !r.headers.iter().any(|(name, value)| {
+            name == "X-AlloyOS-Trusted-Bearer"
+                && matches!(value.as_str(), "private-access" | "refreshed-token")
+        }) {
+            return Ok(HttpResponse {
+                status: 401,
+                headers: vec![("WWW-Authenticate".into(), "Bearer".into())],
+                body: String::new(),
+            });
+        }
+        let rpc: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+        self.seen
+            .borrow_mut()
+            .push(rpc["method"].as_str().unwrap().into());
+        if self.fail {
+            return Ok(HttpResponse {
+                status: 503,
+                headers: vec![],
+                body: String::new(),
+            });
+        }
+        Ok(HttpResponse{status:200,headers:vec![],body:serde_json::json!({"jsonrpc":"2.0","id":rpc["id"],"result":{"tools":[{"name":"list_mail","inputSchema":{"type":"object","properties":{}}}]}}).to_string()})
+    }
+}
+fn drive(registry: &mut alloyos_welder::NativeToolRegistry, tool: &str) -> serde_json::Value {
+    let call = alloyos_forge::provider::ToolCall::new(
+        tool,
+        tool,
+        if tool == "mcp_connect" {
+            "{\"app\":\"mail\",\"scopes\":[\"mail.read\"]}"
+        } else {
+            "{\"app\":\"mail\"}"
+        },
+    );
+    let mut ui = alloyos_welder::AgentUiSynthesizer::new();
+    for _ in 0..100 {
+        match registry.poll_execute_tool(&call, &mut ui) {
+            Poll::Pending => {}
+            Poll::Ready(Ok(output)) => {
+                assert!(!output.output_json.contains("private-access"));
+                assert!(!output.output_json.contains("private-refresh"));
+                assert!(!output.output_json.contains("test-code"));
+                return serde_json::from_str(&output.output_json).unwrap();
+            }
+            Poll::Ready(Err(e)) => panic!("{e}"),
+        }
+    }
+    panic!("fixture exceeded poll budget")
+}
+fn native_registry(
+    s: &Rc<RefCell<State>>,
+    fail: bool,
+) -> (
+    alloyos_welder::NativeToolRegistry,
+    Rc<RefCell<alloyos_welder::SharedMapVfsBackend>>,
+    Rc<RefCell<Vec<String>>>,
+) {
+    let backend = alloyos_welder::SharedMapVfsBackend::shared();
+    backend.borrow_mut().files.insert("/apps/mail/mail.mcp".into(),format!("name=Mail\nversion=1\ncapabilities=ExposeMcpTools,ScopedNetwork\nendpoint={RESOURCE}\ntransport=streamable-http\n"));
+    backend
+        .borrow_mut()
+        .files
+        .insert("/apps/mail/tools.json".into(), "[]".into());
+    let mut registry = alloyos_welder::NativeToolRegistry::with_vfs_backend(backend.clone());
+    let seen = Rc::new(RefCell::new(vec![]));
+    registry.set_http_transport(Box::new(McpWire {
+        fail,
+        seen: seen.clone(),
+    }));
+    registry.set_account_broker(Box::new(broker(s))).unwrap();
+    (registry, backend, seen)
+}
+#[test]
+fn complete_native_connect_requires_mcp_verification_and_reconnects_os_store() {
+    let s = Rc::new(RefCell::new(State::default()));
+    let (mut registry, backend, seen) = native_registry(&s, false);
+    let result = drive(&mut registry, "mcp_connect");
+    assert_eq!(result["connection"]["phase"], "ready", "{result}");
+    assert!(seen.borrow().iter().any(|method| method == "tools/list"));
+    assert!(backend
+        .borrow()
+        .files
+        .values()
+        .all(|v| !v.contains("private-access") && !v.contains("private-refresh")));
+    let (mut reboot, _, _) = native_registry(&s, false);
+    assert_eq!(
+        drive(&mut reboot, "mcp_connect")["connection"]["phase"],
+        "ready"
+    );
+    assert_eq!(
+        drive(&mut reboot, "mcp_refresh_connection")["connection"]["phase"],
+        "ready"
+    );
+    assert_eq!(
+        drive(&mut reboot, "mcp_disconnect")["connection"]["phase"],
+        "disconnected"
+    );
+    assert!(s.borrow().record.is_none());
+}
+#[test]
+fn oauth_authorized_does_not_make_failed_mcp_ready() {
+    let s = Rc::new(RefCell::new(State::default()));
+    let (mut registry, _, _) = native_registry(&s, true);
+    let result = drive(&mut registry, "mcp_connect");
+    assert_ne!(result["connection"]["phase"], "ready");
+    assert_eq!(result["ok"], false)
+}
+#[test]
+fn private_store_is_absent_from_model_cache_and_ancestor_listing() {
+    use alloyos_forge::provider::ToolCall;
+    use alloyos_welder::{AgentUiSynthesizer, NativeToolRegistry, SharedMapVfsBackend};
+    let backend = SharedMapVfsBackend::shared();
+    backend
+        .borrow_mut()
+        .files
+        .insert("/system/accounts/token".into(), "secret-token".into());
+    let mut registry = NativeToolRegistry::with_vfs_backend(backend);
+    assert!(registry.vfs_read("/system/accounts/token").is_none());
+    for (tool, args) in [
+        ("fs_read", r#"{"path":"/tmp/../system/accounts/token"}"#),
+        ("fs_list", r#"{"path":"/"}"#),
+        ("fs_list", r#"{"path":"/system"}"#),
+    ] {
+        let result = registry.execute_tool(
+            &ToolCall::new(tool, tool, args),
+            &mut AgentUiSynthesizer::new(),
+        );
+        if let Ok(output) = result {
+            assert!(!output.output_json.contains("secret-token"));
+            if tool == "fs_list" {
+                assert!(!output.output_json.contains("accounts/token"));
+            }
+        }
+    }
+}
+
 #[test]
 fn challenge_metadata_is_bound_and_scopes_cannot_bypass_profile() {
     let s = Rc::new(RefCell::new(State::default()));

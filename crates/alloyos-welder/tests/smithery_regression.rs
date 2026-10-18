@@ -13,6 +13,29 @@ fn execute(registry: &mut NativeToolRegistry, name: &str, args: Value) -> Result
     serde_json::from_str(&output.output_json).map_err(|error| error.to_string())
 }
 
+fn approve_install(registry: &mut NativeToolRegistry, args:Value) -> Result<Value,String> {
+    let proposal = execute(registry,"smithery_install",args)?;
+    assert_eq!(proposal["awaiting_user_approval"],true);
+    let id = proposal["proposal"]["id"].as_str().unwrap();
+    let output = registry.confirm_remote_install(id,true).map_err(|error|error.to_string())?;
+    serde_json::from_str(&output.output_json).map_err(|error|error.to_string())
+}
+
+struct NoCredentialsBroker;
+impl alloyos_welder::accounts::AccountBroker for NoCredentialsBroker {
+    fn start(&mut self, request:&alloyos_mcp::account::AccountRequest)->std::task::Poll<Result<alloyos_mcp::account::AccountResponse,alloyos_mcp::account::AccountError>> {
+        std::task::Poll::Ready(Ok(alloyos_mcp::account::AccountResponse {request_id:request.request_id,app_id:request.app_id.clone(),endpoint:request.endpoint.clone(),outcome:alloyos_mcp::account::AccountOutcome::Disconnected{remote_revoked:false}}))
+    }
+    fn poll(&mut self)->std::task::Poll<Result<alloyos_mcp::account::AccountResponse,alloyos_mcp::account::AccountError>> {panic!("fixture disconnect is immediate")}
+    fn cancel(&mut self){}
+}
+fn approve_removal(registry:&mut NativeToolRegistry,args:Value)->Result<Value,String>{
+    registry.set_account_broker(Box::new(NoCredentialsBroker)).unwrap();
+    let proposal=execute(registry,"smithery_uninstall",args)?;
+    let output=registry.confirm_remote_install(proposal["proposal"]["id"].as_str().unwrap(),true).map_err(|error|error.to_string())?;
+    serde_json::from_str(&output.output_json).map_err(|error|error.to_string())
+}
+
 #[test]
 fn search_preserves_empty_results_and_encodes_query() {
     let mut registry = NativeToolRegistry::new();
@@ -134,11 +157,7 @@ fn failed_install_rolls_back_writes_and_registration() {
         registry.set_vfs_backend(backend.clone());
         backend.borrow_mut().fail_write = Some(path.into());
         register_details(&mut registry);
-        let result = execute(
-            &mut registry,
-            "smithery_install",
-            json!({"server":"acme/service"}),
-        );
+        let result = approve_install(&mut registry, json!({"server":"acme/service"}));
         assert!(result.is_err());
         assert!(!backend
             .borrow()
@@ -155,11 +174,7 @@ fn failed_uninstall_restores_package_and_success_removes_nested_files() {
     let mut registry = NativeToolRegistry::new();
     registry.set_vfs_backend(backend.clone());
     register_details(&mut registry);
-    execute(
-        &mut registry,
-        "smithery_install",
-        json!({"server":"acme/service"}),
-    )
+    approve_install(&mut registry, json!({"server":"acme/service"}))
     .unwrap();
     backend.borrow_mut().files.insert(
         "/apps/service/assets/nested/data.txt".into(),
@@ -167,11 +182,7 @@ fn failed_uninstall_restores_package_and_success_removes_nested_files() {
     );
     let original = backend.borrow().files.clone();
     backend.borrow_mut().fail_delete = Some("/apps/service/service.mcp".into());
-    assert!(execute(
-        &mut registry,
-        "smithery_uninstall",
-        json!({"app_id":"service"})
-    )
+    assert!(approve_removal(&mut registry,json!({"app_id":"service"}))
     .is_err());
     for (path, text) in original
         .iter()
@@ -180,11 +191,7 @@ fn failed_uninstall_restores_package_and_success_removes_nested_files() {
         assert_eq!(backend.borrow().files.get(path), Some(text));
     }
     assert!(registry.mcp_registry().guard_for("service").is_some());
-    let result = execute(
-        &mut registry,
-        "smithery_uninstall",
-        json!({"app_id":"service"}),
-    )
+    let result = approve_removal(&mut registry,json!({"app_id":"service"}))
     .unwrap();
     assert_eq!(result["deleted_files"], 4);
     assert!(!backend

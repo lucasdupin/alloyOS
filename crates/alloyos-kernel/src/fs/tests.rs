@@ -142,7 +142,7 @@ pub mod tests {
         S_IFDIR, w16, w32,
     };
 
-    struct MemBlockDevice {
+    pub(crate) struct MemBlockDevice {
         data: Mutex<Vec<u8>>,
         block_size: usize,
     }
@@ -322,7 +322,7 @@ pub mod tests {
     }
 
     impl MemBlockDevice {
-        fn new_formatted_large() -> Arc<Self> {
+        pub(crate) fn new_formatted_large() -> Arc<Self> {
             // 1 KiB-block CobaltFS image with 128 blocks and 64 inodes:
             // Block 0: boot block
             // Block 1: Superblock

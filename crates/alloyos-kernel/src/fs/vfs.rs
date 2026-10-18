@@ -187,6 +187,7 @@ impl Vfs {
     }
 
     pub fn lookup(&self, path: &str) -> Result<Inode, FsError> {
+        if private_account_path(path) { return Err(FsError::PermissionDenied); }
         let clean_path = path.trim();
         if clean_path.starts_with("/dev/") {
             self.dev_fs.lookup(clean_path)
@@ -196,6 +197,7 @@ impl Vfs {
     }
 
     pub fn create(&self, path: &str, kind: InodeKind) -> Result<Inode, FsError> {
+        if private_account_path(path) { return Err(FsError::PermissionDenied); }
         let clean_path = path.trim();
         if clean_path.starts_with("/dev/") {
             self.dev_fs.create(clean_path, kind)
@@ -223,6 +225,7 @@ impl Vfs {
         let mut formatted = Vec::with_capacity(raw_entries.len());
         for name in raw_entries {
             let child_path = alloc::format!("{}/{}", prefix, name);
+            if private_account_path(&child_path) { continue; }
             if let Ok(child_ino) = self.lookup(&child_path) {
                 if child_ino.kind == InodeKind::Directory {
                     formatted.push(alloc::format!("{}/", name));
@@ -305,6 +308,7 @@ impl Vfs {
     }
 
     pub fn unlink(&self, path: &str) -> Result<(), FsError> {
+        if private_account_path(path) { return Err(FsError::PermissionDenied); }
         let clean_path = path.trim();
         if clean_path.starts_with("/dev/") {
             self.dev_fs.unlink(clean_path)
@@ -347,4 +351,11 @@ fn try_mount_cobaltfs() -> Option<Vfs> {
         }
     }
     None
+}
+
+/// The trusted account adapter accesses root_fs directly; public VFS paths never
+/// expose private records, even through normalized aliases or ancestor listings.
+pub fn private_account_path(path: &str) -> bool {
+    let path = alloyos_js::ScriptCapabilities::normalize_path(path);
+    path == "/system/accounts" || path.starts_with("/system/accounts/")
 }

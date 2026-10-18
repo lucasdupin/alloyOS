@@ -1,4 +1,5 @@
 pub mod automation;
+pub mod accounts;
 pub mod packages;
 pub use alloyos_fs::{block, cobaltfs};
 pub mod devfs;

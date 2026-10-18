@@ -7,6 +7,7 @@ pub mod forge;
 #[cfg(all(target_arch = "aarch64", target_os = "none"))]
 pub mod forge_https;
 pub mod mcp_https;
+pub mod mcp_accounts;
 pub mod system_ui;
 pub mod voice;
 pub mod virtio_blk;

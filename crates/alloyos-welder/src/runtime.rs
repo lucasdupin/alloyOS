@@ -2267,6 +2267,7 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"1"}}}"#,
         );
         runtime.tool_registry.register_http_response("POST https://github.example/mcp notifications/initialized", "");
+        runtime.tool_registry.register_http_response("POST https://github.example/mcp tools/list", r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"create_issue","inputSchema":{"type":"object","properties":{"title":{"type":"string"}},"required":["title"]}}]}}"#);
         // 1. Search Smithery registry for 'github'
         let search_call = ToolCall::new("s1", "smithery_search", r#"{"query":"github"}"#);
         let search_out = runtime

@@ -11,6 +11,7 @@ extern crate self as alloyos_mcp;
 #[path = "../../../tests/support/apps.rs"]
 mod fixture_apps;
 
+pub mod account;
 pub mod browser;
 pub mod apps;
 pub mod clock;

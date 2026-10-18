@@ -6,7 +6,7 @@
 
 > **The desktop metaphor is dead weight. Stop bolting AI onto 1970s operating systems.**
 
-**alloyOS** is an AI-first, bare-metal operating system written from scratch in `#![no_std]` Rust (`aarch64`, native `-accel hvf`). There is no POSIX baggage, no multi-user permission labyrinth, and no window manager cluttered with half-broken apps. It boots through a liquid-metal splash directly into **Ferrofluid (`ferrofluidd`)**—a display server driven entirely by a pluggable frontier model (**Gemini**, **Claude**, **ChatGPT**).
+**alloyOS** is an AI-first, bare-metal operating system written from scratch in Rust (`aarch64`, native `-accel hvf`). Apps use typed capabilities, and Ferrofluid owns presentation. It boots through a liquid-metal splash directly into **Ferrofluid (`ferrofluidd`)**—a display server driven entirely by a pluggable frontier model (**Gemini**, **Claude**, **ChatGPT**).
 
 ## UI Demos
 
@@ -36,8 +36,8 @@ See [capture notes](assets/demos/README.md) for provenance and reproduction.
 
 1. **No Filesystem Maze. No Shell.**
    Users shouldn't be system administrators, and AI agents shouldn't act through brittle string-piped shell commands (`sh`, `exec`, `spawn`). State lives in structured storage and typed capabilities. Neither the user nor the agent ever touches a raw shell.
-2. **Zero Third-Party UI.**
-   Every app shipping its own interface guarantees visual chaos, bloated binaries, and fragmented workflows. In **alloyOS**, third-party software is strictly headless. Developers ship pure capabilities—**Model Context Protocol (MCP)** endpoints and isolated `#![no_std]` JS tasks—never pixels.
+2. **Apps Are Headless.**
+   Apps supply data and capabilities. **Ferrofluid** owns presentation. Developers ship **Model Context Protocol (MCP)** endpoints and isolated JavaScript tasks that expose structured data, tools, and declarative tiles; Ferrofluid shapes them into a consistent interface.
 3. **Agent-Exclusive Rendering.**
    Only the AI agent holds the capability token to paint surfaces in **Ferrofluid**. You never see inconsistent junk UI, dark patterns, or settings menus you didn't ask for. You see only what matters right now, synthesized by the agent in the highest-signal form possible.
 4. **UI as Ferrofluid.**
@@ -86,7 +86,7 @@ alloyOS is composed of modular components designed around capability security, a
   The unified model gateway. Forge bridges the operating system to intelligence, supporting resident local models (Gemma) and frontier cloud providers (Gemini, Claude, OpenAI) with streaming inference and on-the-fly model switching.
 
 - **MCP Apps with Isolation** ([`crates/alloyos-mcp`](crates/alloyos-mcp), [`crates/alloyos-js`](crates/alloyos-js)):
-  Headless third-party apps built on the Model Context Protocol (MCP). Every app runs in an isolated userland process with dedicated memory and capability boundaries, executing `#![no_std]` JavaScript (`V8Isolate` / `JsRuntime`) without shell or raw filesystem access. Apps export structured tools, resources, and declarative tiles rather than custom UI.
+  Headless third-party apps built on the Model Context Protocol (MCP). Every app runs in an isolated userland process with dedicated memory and capability boundaries, executing JavaScript through the alloyOS interpreter without shell or raw filesystem access. Apps export structured tools, resources, and declarative tiles rather than custom UI.
 
 - **MCP Apps through Package Manager** ([`apps/package-manager`](apps/package-manager), [`crates/alloyos-mcp`](crates/alloyos-mcp)):
   Dynamic discovery, installation, and lifecycle management for ecosystem MCP packages (e.g. from Smithery). Packages are verified, installed into `/apps/` on CobaltFS, and registered into Welder's tool inventory at runtime without kernel reboots.

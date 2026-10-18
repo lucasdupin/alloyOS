@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>alloyOS native web acceptance</title>
+<style>
+  body { font-family: sans-serif; margin: 24px; background: #101418; color: #fff; }
+  input, button { font: inherit; padding: 12px; }
+  .scroll-target { margin-top: 120vh; border-top: 2px solid #89cfff; }
+</style>
+<h1>Native web acceptance</h1>
+<img src="mark.svg" width="64" height="64" alt="Blue alloyOS acceptance mark">
+<form id="greeting-form">
+  <label for="name">Your name</label>
+  <input id="name" name="name" autocomplete="off" required>
+  <button type="submit">Greet</button>
+</form>
+<p id="result" role="status">Waiting for input.</p>
+<p class="scroll-target" id="scroll-target">Scroll acceptance target</p>
+<script>
+  'use strict';
+  document.getElementById('greeting-form').addEventListener('submit', event => {
+    event.preventDefault();
+    document.getElementById('result').textContent =
+      'Hello, ' + document.getElementById('name').value + '!';
+  });
+  document.documentElement.dataset.scriptReady = 'true';
+</script>
+</html>

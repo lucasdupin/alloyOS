@@ -1,6 +1,6 @@
 # alloyOS Roadmap
 
-**alloyOS** is an AI-first, single-user, bare-metal ARM64 operating system written in `#![no_std]` Rust for QEMU `virt`, with native Apple Silicon acceleration through HVF. Ferrofluid provides the Slint system interface, Welder orchestrates the agent, Forge supplies resident and cloud model access, and CobaltFS provides persistent storage. Gemma 2 2B IT is the default local model; Claude, Gemini, and OpenAI are explicit cloud alternatives.
+**alloyOS** is an AI-first, single-user, bare-metal ARM64 operating system written in Rust for QEMU `virt`, with native Apple Silicon acceleration through HVF. Ferrofluid provides the Slint system interface, Welder orchestrates the agent, Forge supplies resident and cloud model access, and CobaltFS provides persistent storage. Gemma 2 2B IT is the default local model; Claude, Gemini, and OpenAI are explicit cloud alternatives.
 
 ## Top Next Priority: Connect Web-Hosted MCP Servers
 
@@ -45,6 +45,8 @@ separate from this immediate user-initiated connection priority.
 - **Agent-Exclusive UI & Declarative Tiles**: Developer apps are strictly headless (`alloyos-mcp`) and never link against or depend on any UI toolkit. Each app can expose **MCP entry points** (tools, resources, prompts), **SKILLs** (text files under `/apps/<app_id>/SKILL.md`), and declarative **Tiles** (`AppTile` schemas that can be embedded in the chat stream or pinned to the **side panel**). Only Welder and **Ferrofluid (`ferrofluidd`)** synthesize and render UI surfaces.
 - **One Process per App**: Every JavaScript app runs in its own independently scheduled OS process with a private virtual address space. `alloyos-mcp` invokes app handlers through IPC; manifest capabilities remain enforced inside each app process. An app fault or hang must not stop the host, Welder, Ferrofluid, or other apps.
 - **Web-Hosted External MCP Servers**: External MCP discovery and installation offer only servers with a verified web-hosted endpoint. Local-only stdio, Node/Python launch commands and MCPB bundles are outside the supported external-server model. Capability-scoped alloyOS JavaScript app packages remain a separate native app architecture.
+- **Userland Runtime Direction**: Keep the kernel `no_std`; support Rust `std` and targeted native-library compatibility in selected protected userland services. This runtime is planned, not implemented. Apps remain headless and capability-scoped regardless of their implementation runtime.
+- **Ferrofluid-Owned Web Presentation**: Ferrofluid alone owns website presentation and browser controls. Welder requests navigation through typed system capabilities; apps cannot supply HTML, page JavaScript, or arbitrary pixel surfaces. An isolated browser service executes web content on Ferrofluid's behalf without inheriting app, MCP, or knowledge access.
 - **Protected Display Server**: Ferrofluid runs as a separate EL0 process with a private address space and its own executable. Kernel drivers retain hardware ownership and expose bounded input, time, and presentation interfaces. Ferrofluid supports separate executable packaging and restart. The early boot splash comes from an isolated cached asset; Ferrofluid remains a kernel test dependency only. Welder and Forge currently remain in the kernel host. Independent Welder/setup builds are planned under Phase 5; Forge, drivers, VFS, and networking retain their current placement for that increment.
 - **Welder-Centralized App Orchestration & Capability-Based Scheduler Access**: No app can access or invoke another app; **only Welder centralizes app access and orchestration**. Apps declare `ScriptSchedulerAccess` in their filesystem manifests to receive scheduler bindings and storage scopes. Rust OS services do not select applications by name.
 - **Agent-Owned User Knowledge**: Welder's knowledge service maintains local user context under `/knowledge/`, with source tracking and user correction/deletion controls. Skills are supplied by `/apps/`, independently of knowledge; no top-level `/skills/` directory is planned.
@@ -310,10 +312,10 @@ Forge only through an explicitly granted `AlloyOS.forge(...)` capability.
 - [x] **Durable scripts and schedules**
   - Store `/scripts/*.js` and `/etc/schedules.conf` through CobaltFS
   - Restore and verify automations across reboot
-- [ ] **Boa JavaScript engine support (deferred; low priority)**
-  - Keep the current `alloyos-js` subset interpreter for near-term automation and headless apps; broader ECMAScript compatibility is a later developer-platform improvement, not a prerequisite for current milestones
+- [ ] **Standards-based JavaScript engine migration (planned; depends on userland runtime)**
+  - Keep the current `alloyos-js` subset interpreter until a replacement passes protected-process acceptance; evaluate Boa against the browser engine's JavaScript runtime before selecting the app engine. A browser engine and a standalone app interpreter need not use the same implementation
   - Introduce a shared engine boundary for source validation and execution, preserving `AlloyOS.*` capability policies, Welder-only app orchestration, and manifest-declared scheduler access
-  - Resolve Boa's upstream `std` dependency for the bare-metal ARM64 environment before committing to integration; measure binary size, startup cost, and memory use on the guest
+  - Use the planned userland `std` runtime rather than requiring a `no_std` engine port; audit native dependencies and measure binary size, startup cost, and memory use on the guest
   - Validate module loading, promises/async host I/O, and execution/memory limits within protected app processes before enabling Boa for developer apps
   - Define supported language and host APIs explicitly; Boa support does not imply Node.js or unrestricted npm package compatibility
 
@@ -415,6 +417,42 @@ learning. See [KNOWLEDGE.md](KNOWLEDGE.md) for the design.
 
 ---
 
+## Phase 9: Userland Runtime, Web Engine & JavaScript Compatibility
+
+This is planned work. The kernel remains `no_std`; selected userland services may
+use Rust `std` and native libraries through a targeted compatibility layer over
+capability-gated syscalls. Existing userland code remains unchanged until those
+services are available. This phase does not displace the hosted MCP priority above.
+
+- [ ] **Establish the userland runtime**
+  - Audit candidate engines' requirements before expanding the syscall ABI; implement the required allocation/memory mapping, threads, synchronization, clocks, file I/O, networking and C/C++ runtime support
+  - Bring up one protected Rust `std` executable and one representative native dependency on ARM64; verify denied capabilities, resource limits and fault recovery
+  - Provide familiar library interfaces over authorized resources without granting unrestricted filesystem or network access
+- [ ] **Validate the preferred WPE WebKit engine through a feasibility spike**
+  - Target WPE WebKit with JavaScriptCore for websites; validate dependency burden, software rendering, input integration and upstream maintenance in a native feasibility spike. Retain Servo as a fallback if the platform audit rules out WPE
+  - Prove a local HTML page with CSS, an image, JavaScript and a form in the actual QEMU guest before committing to the port
+  - Keep a host-backed browser helper optional for integration experiments; it does not satisfy native-engine acceptance
+- [ ] **Define the Ferrofluid/browser service boundary**
+  - Run untrusted web execution in a protected browser service, outside both Ferrofluid and the kernel; retain the engine's required internal process boundaries
+  - Add bounded, versioned IPC for view lifecycle, navigation, viewport/scale, touch/pointer/keyboard input, text editing and focus, damaged pixel regions, URL/title/loading state and crashes
+  - Ferrofluid owns surface placement, trusted origin display, navigation controls, permissions and soft-keyboard integration; Welder requests navigation through typed capabilities
+  - Begin with bounded frame copies and software rendering; add shared buffers or acceleration after measuring the guest's memory, bandwidth and latency
+- [ ] **Preserve web and app capability boundaries**
+  - Apps continue exposing structured data, tools and declarative tiles; no app HTML, page scripts or arbitrary pixel surfaces
+  - Web content receives no implicit MCP tools, knowledge access, OS bindings or agent credentials; enforce browser origin rules and mediate device, clipboard, download and file access
+  - Store browser cookies and site data in a separate protected profile with explicit clearing controls; implement certificate-verified HTTPS and permission handling before general network browsing
+- [ ] **Pass native webview acceptance**
+  - In QEMU, render the local test page inside Ferrofluid, scroll it, enter and submit a form through the alloyOS keyboard, and execute page JavaScript
+  - Crash or hang the browser service and verify recovery while Ferrofluid, Welder and other apps remain usable; reject malformed frames and unauthorized capability requests
+  - Then verify HTTPS navigation, redirects, origin display, cookies/storage across restart, clearing site data and permission denial on representative websites
+  - Record guest memory, startup and interaction latency; pass the repository CI gate and review affected screenshot baselines before marking complete
+- [ ] **Complete the app JavaScript migration**
+  - Use the Phase 6 engine boundary to validate modules, promises/async host I/O, execution cancellation and memory limits in protected app processes
+  - Preserve existing app handlers, schedules, manifest capabilities and Welder-only orchestration; test compatibility before switching the default engine
+  - Publish the supported ECMAScript and host API contract; browser JavaScript support does not expose browser APIs to headless apps or imply Node.js/npm compatibility
+
+---
+
 ## Milestone Summary
 
 ### Process Boundary Acceptance
@@ -441,7 +479,8 @@ increment.
 | **M3: Boot & Model Readiness** | Liquid boot logo, resident weight loading and workspace transition | `alloyos-boot`, `alloyos-kernel`, `alloyos-ferrofluid` | Logo turbulence and loading implemented |
 | **M4: Ferrofluid System UI & side panel** | Independently built protected display server, System UI rendering, pinned Tile drawer, chat bridge and native input | `alloyos-ferrofluid`, `alloyos-keyboard`, `alloyos-kernel` | Protected independent display executable, chat/keyboard IPC and supervised recovery implemented; remaining side panel/Tile, IRQ wakeup and voice work tracked above |
 | **M5: Welder & Forge** | Centralized app orchestration, resident inference and cloud adapters | `alloyos-welder`, `alloyos-forge` | Runtime libraries and model access implemented; complete agent integration and full-model acceptance pending |
-| **M6: JS Automation** | Capability-scoped interpreter and time/event scheduler | `alloyos-js`, `alloyos-welder`, `alloyos-kernel` | Current interpreter and scheduler implemented; Boa support deferred, low priority |
+| **M6: JS Automation** | Capability-scoped interpreter and time/event scheduler | `alloyos-js`, `alloyos-welder`, `alloyos-kernel` | Current interpreter and scheduler implemented; Standards-based engine migration planned after userland runtime support |
 | **M7: Headless Apps (MCP, SKILLs & Tiles)** | JavaScript apps in separate protected processes, MCP entry points, `SKILL.md` files, declarative Tiles, and Welder-only orchestration | `alloyos-mcp`, `alloyos-js`, `alloyos-kernel`, `alloyos-welder`, `alloyos-ferrofluid` | Protected app handlers, bounded host IPC and manifest guards implemented; remaining Ferrofluid side panel/chat Tile work tracked above |
 | **M8: User Knowledge** | Durable profile, retrieval, learning and user controls | `alloyos-welder`, `alloyos-kernel`, `alloyos-ferrofluid` | Implemented |
 | **M9: Independent Welder/Setup Builds** | Protected Welder service, bounded service IPC, independent executable updates, isolated boot splash and kernel-free packaging tools | `alloyos-welder`, `alloyos-proto`, `alloyos-fs`, `alloyos-kernel`, `alloyos-ferrofluid`, `xtask` | Kernel-free image tools and isolated splash implemented; protected Welder service and wizard-only unchanged-kernel gate remain pending |
+| **M10: Userland Runtime & Web/JS Engines** | Selected userland `std` support, native browser service with Ferrofluid-owned presentation, and standards-based headless app JavaScript | `alloyos-user`, `alloyos-kernel`, `alloyos-proto`, `alloyos-ferrofluid`, `alloyos-js`, `xtask` | Planned; WPE WebKit/JavaScriptCore preferred; runtime audit and native feasibility acceptance pending |

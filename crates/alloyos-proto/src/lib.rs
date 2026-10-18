@@ -2,6 +2,7 @@
 
 pub mod display;
 pub mod process;
+pub mod web;
 
 #[cfg(test)]
 extern crate std;

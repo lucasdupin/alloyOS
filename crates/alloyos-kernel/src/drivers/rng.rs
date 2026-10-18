@@ -1,4 +1,4 @@
-//! Hardware Random Number Generator (RNG) & ChaCha20 CSPRNG backing `/dev/urandom` and `SYS_GETRANDOM`.
+//! General-purpose randomness and a separate fail-closed cryptographic generator.
 //!
 //! Combines ARMv8.5-RNG (`RNDR` system register when advertised by `ID_AA64ISAR0_EL1.RNDR`),
 //! ARM Generic Timer (`CNTPCT_EL0`) jitter entropy, and a `#![no_std]` 20-round ChaCha20 stream cipher.
@@ -197,7 +197,7 @@ pub fn monotonic_time_ns() -> u64 {
     }
 }
 
-/// Fill `dest` with cryptographically strong pseudo-random bytes.
+/// General-purpose randomness; timer fallback is NOT suitable for secrets.
 pub fn fill_random_bytes(dest: &mut [u8]) {
     let mut rng = GLOBAL_CSPRNG.lock();
     rng.fill_bytes(dest);
@@ -208,4 +208,52 @@ pub fn next_u64() -> u64 {
     let mut buf = [0u8; 8];
     fill_random_bytes(&mut buf);
     u64::from_le_bytes(buf)
+}
+
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SecureEntropyUnavailable;
+static SECURE_RNG: Mutex<Option<ChaCha20Rng>> = Mutex::new(None);
+/// Called only by trusted platform entropy drivers after acquiring a full seed.
+pub(super) fn install_secure_seed(mut seed: [u8; 32]) {
+    let mut rng=ChaCha20Rng::new();
+    for (slot,bytes) in rng.key.iter_mut().zip(seed.chunks_exact(4)) {
+        *slot=u32::from_le_bytes(bytes.try_into().unwrap());
+    }
+    rng.seeded=true;
+    seed.fill(0);
+    *SECURE_RNG.lock()=Some(rng);
+}
+/// Fails without a platform-provided cryptographic seed. Never uses timer jitter.
+pub fn try_fill_secure_random(dest: &mut [u8]) -> Result<(), SecureEntropyUnavailable> {
+    let mut guard=SECURE_RNG.lock();
+    let rng=guard.as_mut().ok_or(SecureEntropyUnavailable)?;
+    for chunk in dest.chunks_mut(32) {
+        let mut block=rng.next_block();
+        // Withhold half of every block for state replacement; never disclose it.
+        for (slot,bytes) in rng.key.iter_mut().zip(block[..32].chunks_exact(4)) {
+            *slot=u32::from_le_bytes(bytes.try_into().unwrap());
+        }
+        chunk.copy_from_slice(&block[32..32+chunk.len()]);
+        block.fill(0);
+    }
+    Ok(())
+}
+
+#[cfg(test)] mod secure_tests {
+    use super::*;
+    #[test] fn crypto_requires_platform_seed_and_general_rng_does_not_enable_it() {
+        // Host tests have no trusted device; ordinary RNG never marks it secure.
+        assert!(SECURE_RNG.lock().is_none());
+        let mut bytes=[0x5a;32];
+        fill_random_bytes(&mut [0;8]);
+        assert_eq!(try_fill_secure_random(&mut bytes),Err(SecureEntropyUnavailable));
+        assert_eq!(bytes,[0x5a;32]);
+    }
+    #[test] fn chacha20_block_matches_rfc8439_state() {
+        let mut rng=ChaCha20Rng::new();
+        rng.key=[0;8];rng.counter=0;rng.nonce=[0;2];rng.seeded=true;
+        let block=rng.next_block();
+        assert_eq!(&block[..16],&[0x76,0xb8,0xe0,0xad,0xa0,0xf1,0x3d,0x90,0x40,0x5d,0x6a,0xe5,0x53,0x86,0xbd,0x28]);
+    }
 }

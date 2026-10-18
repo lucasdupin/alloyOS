@@ -218,3 +218,22 @@ should have preceding exception/stack records; `execution-timeout` (-110) and
 `requested-restart` (-125) do not pass through the exception handler and have no
 fault stack. This distinguishes a crashed renderer from a deliberate restart
 or an expired execution budget even after the renderer recovers.
+
+### Secure entropy gate
+
+```sh
+cargo build -p alloyos-kernel --target aarch64-unknown-none --release --offline
+python3 scripts/check_secure_entropy_qemu.py \
+  --kernel target/aarch64-unknown-none/release/alloyos-kernel \
+  --output /tmp/alloyos-secure-entropy-evidence
+```
+
+This diskless HVF/GICv3 gate boots without an entropy device, then with legacy
+and modern VirtIO-RNG devices. It checks the actual cryptographic API fails
+closed without a trusted seed and succeeds after the complete device seed is
+received; logs and the exact kernel SHA are retained. It never prints random
+bytes or accesses accounts, networks or disks. Standard xtask QEMU launches attach
+VirtIO-RNG. `/dev/urandom`, `getrandom` and OAuth use the fail-closed generator;
+timer-derived general randomness is separate and cannot enable it. A future
+hardware port must supply a trusted entropy source; this gate does not validate
+Raspberry Pi entropy hardware. The virtual entropy source trusts its hypervisor.

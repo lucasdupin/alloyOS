@@ -25,3 +25,5 @@ pub mod forge_worker;
 pub mod display_server;
 
 pub mod rtc;
+
+pub mod virtio_rng;

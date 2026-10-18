@@ -73,7 +73,7 @@ impl FileSystem for DevFS {
                 Ok(0)
             }
             INO_DEV_URANDOM => {
-                crate::drivers::rng::fill_random_bytes(buf);
+                crate::drivers::rng::try_fill_secure_random(buf).map_err(|_| FsError::IoError)?;
                 Ok(buf.len())
             }
             _ => Err(FsError::NotFound),

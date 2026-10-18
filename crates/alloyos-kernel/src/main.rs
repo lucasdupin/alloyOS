@@ -133,6 +133,11 @@ pub extern "C" fn aarch64_kernel_entry() -> ! {
     // 5. Init GIC/timer & Hardware RNG
     drivers::pic::init();
     let _ = drivers::rng::next_u64();
+    let secure_entropy = drivers::virtio_rng::init();
+    let mut entropy_probe=[0u8;32];
+    let crypto_available=drivers::rng::try_fill_secure_random(&mut entropy_probe).is_ok();
+    entropy_probe.fill(0);
+    alloyos_kernel::serial_println!("[entropy] secure source {} crypto_api={}", if secure_entropy {"ready"} else {"unavailable; crypto requests fail closed"}, crypto_available);
 
     // Hardware-owned splash until the protected display executable is loaded.
     let boot_display = drivers::virtio_gpu::init();

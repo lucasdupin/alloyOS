@@ -51,19 +51,17 @@ pub mod tests {
     }
 
     #[test]
-    fn dev_urandom_and_getrandom_produce_entropy() {
+    fn dev_urandom_and_getrandom_fail_closed_without_platform_entropy() {
         let devfs = DevFS::new();
         let ino = devfs.lookup("/dev/urandom").expect("/dev/urandom must exist");
         assert_eq!(ino.ino, INO_DEV_URANDOM);
 
-        let mut buf1 = [0u8; 32];
-        let mut buf2 = [0u8; 32];
-        let n1 = devfs.read(INO_DEV_URANDOM, 0, &mut buf1).unwrap();
-        let n2 = devfs.read(INO_DEV_URANDOM, 0, &mut buf2).unwrap();
-        assert_eq!(n1, 32);
-        assert_eq!(n2, 32);
-        assert_ne!(buf1, [0u8; 32]);
-        assert_ne!(buf1, buf2, "Consecutive CSPRNG reads must not be identical");
+        // Host unit tests have no trusted VirtIO/platform entropy driver.
+        // General timer randomness must not make crypto syscalls succeed.
+        crate::drivers::rng::next_u64();
+        let mut buf1 = [0x5au8; 32];
+        assert_eq!(devfs.read(INO_DEV_URANDOM, 0, &mut buf1), Err(crate::fs::vfs::FsError::IoError));
+        assert_eq!(buf1, [0x5a; 32]);
 
         let mut sys_buf = [0u8; 16];
         let ret = dispatch_syscall(
@@ -75,8 +73,8 @@ pub mod tests {
             0,
             0,
         );
-        assert_eq!(ret, 16);
-        assert_ne!(sys_buf, [0u8; 16]);
+        assert_eq!(ret, -11, "getrandom must report EAGAIN before trusted seeding");
+        assert_eq!(sys_buf, [0u8; 16], "failed crypto request must not disclose timer bytes");
 
         let mut ts = TimeSpec {
             tv_sec: 0,

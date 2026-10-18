@@ -312,7 +312,7 @@ pub fn sys_getrandom(buf_ptr: u64, len: u64, _flags: u64) -> i64 {
         return EFAULT;
     }
     let buf = unsafe { slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize) };
-    crate::drivers::rng::fill_random_bytes(buf);
+    if crate::drivers::rng::try_fill_secure_random(buf).is_err() { return -11; }
     len as i64
 }
 

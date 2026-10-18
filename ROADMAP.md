@@ -432,6 +432,10 @@ services are available. This phase does not displace the hosted MCP priority abo
   - Target WPE WebKit with JavaScriptCore for websites; validate dependency burden, software rendering, input integration and upstream maintenance in a native feasibility spike. Retain Servo as a fallback if the platform audit rules out WPE
   - Prove a local HTML page with CSS, an image, JavaScript and a form in the actual QEMU guest before committing to the port
   - Keep a host-backed browser helper optional for integration experiments; it does not satisfy native-engine acceptance
+- [ ] **Bring up JavaScriptCore before full WebKit**
+  - Use the pinned WebKit source's JSCOnly port with its Generic event loop as the first native C++ engine target; this avoids the full WPE GLib/network/rendering dependency stack for the initial proof
+  - Audit required threads, TLS, memory mapping, ICU and C/C++ library support; begin without JIT if supported by the pinned ARM64 configuration, then measure before enabling executable-memory features
+  - Run `tests/fixtures/web/engine-smoke.js` in a protected guest process and require its promise-completion marker; host execution is not native acceptance
 - [ ] **Define the Ferrofluid/browser service boundary**
   - Run untrusted web execution in a protected browser service, outside both Ferrofluid and the kernel; retain the engine's required internal process boundaries
   - Add bounded, versioned IPC for view lifecycle, navigation, viewport/scale, touch/pointer/keyboard input, text editing and focus, damaged pixel regions, URL/title/loading state and crashes

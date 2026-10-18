@@ -191,8 +191,9 @@ impl AddressSpace {
             heap_start: USER_BASE + (code_pages * PAGE_SIZE) as u64,
         })
     }
-    /// Load a static ELF64 AArch64 executable. Reject dynamic images, overlapping
-    /// segments and writable executable pages; gaps remain inaccessible to EL0.
+    /// Load a static ELF64 AArch64 executable. Reject dynamic images, ELF TLS,
+    /// overlapping segments and writable executable pages; gaps remain inaccessible
+    /// to EL0. Thread-local storage requires runtime setup this loader does not provide.
     pub fn load_elf(
         image: &[u8],
         writable_pages: usize,
@@ -252,7 +253,10 @@ impl AddressSpace {
         for i in 0..number {
             let o = ph.checked_add(i * 56).ok_or(Error::InvalidImage)?;
             let kind = u32at(image, o)?;
-            if kind == 2 || kind == 3 {
+            // PT_DYNAMIC, PT_INTERP and PT_TLS require runtime support. Ignoring
+            // PT_TLS would accept binaries whose thread-local variables have no
+            // initialized storage or thread pointer, even with static linking.
+            if kind == 2 || kind == 3 || kind == 7 {
                 return Err(Error::InvalidImage);
             }
             if kind != 1 {
@@ -510,6 +514,30 @@ mod tests {
         image[0x1000..0x1004].copy_from_slice(&[0xc0, 3, 0x5f, 0xd6]);
         image[0x2000..0x2004].copy_from_slice(b"data");
         image
+    }
+    #[test]
+    fn elf_rejects_tls_even_when_template_is_in_a_valid_load_segment() {
+        let mut image = elf();
+        // A TLS template normally overlaps a writable PT_LOAD. Keep both valid
+        // load segments intact, then append a well-formed PT_TLS descriptor.
+        image[56..58].copy_from_slice(&3u16.to_le_bytes());
+        let header = 64 + 2 * 56;
+        image[header..header + 4].copy_from_slice(&7u32.to_le_bytes());
+        image[header + 4..header + 8].copy_from_slice(&4u32.to_le_bytes());
+        image[header + 8..header + 16].copy_from_slice(&0x2000u64.to_le_bytes());
+        image[header + 16..header + 24]
+            .copy_from_slice(&(USER_BASE + 8192).to_le_bytes());
+        image[header + 32..header + 40].copy_from_slice(&4u64.to_le_bytes());
+        image[header + 40..header + 48].copy_from_slice(&8u64.to_le_bytes());
+        image[header + 48..header + 56].copy_from_slice(&8u64.to_le_bytes());
+        assert!(matches!(
+            AddressSpace::load_elf(&image, 65, 100),
+            Err(Error::InvalidImage)
+        ));
+        // An inert metadata header at the same location is accepted: rejection
+        // above must be due to TLS, not malformed ELF or missing executable code.
+        image[header..header + 4].copy_from_slice(&0u32.to_le_bytes());
+        assert!(AddressSpace::load_elf(&image, 65, 100).is_ok());
     }
     #[test]
     fn elf_rejects_overflowing_headers_sizes_addresses_and_bad_alignment() {

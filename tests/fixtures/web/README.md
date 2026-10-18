@@ -11,3 +11,5 @@ Native QEMU acceptance:
 5. Terminate or hang the browser service. Verify system controls and another app remain responsive, then reopen the fixture in a recovered service.
 
 A host browser rendering this fixture does not satisfy native acceptance. General HTTPS, origins, profiles and permissions need separate acceptance after the local page works.
+
+Before browser integration, run `engine-smoke.js` with the native JavaScriptCore shell in QEMU. Require a successful exit and `ALLOYOS_JSC_SMOKE_PASS` after the promise microtask runs. A host JSC run only checks the fixture; it does not satisfy the guest engine gate.

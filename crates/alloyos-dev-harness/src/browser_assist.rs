@@ -8,7 +8,7 @@ use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     process::{Command, Stdio},
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock, Weak},
     time::{Duration, Instant},
 };
 use url::Url;
@@ -24,14 +24,28 @@ struct Flow {
 struct Assistant {
     flows: BTreeMap<String, Flow>,
 }
-static ASSISTANT: OnceLock<Mutex<Assistant>> = OnceLock::new();
+const FLOW_LIFETIME: Duration = Duration::from_secs(300);
+static ASSISTANT: OnceLock<Result<Arc<Mutex<Assistant>>, Error>> = OnceLock::new();
+fn expiry_worker(assistant: Weak<Mutex<Assistant>>, interval: Duration) -> Result<(), Error> {
+    std::thread::Builder::new().name("browser-lease-expiry".into()).spawn(move || loop {
+        std::thread::sleep(interval);
+        let Some(assistant) = assistant.upgrade() else { break; };
+        let Ok(mut state) = assistant.lock() else { break; };
+        state.expire();
+    }).map(|_| ()).map_err(|_| Error::HostUnavailable)
+}
 pub fn handle_request(request: &BrowserRequest) -> BrowserResponse {
     let result = request
         .validate()
         .and_then(|_| hosted_url(&request.endpoint).map(|_| ()))
         .and_then(|_| {
             ASSISTANT
-                .get_or_init(Default::default)
+                .get_or_init(|| {
+                    let assistant = Arc::new(Mutex::new(Assistant::default()));
+                    expiry_worker(Arc::downgrade(&assistant), Duration::from_secs(1))?;
+                    Ok(assistant)
+                })
+                .as_ref().map_err(|error| *error)?
                 .lock()
                 .map_err(|_| Error::HostUnavailable)?
                 .handle(request)
@@ -45,9 +59,11 @@ pub fn handle_request(request: &BrowserRequest) -> BrowserResponse {
     }
 }
 impl Assistant {
+    fn expire(&mut self) {
+        self.flows.retain(|_, flow| flow.started.elapsed() < FLOW_LIFETIME);
+    }
     fn handle(&mut self, request: &BrowserRequest) -> Result<BrowserOutcome, Error> {
-        self.flows
-            .retain(|_, flow| flow.started.elapsed() < Duration::from_secs(300));
+        self.expire();
         if let Some(flow) = self.flows.get(&request.attempt) {
             if flow.app_id != request.app_id || flow.endpoint != request.endpoint {
                 return Err(Error::InvalidRequest);
@@ -501,6 +517,57 @@ mod tests {
             ));
         }
         assert!(TEST_BROWSER.with(|slot| slot.borrow().as_ref().unwrap().is_empty()));
+    }
+    #[test]
+    fn cancellation_releases_only_the_bound_listener_and_reclaims_capacity() {
+        let mut assistant = Assistant::default();
+        let mut requests = Vec::new();
+        for index in 0..4 {
+            let mut req = request(BrowserOperation::Prepare { port: 0 });
+            req.attempt = format!("synthetic-attempt-{index:016}");
+            let BrowserOutcome::Prepared { redirect_uri } = assistant.handle(&req).unwrap() else { panic!() };
+            let port = Url::parse(&redirect_uri).unwrap().port().unwrap();
+            requests.push((req, port));
+        }
+        assert!(matches!(assistant.handle(&request(BrowserOperation::Prepare { port: 0 })), Err(Error::Busy)));
+        let (mut cancel, port) = requests[0].clone();
+        cancel.operation = BrowserOperation::Cancel;
+        for wrong in ["app", "endpoint"] {
+            let mut mismatched = cancel.clone();
+            if wrong == "app" { mismatched.app_id = "another-app".into(); }
+            else { mismatched.endpoint = "https://other.example/mcp".into(); }
+            assert!(matches!(assistant.handle(&mismatched), Err(Error::InvalidRequest)));
+            assert!(TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).is_err());
+        }
+        assert!(matches!(assistant.handle(&cancel), Ok(BrowserOutcome::Cancelled)));
+        let released_port = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).expect("Cancel releases the actual socket");
+        assert!(matches!(assistant.handle(&cancel), Ok(BrowserOutcome::Cancelled)), "Cancel is idempotent");
+        assert!(matches!(assistant.handle(&request(BrowserOperation::Cancel)), Ok(BrowserOutcome::Cancelled)), "unknown flow cancellation is harmless");
+        for (_, other_port) in &requests[1..] {
+            assert!(TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, *other_port)).is_err(), "other flows stay open");
+        }
+        assert!(matches!(assistant.handle(&request(BrowserOperation::Prepare { port: 0 })), Ok(BrowserOutcome::Prepared { .. })), "Cancel reclaims a flow slot");
+        drop(released_port);
+    }
+    #[test]
+    fn idle_lease_expiry_closes_socket_without_another_browser_request() {
+        let assistant = Arc::new(Mutex::new(Assistant::default()));
+        let port = {
+            let mut state = assistant.lock().unwrap();
+            let BrowserOutcome::Prepared { redirect_uri } = state.handle(&request(BrowserOperation::Prepare { port: 0 })).unwrap() else { panic!() };
+            let flow = state.flows.values_mut().next().unwrap();
+            flow.started = Instant::now() - FLOW_LIFETIME;
+            Url::parse(&redirect_uri).unwrap().port().unwrap()
+        };
+        expiry_worker(Arc::downgrade(&assistant), Duration::from_millis(5)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            // No Assistant::handle call: the expiry worker must release the port.
+            if let Ok(listener) = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)) { drop(listener); break; }
+            assert!(Instant::now() < deadline, "idle browser listener did not expire");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(assistant.lock().unwrap().flows.is_empty());
     }
     #[test]
     fn wrong_callback_host_is_rejected_and_public_debug_is_redacted() {

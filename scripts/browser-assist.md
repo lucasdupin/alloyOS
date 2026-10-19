@@ -23,11 +23,14 @@ client secrets or PKCE verifier. CobaltFS records are **unencrypted at rest**;
 this does not provide protection against offline disk access or claim hardware
 power-loss/fsync guarantees. A RAM filesystem explicitly reports volatile storage.
 
-Browser cancellation currently abandons the guest transport without sending a
-bound Cancel request to the helper. Local credential authority is removed, but
-an existing host loopback listener can remain allocated: helper expiry is checked
-on subsequent browser requests after five minutes, rather than by a timer.
-Prompt listener cleanup on cancellation remains unfinished.
+Browser cancellation invalidates local authority and queues a helper Cancel
+request bound to the app, resource and authorization attempt. UI maintenance
+drives this cleanup cooperatively even after the account caller stops polling;
+each cleanup attempt gives up after five seconds if the shared transport or host
+is unavailable. The helper also reaps abandoned listeners independently after
+their five-minute lease, checked once per second without requiring another
+browser request. Cancellation does not close the user's browser tab or revoke
+provider authorization; those are separate from releasing the callback socket.
 
 A durable revocation marker blocks a previous credential before its record is
 removed. Interrupted or corrupt current state fails closed; no older checkpoint

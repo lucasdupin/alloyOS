@@ -91,6 +91,7 @@ pub fn run(
     let mut profile_error = String::new();
     loop {
         ui.poll();
+        super::mcp_accounts::poll_browser_cleanup();
         while let Some((id, profile)) = ui.take_client_profile_decision() {
             if let Some(profile) = profile {
                 match agent.provision_client_profile(&id, &profile) {

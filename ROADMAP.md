@@ -12,9 +12,12 @@ optional discovery adapter, not a required provider or runtime dependency.
 
 - [ ] **Discover compatible hosted endpoints.** Accept direct endpoint setup and
   optional official MCP Registry/Smithery adapters behind the same connection
-  contract. Offer only verified web-hosted servers. Do not offer localhost,
+  contract. Registry metadata identifies hosted endpoint candidates; it does not
+  prove connectivity. Verify the MCP handshake and tools before reporting a
+  connection ready. Do not offer localhost,
   local stdio, npm/Node/Python launch commands or MCPB server execution. Native
-  capability-scoped alloyOS JavaScript app packages remain separate.
+  capability-scoped alloyOS JavaScript app packages use our MCP SDK and require
+  no additional binaries or frameworks.
 - [ ] **Separate install, authorization and readiness.** Explain the selected
   service and obtain explicit installation approval; retain installed connection
   configuration without claiming that installation or discovery connects an
@@ -37,10 +40,17 @@ optional discovery adapter, not a required provider or runtime dependency.
 Completed gates cover native Install/Cancel consent, fail-closed platform entropy,
 public hosted MCP discovery/tool calls, and a three-boot synthetic OAuth flow
 through the OS broker and CobaltFS private store, including refresh and durable
-local disconnect after provider failure. Credentials are unencrypted at rest;
+local disconnect after provider failure. Committed native client-profile setup
+adds explicit Review/Save/Cancel, private app-and-endpoint-bound registration,
+and private registration cleanup before approved package removal. Synthetic UI,
+broker and filesystem tests cover these paths; saving registration configuration
+does not authorize an account or verify a real provider registration.
+Credentials are unencrypted at rest;
 optional QEMU browser assistance stores no credentials, while the development
 HTTPS relay can transiently see protected request plaintext. Provider selection,
-client registration and real Gmail authorization remain unverified.
+real provider client registration and real Gmail authorization remain unverified.
+The OS owns account state and credentials; app packages only identify the remote
+resource and request scoped access through the OS broker.
 
 Existing public-registry search, remote package install/uninstall and remote MCP
 fixtures are foundations, not proof of production account connectivity. Optional

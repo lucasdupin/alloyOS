@@ -91,6 +91,7 @@ pub fn dispatch(number: u64, a1: u64, a2: u64, a3: u64) -> i64 {
         return length as i64;
     }
     match SyscallNo::try_from_u64(number) {
+        Ok(SyscallNo::GetRandom) => private_getrandom(space, a1, a2, a3),
         Ok(SyscallNo::Getpid) => task.pid as i64,
         Ok(SyscallNo::Yield) => 0, // Exception handler performs the context switch.
         Ok(SyscallNo::Exit) => {
@@ -109,5 +110,42 @@ pub fn dispatch(number: u64, a1: u64, a2: u64, a3: u64) -> i64 {
         }
         Ok(_) => EPERM,
         Err(_) => ENOSYS,
+    }
+}
+
+/// Bounded secure entropy for a protected process; never dereference EL0 memory.
+fn private_getrandom(space: &mut crate::task::app_process::AddressSpace,
+    address: u64, length: u64, flags: u64) -> i64 {
+    if flags != 0 { return super::handlers::EINVAL; }
+    if length > 256 { return -90; }
+    if space.validate_range(address, length as usize, true).is_err() { return EFAULT; }
+    if length == 0 { return 0; }
+    let mut bytes = [0u8; 256];
+    let output = &mut bytes[..length as usize];
+    if crate::drivers::rng::try_fill_secure_random(output).is_err() { return -11; }
+    let result = space.copy_out(address, output).map(|_| length as i64).unwrap_or(EFAULT);
+    bytes.fill(0);
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::task::app_process::{AddressSpace, PAGE_SIZE, USER_BASE};
+    #[test]
+    fn protected_entropy_checks_private_permissions_and_fails_closed() {
+        let mut space = AddressSpace::prepare(&[1], 2, 4).unwrap();
+        let buffer = space.reserve_private(PAGE_SIZE).unwrap();
+        assert_eq!(private_getrandom(&mut space, buffer, 32, 0), EFAULT);
+        space.commit_private(buffer, PAGE_SIZE, true).unwrap();
+        space.copy_out(buffer, &[0x5a; 32]).unwrap();
+        assert_eq!(private_getrandom(&mut space, buffer, 32, 1), super::super::handlers::EINVAL);
+        assert_eq!(private_getrandom(&mut space, buffer, 257, 0), -90);
+        assert_eq!(private_getrandom(&mut space, USER_BASE, 32, 0), EFAULT);
+        assert_eq!(private_getrandom(&mut space, buffer, 32, 0), -11);
+        let mut unchanged = [0; 32];
+        space.copy_in(buffer, &mut unchanged).unwrap();
+        assert_eq!(unchanged, [0x5a; 32]);
+        assert_eq!(private_getrandom(&mut space, buffer, 0, 0), 0);
     }
 }

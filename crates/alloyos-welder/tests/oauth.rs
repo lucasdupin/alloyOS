@@ -18,6 +18,7 @@ struct State {
     profile_write_fails: bool,
     profile_delete_fails: bool,
     profile_removed: bool,
+    prm_json: Option<String>,
 }
 struct Store(Rc<RefCell<State>>);
 impl CredentialStore for Store {
@@ -179,7 +180,9 @@ impl OAuthNetwork for Network {
         let body = if r.url.contains("oauth-protected-resource")
             || r.url.ends_with("/custom-metadata")
         {
-            format!(r#"{{"resource":"{RESOURCE}","authorization_servers":["{ISSUER}"]}}"#)
+            self.0.borrow().prm_json.clone().unwrap_or_else(|| {
+                format!(r#"{{"resource":"{RESOURCE}","authorization_servers":["{ISSUER}"]}}"#)
+            })
         } else if r.url.contains("oauth-authorization-server") {
             format!(
                 r#"{{"issuer":"{ISSUER}","authorization_endpoint":"{ISSUER}/authorize","token_endpoint":"{ISSUER}/token","revocation_endpoint":"{ISSUER}/revoke","code_challenge_methods_supported":["S256"],"authorization_response_iss_parameter_supported":true}}"#
@@ -755,4 +758,107 @@ fn account_removal_profile_failure_never_reports_complete_cleanup() {
         .profile("mail", RESOURCE)
         .unwrap()
         .is_some());
+}
+
+fn resource_metadata(scopes: serde_json::Value) -> String {
+    serde_json::json!({"resource":RESOURCE,"authorization_servers":[ISSUER],"scopes_supported":scopes}).to_string()
+}
+fn authorization_url(s: &Rc<RefCell<State>>) -> String {
+    s.borrow()
+        .browser
+        .iter()
+        .find_map(|request| {
+            if let BrowserOperation::Open { authorization_url } = &request.operation {
+                Some(authorization_url.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap()
+}
+#[test]
+fn resource_scope_fallback_respects_native_approval_and_omits_empty_scope() {
+    for scopes in [
+        None,
+        Some(serde_json::json!([])),
+        Some(serde_json::json!(["mail.read"])),
+    ] {
+        let s = Rc::new(RefCell::new(State {
+            prm_json: scopes.clone().map(resource_metadata),
+            ..State::default()
+        }));
+        let mut b = broker(&s);
+        let response = ready(b.start(&req(AccountOperation::Begin { scopes: vec![] }))).unwrap();
+        assert!(matches!(
+            response.outcome,
+            AccountOutcome::Authorizing { .. }
+        ));
+        let url = authorization_url(&s);
+        let scope = url.split('&').find_map(|part| part.strip_prefix("scope="));
+        assert_eq!(
+            scope,
+            if scopes == Some(serde_json::json!(["mail.read"])) {
+                Some("mail.read")
+            } else {
+                None
+            }
+        );
+    }
+    let s = Rc::new(RefCell::new(State {
+        prm_json: Some(resource_metadata(serde_json::json!(["mail.write"]))),
+        ..State::default()
+    }));
+    let mut b = broker(&s);
+    assert_eq!(
+        ready(b.start(&req(AccountOperation::Begin { scopes: vec![] }))).unwrap_err(),
+        AccountError::ClientRegistrationRequired
+    );
+    assert!(s.borrow().browser.is_empty());
+    assert!(s.borrow().record.is_none());
+}
+#[test]
+fn challenge_and_explicit_scopes_take_precedence_over_resource_scope_metadata() {
+    for challenged in [false, true] {
+        let s = Rc::new(RefCell::new(State {
+            prm_json: Some(resource_metadata(serde_json::json!(["mail.write"]))),
+            ..State::default()
+        }));
+        let mut b = broker(&s);
+        if challenged {
+            b.note_challenge(RESOURCE, "Bearer scope=\"mail.read\"")
+                .unwrap();
+        }
+        let scopes = if challenged {
+            vec![]
+        } else {
+            vec!["mail.read".into()]
+        };
+        ready(b.start(&req(AccountOperation::Begin { scopes }))).unwrap();
+        let url = authorization_url(&s);
+        assert!(url.contains("scope=mail.read&"));
+        assert!(!url.contains("mail.write"));
+    }
+}
+#[test]
+fn malformed_ambiguous_or_unbounded_resource_scopes_fail_before_browser() {
+    let mut values = vec![
+        resource_metadata(serde_json::Value::Null),
+        resource_metadata(serde_json::json!("mail.read")),
+        resource_metadata(serde_json::json!(["mail.read", 7])),
+        resource_metadata(serde_json::json!(["mail.read", "mail.read"])),
+        resource_metadata(serde_json::json!(["invalid scope"])),
+        resource_metadata(serde_json::json!(vec!["x"; 33])),
+        resource_metadata(serde_json::json!(["x".repeat(257)])),
+    ];
+    values.push(format!(r#"{{"resource":"{RESOURCE}","authorization_servers":["{ISSUER}"],"scopes_supported":[],"scopes_supported":["mail.read"]}}"#));
+    for metadata in values {
+        let s = Rc::new(RefCell::new(State {
+            prm_json: Some(metadata),
+            ..State::default()
+        }));
+        let mut b = broker(&s);
+        assert!(ready(b.start(&req(AccountOperation::Begin { scopes: vec![] }))).is_err());
+        assert!(s.borrow().browser.is_empty());
+        assert!(s.borrow().record.is_none());
+    }
 }

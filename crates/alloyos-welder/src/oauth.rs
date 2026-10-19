@@ -410,7 +410,7 @@ impl OsAccountBroker {
             };
         match job.stage {
             Stage::Resource | Stage::ResourceRoot => {
-                let flow = self.flow.as_ref().unwrap();
+                let flow = self.flow.as_mut().unwrap();
                 if value.get("resource").and_then(Value::as_str) != Some(flow.endpoint.as_str())
                     || !value
                         .get("authorization_servers")
@@ -422,6 +422,29 @@ impl OsAccountBroker {
                         })
                 {
                     return self.fail(AccountError::UnsupportedAuthorization);
+                }
+                if let Some(advertised) = value.get("scopes_supported") {
+                    let Some(advertised) = advertised.as_array() else {
+                        return self.fail(AccountError::UnsupportedAuthorization);
+                    };
+                    if advertised.len() > alloyos_mcp::account::MAX_SCOPES {
+                        return self.fail(AccountError::UnsupportedAuthorization);
+                    }
+                    let Some(scopes) = advertised.iter().map(|scope| scope.as_str().map(ToString::to_string)).collect::<Option<Vec<_>>>() else {
+                        return self.fail(AccountError::UnsupportedAuthorization);
+                    };
+                    if !alloyos_mcp::account::valid_scopes(&scopes)
+                        || scopes.iter().collect::<alloc::collections::BTreeSet<_>>().len() != scopes.len() {
+                        return self.fail(AccountError::UnsupportedAuthorization);
+                    }
+                    // Explicitly selected or challenged scopes take precedence.
+                    // Resource metadata never expands the native profile grant.
+                    if flow.scopes.is_empty() {
+                        if scopes.iter().any(|scope| !flow.profile.allowed_scopes.contains(scope)) {
+                            return self.fail(AccountError::ClientRegistrationRequired);
+                        }
+                        flow.scopes = scopes;
+                    }
                 }
                 let issuer = flow.profile.issuer.trim_end_matches('/');
                 // RFC8414 inserts the well-known component before issuer path.
@@ -625,7 +648,8 @@ impl OsAccountBroker {
                     return self.fail(AccountError::CallbackMismatch);
                 }
                 let challenge = base64url(&self.crypto.sha256(flow.verifier.as_bytes()));
-                let url=alloc::format!("{}{}response_type=code&client_id={}&redirect_uri={}&scope={}&state={}&code_challenge={}&code_challenge_method=S256&resource={}",flow.authorization_endpoint,if flow.authorization_endpoint.contains('?'){"&"}else{"?"},form_encode(&flow.profile.client_id),form_encode(&redirect_uri),form_encode(&flow.scopes.join(" ")),form_encode(&flow.state),challenge,form_encode(&flow.endpoint));
+                let scope = if flow.scopes.is_empty() { String::new() } else { alloc::format!("&scope={}",form_encode(&flow.scopes.join(" "))) };
+                let url=alloc::format!("{}{}response_type=code&client_id={}&redirect_uri={}{}&state={}&code_challenge={}&code_challenge_method=S256&resource={}",flow.authorization_endpoint,if flow.authorization_endpoint.contains('?'){"&"}else{"?"},form_encode(&flow.profile.client_id),form_encode(&redirect_uri),scope,form_encode(&flow.state),challenge,form_encode(&flow.endpoint));
                 self.flow.as_mut().unwrap().redirect = redirect_uri;
                 self.browser_start(
                     job.request,

@@ -9,7 +9,7 @@ hosted runtime.
 
 | Facility | Current implementation | Consequence for a native browser |
 | --- | --- | --- |
-| Executables | `task/app_process.rs::AddressSpace::load_elf` loads static ELF64 AArch64 `ET_EXEC`, with a bounded address window beginning at `0x10_0000_0000`; rejects dynamic/interpreter/TLS segments and writable executable pages | A normal Linux WPE binary cannot be loaded; produce alloyOS binaries or implement further compatibility |
+| Executables | `task/app_process.rs::AddressSpace::load_elf` loads static ELF64 AArch64 `ET_EXEC`, with a bounded address window beginning at `0x10_0000_0000`; rejects dynamic/interpreter segments and writable executable pages; initializes one bounded static local-exec `PT_TLS` module | A normal Linux WPE binary cannot be loaded; produce alloyOS binaries or implement further compatibility |
 | Startup | `task/pcb.rs::Task::user_executable` supplies private heap start/length in `x0`/`x1`; `alloyos-user/src/runtime.rs` initializes `ProcessAllocator` | This is an alloyOS entry contract, not libc process startup with argument/environment/auxiliary vectors |
 | Memory | Private page backing, inaccessible gaps, validated copies, fixed process heap/stack and bounded anonymous private reservations | Reservations can commit zero-filled RO/RW non-executable pages, decommit backing and release address space; shared mappings and executable transitions remain unsupported |
 | Processes | Scheduler, private address spaces, supervisor-owned lifecycle and fault containment | Useful isolation foundation; no general browser subprocess-launch interface exists |
@@ -17,7 +17,7 @@ hosted runtime.
 | Time | Protected `ClockGettime` accepts clock ID 1 and writes a monotonic timespec through private-memory validation | Preserve this existing primitive; wall time and blocking timer waits need separate work |
 | Display/input | Protected display-service calls 130 through 134 | The browser needs a subordinate surface capability, not the system renderer's authority |
 | Files/network | Generic handlers exist but use shared kernel descriptor/network state; protected dispatch denies those calls | Do not route a browser to these handlers without per-process ownership and private-pointer validation |
-| Randomness | Generic `GetRandom` handler exists; protected dispatcher does not grant it | A browser-compatible secure-entropy interface remains required |
+| Randomness | Protected `GetRandom` validates private writable buffers and accepts up to 256 bytes with flags zero; fails with EAGAIN before platform seeding | Native libraries must chunk larger requests and propagate entropy failure; no timer fallback |
 
 Source paths above are relative to `crates/alloyos-kernel/src/` unless a crate is
 named. `syscall/protected.rs`, rather than `syscall/dispatch.rs`, is the relevant
@@ -114,6 +114,10 @@ and host-side rendering are useful checks but do not satisfy these milestones.
   hosted `std` runtime. Reproduce with the command below.
 - [ ] Hosted runtime probe allocates/frees, reads monotonic time, reports failure
   through a granted endpoint, and exits; invalid pointers cannot affect peers.
+- [x] Static C++ execution prerequisite: real ELF constructor traversal,
+  initialized/zero local-exec TLS, distinct process canaries and measured IRQ
+  preemption preserve thread pointers. This establishes two processes, not
+  pthreads, TLS destructors or a complete C++ runtime.
 - [ ] A representative C/C++ dependency runs with constructors, thread-local
   state and the supported error model. Two threads prove TLS separation and
   bounded wait/wake behavior if the dependency uses threads.
@@ -137,32 +141,66 @@ The first command tests host-side loader/memory logic. The Python commands build
 and run the existing protected-process QEMU acceptance suites; neither suite
 currently validates `std`, JavaScriptCore or WPE.
 
-The initial hardening change explicitly rejects `PT_TLS` instead of silently
-accepting an executable whose thread-local storage cannot be initialized. Its
-regression test preserves valid load segments and compares rejection against an
-otherwise identical executable with an inert metadata header. No new guest
-browser execution is claimed.
+The loader now initializes one static local-exec AArch64 TLS module using
+Variant I: a private page-aligned thread pointer, a zero 16-byte TCB prefix,
+and a template at `TP + align_up(16, p_align)`. File-backed template bytes must
+match a non-executable readable `PT_LOAD`; `.tbss` is independently zeroed.
+Alignment is bounded to a power of two through 4096 bytes. Extra TLS pages count
+against the process quota. Duplicate/malformed TLS metadata and dynamic linkage
+remain rejected. Dynamic TLS resolution, pthread lifecycle and destructor
+handling remain unfinished.
+
+`TPIDR_EL0` is initialized by the protected ELF launcher and saved/restored in
+both synchronous and IRQ exception frames. Native acceptance loads two real C++
+ELFs whose extra BSS differs by one page, so their thread pointers have distinct
+virtual values. Each initializes one static constructor and initialized/zero
+TLS, writes a PID-specific canary and preserves it across yields and at least
+one measured timer IRQ switch to another task. The deterministic 20ms busy
+intervals produced 55 and 56 such switches in the verified TLS-only run.
 
 ### Native memory and freestanding C++ acceptance
 
 ```sh
 CARGO_TARGET_DIR=/private/tmp/alloyos-web-guest-target \
   python3 scripts/check_web_runtime_qemu.py --build --require-cxx \
-  --output /private/tmp/alloyos-web-runtime-acceptance
+  --output /private/tmp/alloyos-web-runtime-tls-acceptance
 ```
 
 Verified on 2026-10-18 using QEMU HVF, a diskless/networkless 512 MiB guest and
-an actual protected C++ static ELF. The script also requires the original EL0
+two actual protected C++ static ELFs with distinct thread-pointer addresses. The script also requires the original EL0
 isolation acceptance, including IPC, invalid pointers and timer preemption.
 `--accel tcg` selects portable emulation. Existing kernels can be selected with
 `--kernel`; they must include the `process-selftest` feature and, for
 `--require-cxx`, the embedded compiler probe. The optional compile-time
-`alloyos_cxx_probe` cfg and `ALLOYOS_CXX_PROBE_ELF` path are supplied by `--build
+`alloyos_cxx_probe` cfg and `ALLOYOS_CXX_PROBE_ELF` /
+`ALLOYOS_CXX_PEER_PROBE_ELF` paths are supplied by `--build
 --require-cxx`; no generated ELF is committed.
 
 The artifact directory contains `guest.log`, the generated C++ compiler report,
 and `artifact.json` with command, acceptance outcome and kernel SHA-256. The
 verified kernel hash was
-`b0ff17c699a161a2d9a6a732b48ce022ba43680063a6ac3222b853a5cba3ec53`.
-Neither this probe nor its passing markers establish libc, Rust `std`, C++
-standard-library, thread-local-storage, JavaScriptCore or WPE support.
+`077a7c914a1a6433c92abf809c7fcd81ae457394acd72120de984ae32298408f`.
+This TLS-only run does not establish libc, Rust `std`, a C++ standard library,
+pthreads, JavaScriptCore or WPE support.
+
+### Native newlib subset acceptance
+
+```sh
+CARGO_TARGET_DIR=/private/tmp/alloyos-web-guest-target \
+  python3 scripts/check_web_runtime_qemu.py --build \
+  --newlib-sysroot /private/tmp/alloyos-newlib-full/sysroot/aarch64-none-elf \
+  --output /private/tmp/alloyos-web-runtime-libc-acceptance
+```
+
+Verified on 2026-10-18: both protected C++ processes executed actual cross-built
+newlib `memcpy`, `memmove`, `strtod` and `sin`, then exited zero. The script
+requires two `LIBC_NATIVE_PASS memcpy memmove strtod sin` reports in addition to
+constructor/TLS, measured timer-preemption, bounded memory and original isolation
+acceptance. Each process recorded 55 or 56 timer IRQ peer switches. The verified
+kernel SHA-256 was
+`a6068cc697a0d9a73e250335cd2b21bb987309aacff07e83f8ede89e0888ef14`.
+The C++ compiler report embeds upstream newlib source/build identity and actual
+`libc.a`/`libm.a` hashes. This verifies a limited real library subset; it does not
+establish libc syscall coverage, pthreads, Rust `std`, libc++, JavaScriptCore or
+WPE. Probe-only unavailable system hooks fail with errors rather than pretending
+to provide filesystem, signals or process services.

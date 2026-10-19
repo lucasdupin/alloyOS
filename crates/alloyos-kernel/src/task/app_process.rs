@@ -122,6 +122,7 @@ pub struct AddressSpace {
     writable: Vec<bool>,
     mapped: Vec<bool>,
     heap_start: u64,
+    initial_thread_pointer: u64,
     max_pages: usize,
     reservations: Vec<PrivateReservation>,
 }
@@ -197,13 +198,14 @@ impl AddressSpace {
             writable,
             mapped,
             heap_start: USER_BASE + (code_pages * PAGE_SIZE) as u64,
+            initial_thread_pointer: 0,
             max_pages,
             reservations: Vec::new(),
         })
     }
-    /// Load a static ELF64 AArch64 executable. Reject dynamic images, ELF TLS,
-    /// overlapping segments and writable executable pages; gaps remain inaccessible
-    /// to EL0. Thread-local storage requires runtime setup this loader does not provide.
+    /// Load static ELF64 AArch64 with one local-exec TLS module (Variant I).
+    /// Dynamic images, overlapping load segments and W+X pages are rejected.
+    /// TLS gets a private zero TCB plus initialized/zeroed template before the heap.
     pub fn load_elf(
         image: &[u8],
         writable_pages: usize,
@@ -260,18 +262,33 @@ impl AddressSpace {
             .try_reserve_exact(number)
             .map_err(|_| Error::MemoryLimit)?;
         let mut end = USER_BASE;
+        let mut tls = None;
         for i in 0..number {
             let o = ph.checked_add(i * 56).ok_or(Error::InvalidImage)?;
             let kind = u32at(image, o)?;
-            // PT_DYNAMIC, PT_INTERP and PT_TLS require runtime support. Ignoring
-            // PT_TLS would accept binaries whose thread-local variables have no
-            // initialized storage or thread pointer, even with static linking.
-            if kind == 2 || kind == 3 || kind == 7 {
+            // Dynamic linkage and interpreter startup remain unsupported.
+            if kind == 2 || kind == 3 {
                 return Err(Error::InvalidImage);
             }
-            if kind != 1 {
+            if kind == 7 {
+                if tls.is_some() { return Err(Error::InvalidImage); }
+                let flags = u32at(image, o + 4)?;
+                let file = usize::try_from(u64at(image, o + 8)?).map_err(|_| Error::InvalidImage)?;
+                let va = u64at(image, o + 16)?;
+                let filesz = usize::try_from(u64at(image, o + 32)?).map_err(|_| Error::InvalidImage)?;
+                let memsz = usize::try_from(u64at(image, o + 40)?).map_err(|_| Error::InvalidImage)?;
+                let alignment = usize::try_from(u64at(image, o + 48)?).map_err(|_| Error::InvalidImage)?.max(1);
+                if flags & !6 != 0 || flags & 4 == 0 || filesz > memsz || memsz == 0
+                    || !alignment.is_power_of_two() || alignment > PAGE_SIZE
+                    || va % alignment as u64 != 0 || file % alignment != 0
+                    || image.get(file..file.checked_add(filesz).ok_or(Error::InvalidImage)?).is_none()
+                    || memsz > max_pages * PAGE_SIZE {
+                    return Err(Error::InvalidImage);
+                }
+                tls = Some((file, va, filesz, memsz, alignment));
                 continue;
             }
+            if kind != 1 { continue; }
             let flags = u32at(image, o + 4)?;
             let file = usize::try_from(u64at(image, o + 8)?).map_err(|_| Error::InvalidImage)?;
             let va = u64at(image, o + 16)?;
@@ -312,17 +329,33 @@ impl AddressSpace {
             end = end.max(limit);
         }
         let code_pages = ((end - USER_BASE).div_ceil(PAGE_SIZE as u64)) as usize;
-        if code_pages == 0
-            || code_pages
-                .checked_add(writable_pages)
-                .ok_or(Error::MemoryLimit)?
-                > max_pages
-        {
+        let tls_bytes = if let Some((file, va, filesz, memsz, alignment)) = tls {
+            // The initialized template must be part of a non-executable readable
+            // load segment with matching file/virtual offsets. .tbss is copied
+            // as zero storage, not read from the file or template mapping.
+            let covered = segments.iter().any(|&(_, _, load_va, load_file, load_filesz, flags)| {
+                va >= load_va && flags & 1 == 0 && flags & 4 != 0
+                    && (va - load_va) == file.saturating_sub(load_file) as u64
+                    && file >= load_file && file.checked_add(filesz).is_some_and(|n| n <= load_file + load_filesz)
+            });
+            if !covered { return Err(Error::InvalidImage); }
+            let offset = 16usize.div_ceil(alignment) * alignment;
+            offset.checked_add(memsz).ok_or(Error::MemoryLimit)?
+        } else { 0 };
+        let tls_pages = tls_bytes.div_ceil(PAGE_SIZE);
+        let image_pages = code_pages.checked_add(tls_pages).ok_or(Error::MemoryLimit)?;
+        if code_pages == 0 || image_pages.checked_add(writable_pages).ok_or(Error::MemoryLimit)? > max_pages {
             return Err(Error::MemoryLimit);
         }
-        // Allocation and table construction are shared with the flat probe loader.
-        let mut space = Self::prepare(&[0], code_pages + writable_pages - 1, max_pages)?;
-        space.heap_start = USER_BASE + (code_pages * PAGE_SIZE) as u64;
+        let mut space = Self::prepare(&[0], image_pages + writable_pages - 1, max_pages)?;
+        space.heap_start = USER_BASE + (image_pages * PAGE_SIZE) as u64;
+        if let Some((file, _, filesz, _, alignment)) = tls {
+            space.initial_thread_pointer = USER_BASE + (code_pages * PAGE_SIZE) as u64;
+            let offset = code_pages * PAGE_SIZE + 16usize.div_ceil(alignment) * alignment;
+            for (n, byte) in image[file..file + filesz].iter().enumerate() {
+                space.pages[(offset + n) / PAGE_SIZE].0[(offset + n) % PAGE_SIZE] = *byte;
+            }
+        }
         for i in 0..code_pages {
             space.mapped[i] = false;
             space.writable[i] = false;
@@ -367,6 +400,9 @@ impl AddressSpace {
             core::arch::asm!("dsb ish", "ic iallu", "dsb ish", "isb");
         }
         Ok((space, entry))
+    }
+    pub fn initial_thread_pointer(&self) -> u64 {
+        self.initial_thread_pointer
     }
     pub fn heap_start(&self) -> u64 {
         self.heap_start
@@ -836,7 +872,7 @@ mod tests {
         image
     }
     #[test]
-    fn elf_rejects_tls_even_when_template_is_in_a_valid_load_segment() {
+    fn elf_initializes_private_static_tls_and_zero_tcb() {
         let mut image = elf();
         // A TLS template normally overlaps a writable PT_LOAD. Keep both valid
         // load segments intact, then append a well-formed PT_TLS descriptor.
@@ -849,14 +885,40 @@ mod tests {
         image[header + 32..header + 40].copy_from_slice(&4u64.to_le_bytes());
         image[header + 40..header + 48].copy_from_slice(&8u64.to_le_bytes());
         image[header + 48..header + 56].copy_from_slice(&8u64.to_le_bytes());
-        assert!(matches!(
-            AddressSpace::load_elf(&image, 65, 100),
-            Err(Error::InvalidImage)
-        ));
-        // An inert metadata header at the same location is accepted: rejection
-        // above must be due to TLS, not malformed ELF or missing executable code.
-        image[header..header + 4].copy_from_slice(&0u32.to_le_bytes());
-        assert!(AddressSpace::load_elf(&image, 65, 100).is_ok());
+        let (mut first, _) = AddressSpace::load_elf(&image, 65, 100).unwrap();
+        let (second, _) = AddressSpace::load_elf(&image, 65, 100).unwrap();
+        let tp = first.initial_thread_pointer();
+        assert_eq!(tp % PAGE_SIZE as u64, 0);
+        assert_eq!(first.heap_start(), tp + PAGE_SIZE as u64);
+        let mut bytes = [0u8; 24];
+        first.copy_in(tp, &mut bytes).unwrap();
+        assert_eq!(&bytes[..16], &[0u8; 16]);
+        assert_eq!(&bytes[16..20], b"data");
+        assert_eq!(&bytes[20..], &[0u8; 4]);
+        first.copy_out(tp + 16, b"peer").unwrap();
+        second.copy_in(tp, &mut bytes).unwrap();
+        assert_eq!(&bytes[16..20], b"data");
+        for (offset, value) in [(4, 5u64), (32, 9), (40, 0), (48, 3), (48, 8192)] {
+            let mut bad = image.clone();
+            if offset == 4 { bad[header + offset..header + offset + 4].copy_from_slice(&(value as u32).to_le_bytes()); }
+            else { bad[header + offset..header + offset + 8].copy_from_slice(&value.to_le_bytes()); }
+            assert!(AddressSpace::load_elf(&bad, 65, 100).is_err());
+        }
+        assert!(matches!(AddressSpace::load_elf(&image, 65, 69), Err(Error::MemoryLimit)));
+        let mut aligned = image.clone();
+        aligned[header + 48..header + 56].copy_from_slice(&64u64.to_le_bytes());
+        let (aligned_space, _) = AddressSpace::load_elf(&aligned, 65, 100).unwrap();
+        let mut template = [0u8; 8];
+        aligned_space.copy_in(aligned_space.initial_thread_pointer() + 64, &mut template).unwrap();
+        assert_eq!(&template[..4], b"data");
+        assert_eq!(&template[4..], &[0; 4]);
+        let mut duplicate = image.clone();
+        duplicate[56..58].copy_from_slice(&4u16.to_le_bytes());
+        duplicate.copy_within(header..header + 56, header + 56);
+        assert!(AddressSpace::load_elf(&duplicate, 65, 100).is_err());
+        let mut unbacked = image.clone();
+        unbacked[header + 16..header + 24].copy_from_slice(&USER_BASE.to_le_bytes());
+        assert!(AddressSpace::load_elf(&unbacked, 65, 100).is_err());
     }
     #[test]
     fn elf_rejects_overflowing_headers_sizes_addresses_and_bad_alignment() {

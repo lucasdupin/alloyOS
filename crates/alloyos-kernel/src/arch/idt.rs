@@ -3,7 +3,7 @@
 use core::ops::{Index, IndexMut};
 use spin::Lazy;
 
-pub const IRQ_FRAME_SIZE: usize = 816;
+pub const IRQ_FRAME_SIZE: usize = 832;
 
 pub const TIMER_INTERRUPT_INDEX: u8 = 30; // ARM Generic Physical Timer PPI (INTID 30)
 pub const KEYBOARD_INTERRUPT_INDEX: u8 = 33;
@@ -13,15 +13,16 @@ pub const SYSCALL_INTERRUPT_INDEX: u8 = 0x80;
 pub const ESR_EC_SVC64: u64 = 0x15;
 
 /// Saved AArch64 register state on synchronous exception or IRQ entry.
-#[repr(C)]
+#[repr(C, align(16))]
 #[derive(Debug, Clone, Copy)]
 pub struct TrapFrame {
-    pub regs: [u64; 31], // x0 .. x30
-    pub elr: u64,        // ELR_EL1
-    pub spsr: u64,       // SPSR_EL1
-    pub esr: u64,        // ESR_EL1
-    pub far: u64,        // FAR_EL1
-    pub user_sp: u64,    // SP_EL0 (also occupies IRQ frame padding at byte 280)
+    pub regs: [u64; 31],     // x0 .. x30
+    pub elr: u64,            // ELR_EL1
+    pub spsr: u64,           // SPSR_EL1
+    pub esr: u64,            // ESR_EL1
+    pub far: u64,            // FAR_EL1
+    pub user_sp: u64,        // SP_EL0
+    pub thread_pointer: u64, // TPIDR_EL0; final padding keeps SIMD slots 16-byte aligned
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -137,7 +138,7 @@ pub extern "C" fn rust_sync_exception_handler(tf: &mut TrapFrame) -> *mut TrapFr
 #[no_mangle]
 pub extern "C" fn rust_irq_exception_handler(tf: &mut TrapFrame) -> *mut TrapFrame {
     if crate::drivers::pic::acknowledge_timer() {
-        crate::task::scheduler::preempt(tf)
+        crate::task::scheduler::preempt_from_timer(tf)
     } else {
         tf
     }
@@ -191,7 +192,7 @@ __exception_vectors:
     b __unhandled_exception_stub
 
 __sync_exception_stub:
-    sub sp, sp, #816
+    sub sp, sp, #832
     stp x0, x1, [sp, #0]
     stp x2, x3, [sp, #16]
     stp x4, x5, [sp, #32]
@@ -216,51 +217,55 @@ __sync_exception_stub:
     str x3, [sp, #272]
     mrs x4, sp_el0
     str x4, [sp, #280]
+    mrs x5, tpidr_el0
+    str x5, [sp, #288]
 
-    stp q0, q1, [sp, #288]
-    stp q2, q3, [sp, #320]
-    stp q4, q5, [sp, #352]
-    stp q6, q7, [sp, #384]
-    stp q8, q9, [sp, #416]
-    stp q10, q11, [sp, #448]
-    stp q12, q13, [sp, #480]
-    stp q14, q15, [sp, #512]
-    stp q16, q17, [sp, #544]
-    stp q18, q19, [sp, #576]
-    stp q20, q21, [sp, #608]
-    stp q22, q23, [sp, #640]
-    stp q24, q25, [sp, #672]
-    stp q26, q27, [sp, #704]
-    stp q28, q29, [sp, #736]
-    stp q30, q31, [sp, #768]
+    stp q0, q1, [sp, #304]
+    stp q2, q3, [sp, #336]
+    stp q4, q5, [sp, #368]
+    stp q6, q7, [sp, #400]
+    stp q8, q9, [sp, #432]
+    stp q10, q11, [sp, #464]
+    stp q12, q13, [sp, #496]
+    stp q14, q15, [sp, #528]
+    stp q16, q17, [sp, #560]
+    stp q18, q19, [sp, #592]
+    stp q20, q21, [sp, #624]
+    stp q22, q23, [sp, #656]
+    stp q24, q25, [sp, #688]
+    stp q26, q27, [sp, #720]
+    stp q28, q29, [sp, #752]
+    stp q30, q31, [sp, #784]
     mrs x0, fpcr
     mrs x1, fpsr
-    str x0, [sp, #800]
-    str x1, [sp, #808]
+    str x0, [sp, #816]
+    str x1, [sp, #824]
     mov x0, sp
     bl rust_sync_exception_handler
     mov sp, x0
-    ldr x0, [sp, #800]
-    ldr x1, [sp, #808]
+    ldr x0, [sp, #816]
+    ldr x1, [sp, #824]
     msr fpcr, x0
     msr fpsr, x1
-    ldp q0, q1, [sp, #288]
-    ldp q2, q3, [sp, #320]
-    ldp q4, q5, [sp, #352]
-    ldp q6, q7, [sp, #384]
-    ldp q8, q9, [sp, #416]
-    ldp q10, q11, [sp, #448]
-    ldp q12, q13, [sp, #480]
-    ldp q14, q15, [sp, #512]
-    ldp q16, q17, [sp, #544]
-    ldp q18, q19, [sp, #576]
-    ldp q20, q21, [sp, #608]
-    ldp q22, q23, [sp, #640]
-    ldp q24, q25, [sp, #672]
-    ldp q26, q27, [sp, #704]
-    ldp q28, q29, [sp, #736]
-    ldp q30, q31, [sp, #768]
+    ldp q0, q1, [sp, #304]
+    ldp q2, q3, [sp, #336]
+    ldp q4, q5, [sp, #368]
+    ldp q6, q7, [sp, #400]
+    ldp q8, q9, [sp, #432]
+    ldp q10, q11, [sp, #464]
+    ldp q12, q13, [sp, #496]
+    ldp q14, q15, [sp, #528]
+    ldp q16, q17, [sp, #560]
+    ldp q18, q19, [sp, #592]
+    ldp q20, q21, [sp, #624]
+    ldp q22, q23, [sp, #656]
+    ldp q24, q25, [sp, #688]
+    ldp q26, q27, [sp, #720]
+    ldp q28, q29, [sp, #752]
+    ldp q30, q31, [sp, #784]
 
+    ldr x3, [sp, #288]
+    msr tpidr_el0, x3
     ldr x3, [sp, #280]
     msr sp_el0, x3
     ldp x1, x2, [sp, #256]
@@ -282,11 +287,11 @@ __sync_exception_stub:
     ldp x4, x5, [sp, #32]
     ldp x2, x3, [sp, #16]
     ldp x0, x1, [sp, #0]
-    add sp, sp, #816
+    add sp, sp, #832
     eret
 
 __irq_exception_stub:
-    sub sp, sp, #816
+    sub sp, sp, #832
     stp x0, x1, [sp, #0]
     stp x2, x3, [sp, #16]
     stp x4, x5, [sp, #32]
@@ -311,51 +316,55 @@ __irq_exception_stub:
     str x3, [sp, #272]
     mrs x4, sp_el0
     str x4, [sp, #280]
+    mrs x5, tpidr_el0
+    str x5, [sp, #288]
 
-    stp q0, q1, [sp, #288]
-    stp q2, q3, [sp, #320]
-    stp q4, q5, [sp, #352]
-    stp q6, q7, [sp, #384]
-    stp q8, q9, [sp, #416]
-    stp q10, q11, [sp, #448]
-    stp q12, q13, [sp, #480]
-    stp q14, q15, [sp, #512]
-    stp q16, q17, [sp, #544]
-    stp q18, q19, [sp, #576]
-    stp q20, q21, [sp, #608]
-    stp q22, q23, [sp, #640]
-    stp q24, q25, [sp, #672]
-    stp q26, q27, [sp, #704]
-    stp q28, q29, [sp, #736]
-    stp q30, q31, [sp, #768]
+    stp q0, q1, [sp, #304]
+    stp q2, q3, [sp, #336]
+    stp q4, q5, [sp, #368]
+    stp q6, q7, [sp, #400]
+    stp q8, q9, [sp, #432]
+    stp q10, q11, [sp, #464]
+    stp q12, q13, [sp, #496]
+    stp q14, q15, [sp, #528]
+    stp q16, q17, [sp, #560]
+    stp q18, q19, [sp, #592]
+    stp q20, q21, [sp, #624]
+    stp q22, q23, [sp, #656]
+    stp q24, q25, [sp, #688]
+    stp q26, q27, [sp, #720]
+    stp q28, q29, [sp, #752]
+    stp q30, q31, [sp, #784]
     mrs x0, fpcr
     mrs x1, fpsr
-    str x0, [sp, #800]
-    str x1, [sp, #808]
+    str x0, [sp, #816]
+    str x1, [sp, #824]
     mov x0, sp
     bl rust_irq_exception_handler
     mov sp, x0
-    ldr x0, [sp, #800]
-    ldr x1, [sp, #808]
+    ldr x0, [sp, #816]
+    ldr x1, [sp, #824]
     msr fpcr, x0
     msr fpsr, x1
-    ldp q0, q1, [sp, #288]
-    ldp q2, q3, [sp, #320]
-    ldp q4, q5, [sp, #352]
-    ldp q6, q7, [sp, #384]
-    ldp q8, q9, [sp, #416]
-    ldp q10, q11, [sp, #448]
-    ldp q12, q13, [sp, #480]
-    ldp q14, q15, [sp, #512]
-    ldp q16, q17, [sp, #544]
-    ldp q18, q19, [sp, #576]
-    ldp q20, q21, [sp, #608]
-    ldp q22, q23, [sp, #640]
-    ldp q24, q25, [sp, #672]
-    ldp q26, q27, [sp, #704]
-    ldp q28, q29, [sp, #736]
-    ldp q30, q31, [sp, #768]
+    ldp q0, q1, [sp, #304]
+    ldp q2, q3, [sp, #336]
+    ldp q4, q5, [sp, #368]
+    ldp q6, q7, [sp, #400]
+    ldp q8, q9, [sp, #432]
+    ldp q10, q11, [sp, #464]
+    ldp q12, q13, [sp, #496]
+    ldp q14, q15, [sp, #528]
+    ldp q16, q17, [sp, #560]
+    ldp q18, q19, [sp, #592]
+    ldp q20, q21, [sp, #624]
+    ldp q22, q23, [sp, #656]
+    ldp q24, q25, [sp, #688]
+    ldp q26, q27, [sp, #720]
+    ldp q28, q29, [sp, #752]
+    ldp q30, q31, [sp, #784]
 
+    ldr x3, [sp, #288]
+    msr tpidr_el0, x3
     ldr x3, [sp, #280]
     msr sp_el0, x3
     ldp x1, x2, [sp, #256]
@@ -377,7 +386,7 @@ __irq_exception_stub:
     ldp x4, x5, [sp, #32]
     ldp x2, x3, [sp, #16]
     ldp x0, x1, [sp, #0]
-    add sp, sp, #816
+    add sp, sp, #832
     eret
 
 __unhandled_exception_stub:
@@ -415,7 +424,14 @@ pub fn init() {
 /// Fatal FIQ/SError or unsupported exception entry. Preserve the fault context
 /// before calling Rust; these vectors must not park silently.
 #[no_mangle]
-pub extern "C" fn rust_unhandled_exception_handler(pc: u64, esr: u64, far: u64, spsr: u64, fp: u64, lr: u64) -> ! {
+pub extern "C" fn rust_unhandled_exception_handler(
+    pc: u64,
+    esr: u64,
+    far: u64,
+    spsr: u64,
+    fp: u64,
+    lr: u64,
+) -> ! {
     crate::drivers::serial::emergency_print(format_args!("[crash] unhandled-exception esr={esr:#018x} far={far:#018x} spsr={spsr:#018x} fp={fp:#018x} lr={lr:#018x}\n[crash] frame=0 pc={pc:#018x} kind=fault\n"));
     panic!("unhandled AArch64 exception");
 }

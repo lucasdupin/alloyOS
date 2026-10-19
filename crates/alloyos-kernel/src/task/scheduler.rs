@@ -162,6 +162,17 @@ pub fn spawn_kernel(pid: u64, entry: extern "C" fn() -> !) {
 }
 
 pub fn preempt(frame: *mut crate::arch::idt::TrapFrame) -> *mut crate::arch::idt::TrapFrame {
+    preempt_with_reason(frame, false)
+}
+
+pub fn preempt_from_timer(frame: *mut crate::arch::idt::TrapFrame) -> *mut crate::arch::idt::TrapFrame {
+    preempt_with_reason(frame, true)
+}
+
+fn preempt_with_reason(
+    frame: *mut crate::arch::idt::TrapFrame,
+    _timer: bool,
+) -> *mut crate::arch::idt::TrapFrame {
     let mut scheduler = SCHEDULER.lock();
     // We have entered on the next context's exception stack. Previously retired
     // stacks are now safe to reap; never drop the stack this handler runs on.
@@ -181,11 +192,20 @@ pub fn preempt(frame: *mut crate::arch::idt::TrapFrame) -> *mut crate::arch::idt
     } else {
         None
     };
+    #[cfg(feature = "process-selftest")]
+    let timer_source = (_timer && unsafe { (*frame).spsr & 0xf == 0 })
+        .then(|| current.clone());
     *current.stack_pointer.lock() = frame as u64;
     scheduler.wake_due(crate::drivers::rng::monotonic_time_ns());
     let Some(next) = scheduler.next_task() else {
         return frame;
     };
+    #[cfg(feature = "process-selftest")]
+    if let Some(source) = timer_source {
+        if source.pid != next.pid {
+            source.record_timer_preemption();
+        }
+    }
     let root = next
         .address_space
         .lock()
@@ -341,8 +361,9 @@ mod preemption_tests {
     fn user_stack_slot_matches_exception_assembly() {
         use crate::arch::idt::TrapFrame;
         assert_eq!(core::mem::offset_of!(TrapFrame, user_sp), 280);
-        assert_eq!(core::mem::size_of::<TrapFrame>(), 288);
-        assert_eq!(crate::arch::idt::IRQ_FRAME_SIZE, 816);
+        assert_eq!(core::mem::offset_of!(TrapFrame, thread_pointer), 288);
+        assert_eq!(core::mem::size_of::<TrapFrame>(), 304);
+        assert_eq!(crate::arch::idt::IRQ_FRAME_SIZE, 832);
     }
 
     #[test]

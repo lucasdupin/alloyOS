@@ -96,31 +96,90 @@ point, and writable executable segments, and records the actual tools and ELF
 segments in `report.json`.
 
 The build passed on 2026-10-18 with Clang 17 and Rust's LLD 23.1.3. The executable
-contains a cross-translation-unit virtual method call computing `6 * 7`, checks
-process ABI version 1, reports `CXX_NATIVE_PASS virtual-dispatch=42`, and exits with
-status zero on success. Failure exit statuses are 72 (ABI mismatch), 73 (wrong
-expression result), and 74 (diagnostic report failed). The protected ABI denies
-stdout, so this uses bounded `PANIC_REPORT` syscall 403, which returns zero and
-currently prefixes all messages with `[crash] user-panic`; the probe itself exits
-normally. The loader provides the initial stack;
-the probe takes the existing heap/length entry arguments but does not allocate.
-The compiler script itself does **not execute the ELF**. Native execution was
-separately verified on 2026-10-18 through the real protected ELF launcher in QEMU:
+checks process ABI version 1, traverses `.init_array`, evaluates a real
+cross-translation-unit virtual call computing `6 * 7`, and verifies initialized
+and zero local-exec TLS. It writes a PID-specific TLS canary, yields, and checks
+that canary throughout eight monotonic 20ms busy intervals. The linker places a
+64-aligned `PT_TLS` template, whose compiler-generated accesses use `TP + 64`
+and `TP + 68` as required by the loader's Variant I layout.
+
+The compiler script produces a primary ELF and a peer with an extra BSS page,
+so their initial thread-pointer virtual addresses differ. Guest acceptance
+requires both normal exits, address-space teardown, and measured timer IRQ
+switches to a different task for each process. Failure statuses identify ABI,
+expression, report, constructor, TLS, PID and monotonic-clock failures. The
+protected ABI denies stdout, so bounded syscall 403 reports diagnostics with the
+existing `[crash] user-panic` prefix; successful probes exit normally.
+
+The compiler script itself does **not execute the ELFs**. Native execution was
+verified through the real protected ELF launcher in QEMU:
 
 ```sh
 CARGO_TARGET_DIR=/private/tmp/alloyos-web-guest-target \
   python3 scripts/check_web_runtime_qemu.py --build --require-cxx \
-  --output /private/tmp/alloyos-web-runtime-acceptance
+  --output /private/tmp/alloyos-web-runtime-tls-acceptance
 ```
 
-The guest reported `CXX_NATIVE_PASS virtual-dispatch=42`, exited zero, and its
-private address space was released. The same acceptance run passed bounded
-private-memory and original process-isolation probes. Reproduction artifacts
-are `guest.log`, `artifact.json` and `cxx/report.json` in the output directory;
-the manifest records the exact kernel hash and QEMU command. This remains a
-compiler/linker and native-execution foundation, not a C++ standard library,
-a libc sysroot, constructors, thread-local storage or a JavaScriptCore build.
-An additional LLVM download is unnecessary for these first native C++ objects.
+Both guest processes reported
+`CXX_NATIVE_PASS virtual-dispatch=42 constructors=1 tls=pid`, exited zero,
+and recorded 55 and 56 timer IRQ peer switches. Bounded private-memory and the
+original process-isolation probes also passed. Reproduction artifacts are
+`guest.log`, `artifact.json` and `cxx/report.json`; the manifest records the exact
+kernel hash and QEMU command. This establishes static constructors and
+single-thread local-exec TLS across processes. It does not establish TLS
+resolution for dynamic modules, pthreads, destructors, a C++ standard library
+or JavaScriptCore. An additional LLVM download is unnecessary for these first
+native C++ objects.
+
+## C library source and cross-build foundation
+
+The next sysroot investigation uses upstream newlib **4.6.0.20260123**, rather
+than reusing Darwin/Linux library binaries. Source is published at the
+[official newlib archive](https://sourceware.org/ftp/newlib/index.html).
+The official release download observed during this investigation has SHA-256
+`6ff27e3bf022666f43f7802255be680eeff722ac181b1725d21e2e8318604ee3`;
+this is a reproducibility pin, not a separately verified signature.
+
+```sh
+python3 scripts/web-engine/build-newlib.py \
+  --archive /tmp/newlib-4.6.0.20260123.tar.gz --fetch \
+  --output /tmp/alloyos-newlib
+```
+
+The script checks the archive before extraction, cross-configures with the
+existing Clang AArch64 compiler and Rust LLVM archiver, disables supplied system
+calls and multilib, then builds and installs headers, `libc.a`, and `libm.a` in
+the output directory. Logs and a tool/source/library manifest stay beside that
+sysroot. It does not install into the host filesystem. No standard C++ library,
+pthread implementation, alloyOS system-call adapter, or JSC library is supplied
+by this step. Linking a libc archive is not proof that all libc facilities work
+in a protected process: allocation/reentrancy, errno, clocks, files, locale, and
+threads need explicit native integration and acceptance.
+
+Newlib is a practical freestanding C library candidate, not a decision that it
+satisfies WebKit's POSIX requirements. The remaining libc++ configuration must
+select a real target thread backend and avoid borrowing host pthread headers;
+WTF/ICU and full WPE still need their own native ports.
+
+### Verified native library subset
+
+```sh
+CARGO_TARGET_DIR=/private/tmp/alloyos-web-guest-target \
+  python3 scripts/check_web_runtime_qemu.py --build \
+  --newlib-sysroot /private/tmp/alloyos-newlib-full/sysroot/aarch64-none-elf \
+  --output /private/tmp/alloyos-web-runtime-libc-acceptance
+```
+
+On 2026-10-18 this separately verified actual newlib `memcpy`, `memmove`,
+`strtod` and `sin` calls in both protected guest processes, alongside the full
+constructor/TLS, timer-preemption, memory and isolation acceptance. The script
+requires two `LIBC_NATIVE_PASS memcpy memmove strtod sin` reports. Its C++ build
+report records the upstream source/build manifest and archive hashes; the guest
+artifact records kernel SHA-256
+`a6068cc697a0d9a73e250335cd2b21bb987309aacff07e83f8ede89e0888ef14`.
+The probe provides bounded heap growth and honest error-return hooks for
+unavailable system services. This narrow proof does not establish a complete
+libc platform, pthreads, libc++, Rust `std`, JavaScriptCore or WPE.
 
 ## Full WPE milestone
 

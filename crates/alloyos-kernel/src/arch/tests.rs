@@ -54,11 +54,13 @@ pub mod tests {
         assert_eq!(ram_entry & 0b11, DESC_VALID_BLOCK);
         assert_ne!(ram_entry & DESC_AF, 0);
         assert_eq!(ram_entry & 0x0000_FFFF_C000_0000, 0x4000_0000);
-        assert_eq!(core::mem::size_of::<TrapFrame>(), 36 * 8);
+        assert_eq!(core::mem::size_of::<TrapFrame>(), 38 * 8);
         assert_eq!(core::mem::offset_of!(TrapFrame, elr), 248);
         assert_eq!(core::mem::offset_of!(TrapFrame, spsr), 256);
         assert_eq!(core::mem::offset_of!(TrapFrame, esr), 264);
         assert_eq!(core::mem::offset_of!(TrapFrame, far), 272);
         assert_eq!(core::mem::offset_of!(TrapFrame, user_sp), 280);
+        assert_eq!(core::mem::offset_of!(TrapFrame, thread_pointer), 288);
+        assert_eq!(core::mem::align_of::<TrapFrame>(), 16);
     }
 }

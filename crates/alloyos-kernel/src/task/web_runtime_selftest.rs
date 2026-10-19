@@ -13,15 +13,29 @@ extern "C" {
 #[cfg(alloyos_cxx_probe)]
 fn run_cxx() {
     let image = include_bytes!(env!("ALLOYOS_CXX_PROBE_ELF"));
-    let task = Arc::new(Task::user_executable(image, 80, 128).expect("load native C++ probe ELF"));
-    scheduler::add_task(task.clone());
+    let first = Arc::new(Task::user_executable(image, 80, 128).expect("load native C++ probe ELF"));
+    let peer_image = include_bytes!(env!("ALLOYOS_CXX_PEER_PROBE_ELF"));
+    let second = Arc::new(Task::user_executable(peer_image, 80, 128).expect("load peer C++ probe ELF"));
+    assert_ne!(first.address_space.lock().as_ref().unwrap().initial_thread_pointer(),
+               second.address_space.lock().as_ref().unwrap().initial_thread_pointer(),
+               "TLS pointer restoration needs distinct virtual addresses in this acceptance probe");
+    assert_ne!(first.pid, second.pid);
+    for task in [&first, &second] {
+        assert_ne!(task.address_space.lock().as_ref().unwrap().initial_thread_pointer(), 0);
+        scheduler::add_task(task.clone());
+    }
     scheduler::start_preemption();
-    let deadline = crate::drivers::rng::monotonic_time_ns() + 2_000_000_000;
+    let deadline = crate::drivers::rng::monotonic_time_ns() + 5_000_000_000;
     while crate::drivers::rng::monotonic_time_ns() < deadline {
-        if let Some(code) = task.exit_code() {
-            assert_eq!(code, 0, "native C++ probe failed");
-            assert!(task.address_space.lock().is_none());
+        if first.exit_code().is_some() && second.exit_code().is_some() {
+            for task in [&first, &second] {
+                assert_eq!(task.exit_code(), Some(0), "native C++ TLS/constructor probe failed");
+                crate::serial_println!("[web-runtime] TLS pid={} timer-peer-switches={}", task.pid, task.timer_preemptions());
+                assert!(task.timer_preemptions() > 0, "TLS probe never switched to a peer through a timer IRQ");
+                assert!(task.address_space.lock().is_none());
+            }
             crate::serial_println!("[web-runtime] PASS: native C++ static ELF virtual dispatch and protected diagnostic report");
+            crate::serial_println!("[web-runtime] PASS: native C++ constructors and timer-preempted two-process initialized/zero TLS separation");
             return;
         }
         crate::arch::wfi();

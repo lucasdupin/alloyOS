@@ -32,6 +32,8 @@ pub struct Task {
     pub stack_pointer: Mutex<u64>,
     pub exit_code: Mutex<Option<i32>>,
     pub ports: Mutex<Vec<super::ipc::Port>>,
+    #[cfg(feature = "process-selftest")]
+    timer_preemptions: AtomicU64,
 }
 
 impl Task {
@@ -71,6 +73,8 @@ impl Task {
             stack_pointer: Mutex::new(stack_top),
             exit_code: Mutex::new(None),
             ports: Mutex::new(Vec::new()),
+            #[cfg(feature = "process-selftest")]
+            timer_preemptions: AtomicU64::new(0),
         })
     }
 
@@ -135,6 +139,7 @@ impl Task {
             frame.elr = entry;
             frame.spsr = 0x340;
             frame.user_sp = space.stack_top() & !15;
+            frame.thread_pointer = space.initial_thread_pointer();
             frame.regs[0] = space.heap_start();
             frame.regs[1] = space.heap_length();
         }
@@ -151,6 +156,17 @@ impl Task {
         }
         self.set_exit_code(-11);
         true
+    }
+
+    /// Native acceptance evidence: timer IRQs from EL0 which switched to a peer.
+    #[cfg(feature = "process-selftest")]
+    pub fn timer_preemptions(&self) -> u64 {
+        self.timer_preemptions.load(Ordering::Relaxed)
+    }
+
+    #[cfg(feature = "process-selftest")]
+    pub(super) fn record_timer_preemption(&self) {
+        self.timer_preemptions.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn state(&self) -> TaskState {

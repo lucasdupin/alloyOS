@@ -2,6 +2,12 @@
 use super::*;
 use crate::accounts::{AccountBroker, ConnectionPhase, CONNECTION_STATE_PATH};
 use alloyos_mcp::{account::AccountError, RemoteConnectionStatus};
+use alloyos_mcp::account::{ClientProfile,PendingClientProfileSetup,ProfileProvisionResult};
+
+#[derive(Default)]
+pub(super) struct ProfileSetupState {next_id:u64,pub(super) pending:Option<CapturedProfileSetup>}
+#[derive(Clone)]
+pub(super) struct CapturedProfileSetup {review:PendingClientProfileSetup,snapshot:alloyos_mcp::PackageSnapshot}
 
 #[derive(Clone)]
 pub(super) struct PendingAccountCall {
@@ -23,6 +29,38 @@ enum Stage {
     Refresh,
 }
 impl NativeToolRegistry {
+    pub fn pending_client_profile_setup(&self)->Option<PendingClientProfileSetup>{self.profile_setup.borrow().pending.as_ref().map(|pending|pending.review.clone())}
+    pub fn dismiss_client_profile_setup(&mut self,id:&str)->Result<(),AiError>{
+        let mut state=self.profile_setup.borrow_mut();
+        if !state.pending.as_ref().is_some_and(|pending|pending.review.id==id){return Err(AiError::InvalidToolArguments("Client setup review is stale.".into()))}
+        state.pending=None;Ok(())
+    }
+    fn profile_package_snapshot(&mut self,app:&str)->Result<alloyos_mcp::PackageSnapshot,AiError>{
+        let mut snapshot=self.app_snapshot().map_err(AiError::ConfigError)?;let root=format!("/apps/{app}/");
+        snapshot.files.retain(|path,_|path.starts_with(&root));snapshot.directories.retain(|path|path.trim_end_matches('/')==root.trim_end_matches('/')||path.starts_with(&root));snapshot.directories.sort();Ok(snapshot)
+    }
+    fn queue_client_profile_setup(&mut self,app:&str)->Result<(),AiError>{
+        if self.profile_setup.borrow().pending.is_some(){return Ok(())}
+        let endpoint=self.account_binding(app)?;
+        let name=self.mcp_registry.borrow().manifests().into_iter().find(|manifest|manifest.app_id==app).map(|manifest|manifest.name.clone()).ok_or_else(||AiError::ConfigError("Installed app is unavailable.".into()))?;
+        let snapshot=self.profile_package_snapshot(app)?;
+        let mut state=self.profile_setup.borrow_mut();state.next_id=state.next_id.checked_add(1).ok_or_else(||AiError::ConfigError("Client setup review limit reached.".into()))?;
+        let review=PendingClientProfileSetup{id:format!("profile-{}",state.next_id),app_id:app.into(),name,endpoint};
+        if review.name.len()>256||review.name.bytes().any(|b|b.is_ascii_control()){return Err(AiError::ConfigError("Invalid app metadata.".into()))}
+        state.pending=Some(CapturedProfileSetup{review,snapshot});Ok(())
+    }
+    /// Trusted native review route. Intentionally absent from all model tools.
+    pub fn provision_client_profile(&mut self,id:&str,profile:&ClientProfile)->Result<ProfileProvisionResult,AiError>{
+        profile.validate().map_err(|_|AiError::InvalidToolArguments("Invalid OAuth client configuration.".into()))?;
+        let pending=self.profile_setup.borrow().pending.clone().filter(|pending|pending.review.id==id).ok_or_else(||AiError::InvalidToolArguments("Client setup review is stale.".into()))?;
+        if profile.endpoint!=pending.review.endpoint||self.account_binding(&pending.review.app_id)?!=pending.review.endpoint||self.profile_package_snapshot(&pending.review.app_id)?!=pending.snapshot{return Err(AiError::InvalidToolArguments("Installed app changed; request a new client setup review.".into()))}
+        let _=self.mcp_registry.borrow_mut().set_remote_trusted_bearer(&pending.review.app_id,None);
+        let _=self.mcp_registry.borrow_mut().set_remote_credential_reference(&pending.review.app_id,None);
+        let storage=self.accounts.borrow_mut().provision_profile(&pending.review.app_id,profile).map_err(|error|AiError::ConfigError(error.to_string()))?;
+        self.pending_account_call=None;
+        self.profile_setup.borrow_mut().pending=None;
+        Ok(ProfileProvisionResult{app_id:pending.review.app_id,storage})
+    }
     pub fn set_account_broker(
         &mut self,
         broker: alloc::boxed::Box<dyn AccountBroker>,
@@ -55,6 +93,7 @@ impl NativeToolRegistry {
         app: &str,
         error: Option<AccountError>,
     ) -> Result<ToolExecutionOutput, AiError> {
+        if error==Some(AccountError::ClientRegistrationRequired)&&call.name=="mcp_connect" {self.queue_client_profile_setup(app)?;}
         let record = self.accounts.borrow().status(app).cloned();
         let public = self
             .accounts

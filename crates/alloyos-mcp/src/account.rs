@@ -7,6 +7,34 @@ pub const MAX_ACCOUNT_FRAME_BYTES: usize = 32768;
 pub const MAX_ACCOUNTS: usize = 32;
 pub const MAX_SCOPES: usize = 32;
 
+/// Trusted native input. Never place this structure in public display state,
+/// model context, logs, or ordinary VFS caches.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientProfile {
+    pub endpoint: String,
+    pub issuer: String,
+    pub client_id: String,
+    pub allowed_scopes: Vec<String>,
+    pub loopback_port: u16,
+    pub client_secret: Option<String>,
+}
+impl core::fmt::Debug for ClientProfile {
+    fn fmt(&self,f:&mut core::fmt::Formatter<'_>)->core::fmt::Result{f.write_str("ClientProfile([private])")}
+}
+impl ClientProfile {
+    pub fn validate(&self)->Result<(),AccountError>{
+        let endpoint=|value:&str|value.len()<=8192 && crate::transport::remote_mcp_authority(value).is_some() && !value.contains('#');
+        if !endpoint(&self.endpoint)||!endpoint(&self.issuer)||self.issuer.contains('?')||self.client_id.is_empty()||self.client_id.len()>512||self.client_id.bytes().any(|b|b.is_ascii_control()||b.is_ascii_whitespace())||!valid_scopes(&self.allowed_scopes)||self.client_secret.as_ref().is_some_and(|secret|secret.is_empty()||secret.len()>4000||secret.bytes().any(|b|!b.is_ascii_graphic())) {return Err(AccountError::InvalidRequest)}
+        Ok(())
+    }
+}
+#[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PendingClientProfileSetup {pub id:String,pub app_id:String,pub name:String,pub endpoint:String}
+#[derive(Clone,Debug,Serialize,Deserialize)]
+pub struct ProfileProvisionResult {pub app_id:String,pub storage:SecretStorage}
+
 /// An OS-minted, app/resource-bound capability. Debug deliberately hides it.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]

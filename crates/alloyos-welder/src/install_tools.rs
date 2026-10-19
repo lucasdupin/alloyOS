@@ -386,6 +386,10 @@ impl NativeToolRegistry {
         if current.0 != candidate.files || current.1 != candidate.directories {
             return Err("package changed after review; package was preserved".into());
         }
+        if remote_revoked.is_some() {
+            self.accounts.borrow_mut().forget_profile(&candidate.review.app_id)
+                .map_err(|_|"Private account configuration cleanup failed; package was preserved.".to_string())?;
+        }
         let result = (|| {
             for path in candidate.files.keys() {
                 self.delete_vfs_raw(path)?;

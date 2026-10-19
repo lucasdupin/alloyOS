@@ -65,6 +65,10 @@ pub struct SetupAnswer { pub revision: u64, pub value: String }
 #[derive(Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct State {
     #[serde(default)]
+    pub pending_client_profile_setup: Option<crate::account::PendingClientProfileSetup>,
+    #[serde(default)]
+    pub client_profile_error: String,
+    #[serde(default)]
     pub pending_remote_install: Option<crate::install::PendingRemoteInstall>,
     #[serde(default)]
     pub output_muted: bool,
@@ -98,6 +102,8 @@ pub struct State {
 }
 #[derive(Serialize, Deserialize)]
 pub enum Event {
+    ProvisionClientProfile { id: String, profile: crate::account::ClientProfile },
+    CancelClientProfileSetup { id: String },
     RemoteInstallDecision { id: String, approved: bool },
     DiscoverTiles,
     OutputMuteToggle,

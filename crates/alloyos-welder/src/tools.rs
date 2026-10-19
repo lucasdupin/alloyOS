@@ -227,6 +227,7 @@ pub struct NativeToolRegistry {
     pending_app_call: Option<ToolCall>,
     accounts: Rc<RefCell<crate::accounts::AccountService>>,
     pending_account_call: Option<account_tools::PendingAccountCall>,
+    profile_setup: Rc<RefCell<account_tools::ProfileSetupState>>,
     remote_installs: Rc<RefCell<install_tools::InstallState>>,
     notifications: Vec<String>,
     logs: Vec<String>,
@@ -313,6 +314,7 @@ impl NativeToolRegistry {
             pending_app_call: None,
             accounts: Rc::new(RefCell::new(crate::accounts::AccountService::new())),
             pending_account_call: None,
+            profile_setup: Rc::new(RefCell::new(account_tools::ProfileSetupState::default())),
             remote_installs: Rc::new(RefCell::new(install_tools::InstallState::default())),
             notifications: Vec::new(),
             logs: Vec::new(),
@@ -336,6 +338,7 @@ impl NativeToolRegistry {
     pub fn set_vfs_backend(&mut self, backend: Rc<RefCell<dyn ToolVfsBackend>>) {
         // A native approval is bound to the currently attached volume.
         self.clear_pending_remote_install();
+        self.profile_setup.borrow_mut().pending=None;
         // Seed defaults on backend only if they don't already exist on persistent storage,
         // and sync all existing files from the backend into the in-memory cache.
         {

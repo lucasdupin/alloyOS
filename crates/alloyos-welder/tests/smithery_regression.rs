@@ -28,6 +28,7 @@ impl alloyos_welder::accounts::AccountBroker for NoCredentialsBroker {
     }
     fn poll(&mut self)->std::task::Poll<Result<alloyos_mcp::account::AccountResponse,alloyos_mcp::account::AccountError>> {panic!("fixture disconnect is immediate")}
     fn cancel(&mut self){}
+            fn forget_profile(&mut self,_:&str,_:&str)->Result<(),alloyos_mcp::account::AccountError>{Ok(())}
 }
 fn approve_removal(registry:&mut NativeToolRegistry,args:Value)->Result<Value,String>{
     registry.set_account_broker(Box::new(NoCredentialsBroker)).unwrap();

@@ -50,6 +50,9 @@ pub trait AccountBroker {
     fn start(&mut self, request: &AccountRequest) -> Poll<Result<AccountResponse, AccountError>>;
     fn poll(&mut self) -> Poll<Result<AccountResponse, AccountError>>;
     fn cancel(&mut self);
+    /// Approved package removal only. Ordinary disconnect retains registration.
+    fn forget_profile(&mut self, _: &str, _: &str) -> Result<(),AccountError> {Err(AccountError::StorageUnavailable)}
+    fn provision_profile(&mut self, _: &str, _: &alloyos_mcp::account::ClientProfile) -> Result<alloyos_mcp::account::SecretStorage, AccountError> {Err(AccountError::StorageUnavailable)}
     fn note_challenge(&mut self, _: &str, _: &str) -> Result<(), AccountError> { Ok(()) }
     /// Trusted in-process resolution. Never serialize this result in tool output.
     fn bearer(&mut self, _: &str, _: &str, _: &CredentialReference) -> Result<Option<String>, AccountError> {
@@ -87,6 +90,21 @@ impl Default for AccountService {
     }
 }
 impl AccountService {
+    pub fn forget_profile(&mut self,app:&str)->Result<(),AccountError>{
+        let endpoint=self.entries.get(app).ok_or(AccountError::InvalidRequest)?.public.endpoint.clone();
+        if self.pending.is_some(){return Err(AccountError::Busy)}
+        self.broker.forget_profile(app,&endpoint)
+    }
+    pub fn provision_profile(&mut self, app:&str, profile:&alloyos_mcp::account::ClientProfile)->Result<alloyos_mcp::account::SecretStorage,AccountError>{
+        profile.validate()?;
+        if self.entries.get(app).is_none_or(|entry|entry.public.endpoint!=profile.endpoint){return Err(AccountError::InvalidRequest)}
+        if self.pending.as_ref().is_some_and(|request|request.app_id!=app){return Err(AccountError::Busy)}
+        self.pending=None;
+        let result=self.broker.provision_profile(app,profile);
+        let entry=self.entries.get_mut(app).ok_or(AccountError::InvalidRequest)?;
+        entry.credential=None;entry.attempt=None;entry.public.phase=ConnectionPhase::NeedsAuth;entry.public.expires_at=None;entry.public.scopes.clear();entry.public.credential_storage=None;entry.public.last_error=result.as_ref().err().copied();
+        result
+    }
     pub fn note_challenge(&mut self, endpoint: &str, challenge: &str) -> Result<(), AccountError> {self.broker.note_challenge(endpoint,challenge)}
     pub fn bearer_for_transport(&mut self, app: &str, endpoint: &str, reference: &CredentialReference) -> Result<Option<String>, AccountError> {
         self.broker.bearer(app, endpoint, reference)

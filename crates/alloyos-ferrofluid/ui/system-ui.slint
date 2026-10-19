@@ -7,6 +7,8 @@ import { QuicksandGlyphCoverage } from "../../../assets/fonts/quicksand-coverage
 // Alloy controls keep focus and selection silver on the embedded renderer.
 component AlloyLineEdit inherits Rectangle {
     in property <string> placeholder-text;
+    in property <bool> password: false;
+    in property <string> field-label;
     in-out property <string> text;
     out property <bool> has-focus: editor.has-focus;
     out property <length> scroll-offset: -editor.x;
@@ -41,10 +43,12 @@ component AlloyLineEdit inherits Rectangle {
             width: max(parent.width - self.text-cursor-width, self.preferred-width);
             height: parent.height;
             text <=> root.text;
+            accessible-label: root.field-label != "" ? root.field-label : root.placeholder-text;
             color: AlloyPalette.text;
             selection-background-color: AlloyPalette.silver;
             selection-foreground-color: AlloyPalette.obsidian;
             single-line: true;
+            input-type: root.password ? InputType.password : InputType.text;
             vertical-alignment: center;
             cursor-position-changed(position) => {
                 if position.x + self.computed-x < 4px {
@@ -418,6 +422,74 @@ component Logotype inherits Text {
     color: AlloyPalette.text;
 }
 
+component ClientProfileForm inherits Rectangle {
+    in property <string> request-id;
+    changed request-id => { issuer.text = ""; client.text = ""; scopes.text = ""; port.text = ""; secret.text = ""; root.reviewing = false; }
+    in property <string> app-name;
+    in property <bool> busy;
+    in property <string> endpoint;
+    in property <string> error;
+    changed error => { if root.error != "" { root.reviewing = false; } }
+    callback submit(string, string, string, string, string);
+    callback cancel();
+    out property <bool> has-focus: issuer.has-focus || client.has-focus || scopes.has-focus || port.has-focus || secret.has-focus;
+    callback focus-changed(bool);
+    changed has-focus => { root.focus-changed(root.has-focus); }
+    property <bool> reviewing: false;
+    background: AlloyPalette.obsidian;
+    TouchArea { width: parent.width; height: parent.height; }
+    VerticalBox {
+        padding: 20px; spacing: 12px;
+        Text { text: root.reviewing ? "Review client registration" : "Configure account client"; color: AlloyPalette.text; font-size: 22px; font-weight: 700; wrap: word-wrap; vertical-stretch: 0; }
+        Text { text: root.app-name; color: AlloyPalette.text; wrap: word-wrap; vertical-stretch: 0; }
+        form-scroll := ScrollView {
+            vertical-stretch: 1;
+            horizontal-scrollbar-policy: always-off;
+            content-width: self.visible-width;
+            mouse-drag-pan-enabled: true;
+            VerticalBox {
+                width: form-scroll.visible-width;
+                padding: 0px; spacing: 10px;
+                Text { text: "Resource: " + root.endpoint; color: AlloyPalette.muted; wrap: char-wrap; }
+                Text { text: "Use registration details from your chosen service. Saving does not verify registration or connect an account."; color: AlloyPalette.muted; wrap: word-wrap; }
+                Text { text: "Authorization issuer (HTTPS)"; color: AlloyPalette.text; }
+                issuer := AlloyLineEdit { field-label: "Authorization issuer"; visible: !root.reviewing; placeholder-text: "https://…"; }
+                if root.reviewing: Text { text: issuer.text; color: AlloyPalette.text; wrap: char-wrap; }
+                Text { text: "Client ID"; color: AlloyPalette.text; }
+                client := AlloyLineEdit { field-label: "Client ID"; visible: !root.reviewing; placeholder-text: "Registered native client ID"; }
+                if root.reviewing: Text { text: client.text; color: AlloyPalette.text; wrap: char-wrap; }
+                Text { text: "Allowed scopes (space separated)"; color: AlloyPalette.text; }
+                scopes := AlloyLineEdit { field-label: "Allowed scopes"; visible: !root.reviewing; placeholder-text: "Service-approved scopes"; }
+                if root.reviewing: Text { text: scopes.text; color: AlloyPalette.text; wrap: char-wrap; }
+                Text { text: "Registered loopback port"; color: AlloyPalette.text; }
+                port := AlloyLineEdit { field-label: "Registered loopback port"; visible: !root.reviewing; placeholder-text: "Registered port, or 0 for dynamic loopback"; }
+                if root.reviewing: Text { text: port.text == "0" ? "Dynamic loopback port; path /oauth/callback" : "http://127.0.0.1:" + port.text + "/oauth/callback"; color: AlloyPalette.text; wrap: char-wrap; }
+                Text { text: "Client secret (optional)"; color: AlloyPalette.text; }
+                secret := AlloyLineEdit { field-label: "Optional client secret"; visible: !root.reviewing; password: true; placeholder-text: "Leave empty for a public PKCE client"; }
+                if root.reviewing: Text { text: secret.text == "" ? "No client secret" : "Client secret provided (hidden)"; color: AlloyPalette.muted; }
+                Text { text: "Private storage is unencrypted at rest. Changes remove any previous local account access."; color: AlloyPalette.muted; wrap: word-wrap; }
+                if root.error != "": Text { text: root.error + " The secret field was cleared; re-enter it if required before reviewing again."; color: AlloyPalette.text; wrap: word-wrap; }
+            }
+        }
+        HorizontalBox {
+            vertical-stretch: 0; spacing: 12px;
+            AlloyButton { enabled: !root.busy; text: "Cancel"; button-label: "Cancel client registration"; clicked => { secret.text = ""; root.cancel(); } }
+            if root.reviewing: AlloyButton { enabled: !root.busy; text: "Edit"; button-label: "Edit client registration"; clicked => { root.reviewing = false; } }
+            AlloyButton {
+                text: root.reviewing ? "Save" : "Review";
+                button-label: root.reviewing ? "Save private client registration" : "Review client registration";
+                enabled: !root.busy && issuer.text != "" && client.text != "" && port.text != "";
+                clicked => {
+                    if root.reviewing {
+                        root.submit(issuer.text, client.text, scopes.text, port.text, secret.text);
+                        secret.text = "";
+                    } else { root.reviewing = true; }
+                }
+            }
+        }
+    }
+}
+
 export component SystemUi inherits Window {
     title: "alloyOS · Ferrofluid";
     in property <bool> booting: false;
@@ -453,6 +525,15 @@ export component SystemUi inherits Window {
     in property <bool> tile-catalog-loaded: false;
     in property <string> tile-catalog-error;
     callback discover-tiles();
+    in property <string> client-profile-id;
+    in property <string> client-profile-name;
+    in property <string> client-profile-endpoint;
+    in property <string> client-profile-error;
+    in property <bool> client-profile-busy;
+    property <bool> client-profile-focused: false;
+    changed client-profile-id => { root.client-profile-focused = false; }
+    callback client-profile-submit(string, string, string, string, string);
+    callback client-profile-cancel();
     in property <string> pending-install-id;
     in property <bool> pending-install-removal;
     in property <string> pending-install-name;
@@ -675,7 +756,7 @@ export component SystemUi inherits Window {
             x: 4px;
             y: parent.height - root.keyboard-reveal;
             width: parent.width - 8px;
-            requested: input.has-focus;
+            requested: input.has-focus || root.client-profile-focused;
             reduced-motion: root.reduced-motion;
             suspended: root.booting || root.sidebar-reveal > 0px;
             key(value) => { root.soft-key(value); }
@@ -996,6 +1077,21 @@ export component SystemUi inherits Window {
                     }
                 }
             }
+        }
+        if root.client-profile-id != "": profile-form := ClientProfileForm {
+            width: parent.width;
+            height: parent.height - root.keyboard-reveal;
+            request-id: root.client-profile-id;
+            app-name: root.client-profile-name;
+            busy: root.client-profile-busy;
+            focus-changed(focused) => { root.client-profile-focused = focused; }
+            endpoint: root.client-profile-endpoint;
+            error: root.client-profile-error;
+            submit(issuer, client, scopes, port, secret) => {
+                root.release-editor();
+                root.client-profile-submit(issuer, client, scopes, port, secret);
+            }
+            cancel => { root.release-editor(); root.client-profile-cancel(); }
         }
     }
 }

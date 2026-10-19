@@ -88,8 +88,32 @@ pub fn run(
 
     #[cfg(feature="process-runtime-selftest")]
     ui.acceptance();
+    let mut profile_error = String::new();
     loop {
         ui.poll();
+        while let Some((id, profile)) = ui.take_client_profile_decision() {
+            if let Some(profile) = profile {
+                match agent.provision_client_profile(&id, &profile) {
+                    Ok(result) => {
+                        profile_error.clear();
+                        let message = if result.storage == alloyos_mcp::account::SecretStorage::Volatile {
+                            "Client registration configured for this session only. Storage is volatile. No account was connected."
+                        } else {
+                            "Client registration configuration saved. No account was connected."
+                        };
+                        transcript.push_str(&alloc::format!("\n\n{}: {}", agent.agent_name(), message));
+                        chat_items.push(ChatItem::Text(alloc::format!("{}: {}", agent.agent_name(), message)));
+                        ui.set_transcript(&transcript);
+                        ui.set_chat_items(&chat_items);
+                    }
+                    Err(_) => profile_error = "Could not save configuration. Check the registration fields and retry.".into(),
+                }
+            } else {
+                let _ = agent.dismiss_client_profile_setup(&id);
+                profile_error.clear();
+            }
+        }
+        ui.set_client_profile_setup(agent.pending_client_profile_setup().as_ref(), &profile_error);
         while let Some((id, approved)) = ui.take_remote_install_decision() {
             let proposal = agent.pending_remote_install().filter(|proposal|proposal.id == id);
             let removing = proposal.as_ref().is_some_and(|p|p.action == alloyos_mcp::install::PackageChangeAction::Remove);

@@ -164,17 +164,31 @@ impl KernelCredentialStore {
         }
         Ok(())
     }
+    fn profile_tombstone(&mut self, app: &str, endpoint: &str) -> Result<(), Error> {
+        let marker = format!("{ROOT}/profiles/{}.revoked", key(app, endpoint)?);
+        if !self.exists(&marker)? { self.write(&marker, b"revoked\n")?; }
+        if !self.exists(&marker)? { return Err(Error::StorageUnavailable); }
+        Ok(())
+    }
+    pub fn forget_profile(&mut self, app: &str, endpoint: &str) -> Result<(), Error> {
+        let key = key(app, endpoint)?;
+        self.ensure_dirs()?;
+        self.profile_tombstone(app, endpoint)?;
+        self.remove(&format!("{ROOT}/profiles/{key}.json"))
+    }
     /// Private provisioning port. This is not exposed to model tools or apps.
-    pub fn save_profile(&mut self, profile: &ClientProfile) -> Result<SecretStorage, Error> {
+    pub fn save_profile(&mut self, app: &str, profile: &ClientProfile) -> Result<SecretStorage, Error> {
         valid_endpoint(&profile.endpoint)?;
         valid_endpoint(&profile.issuer)?;
         if !valid_profile(profile) { return Err(Error::InvalidRequest); }
         self.ensure_dirs()?;
-        let path = format!("{ROOT}/profiles/{}.json", hash(profile.endpoint.as_bytes()));
+        self.profile_tombstone(app, &profile.endpoint)?;
+        let path = format!("{ROOT}/profiles/{}.json", key(app, &profile.endpoint)?);
         let mut bytes = serde_json::to_vec(profile).map_err(|_| Error::StorageUnavailable)?;
         let result = self.write(&path, &bytes);
         bytes.fill(0);
         result?;
+        self.remove(&format!("{ROOT}/profiles/{}.revoked", key(app, &profile.endpoint)?))?;
         self.storage()
     }
     fn storage(&self) -> Result<SecretStorage, Error> {
@@ -217,10 +231,7 @@ fn valid_secret(value: &str) -> bool {
         && !value.bytes().any(|b| b.is_ascii_control() || b.is_ascii_whitespace())
 }
 fn valid_profile(profile: &ClientProfile) -> bool {
-    valid_endpoint(&profile.endpoint).is_ok() && valid_endpoint(&profile.issuer).is_ok()
-        && !profile.issuer.contains('?') && !profile.client_id.is_empty() && profile.client_id.len() <= 512
-        && profile.client_secret.as_ref().is_none_or(|s| valid_secret(s))
-        && alloyos_mcp::account::valid_scopes(&profile.allowed_scopes)
+    profile.validate().is_ok()
 }
 fn valid_account(account: &PrivateAccount) -> bool {
     valid_secret(&account.access_token)
@@ -273,9 +284,16 @@ impl CredentialStore for KernelCredentialStore {
         self.tombstone(&key)?;
         self.remove(&format!("{ROOT}/records/{key}.json"))
     }
-    fn profile(&mut self, endpoint: &str) -> Result<Option<ClientProfile>, Error> {
-        valid_endpoint(endpoint)?;
-        let path = format!("{ROOT}/profiles/{}.json", hash(endpoint.as_bytes()));
+    fn save_profile(&mut self, app: &str, profile: &ClientProfile) -> Result<SecretStorage, Error> {
+        KernelCredentialStore::save_profile(self, app, profile)
+    }
+    fn forget_profile(&mut self, app: &str, endpoint: &str) -> Result<(), Error> {
+        KernelCredentialStore::forget_profile(self, app, endpoint)
+    }
+    fn profile(&mut self, app: &str, endpoint: &str) -> Result<Option<ClientProfile>, Error> {
+        let key = key(app, endpoint)?;
+        if self.exists(&format!("{ROOT}/profiles/{key}.revoked"))? { return Ok(None); }
+        let path = format!("{ROOT}/profiles/{key}.json");
         let Some(mut bytes) = self.read(&path)? else {
             return Ok(None);
         };
@@ -324,6 +342,56 @@ mod tests {
         store.forget("mail", ENDPOINT).unwrap();
         drop(store);
         assert!(mount(disk).load("mail", ENDPOINT).unwrap().is_none());
+    }
+    fn client_profile() -> ClientProfile {
+        ClientProfile {
+            endpoint: ENDPOINT.into(), issuer: "https://issuer.example".into(),
+            client_id: "native-client".into(), allowed_scopes: alloc::vec!["read".into()],
+            loopback_port: 8381, client_secret: Some("synthetic-private-client-secret".into()),
+        }
+    }
+    #[test]
+    fn client_profiles_are_private_app_and_resource_bound_after_remount() {
+        let disk = MemBlockDevice::new_formatted_large();
+        let profile = client_profile();
+        let mut store = mount(disk.clone());
+        assert_eq!(store.save_profile("mail", &profile).unwrap(), SecretStorage::OsPrivateStore);
+        drop(store);
+        let mut store = mount(disk.clone());
+        assert_eq!(store.profile("mail", ENDPOINT).unwrap().unwrap().client_secret, profile.client_secret);
+        assert!(store.profile("other", ENDPOINT).unwrap().is_none());
+        assert!(store.profile("mail", "https://service.example/other").unwrap().is_none());
+        {
+            let vfs = store.instance.as_ref().unwrap().lock();
+            assert!(!vfs.readdir("/system").unwrap().iter().any(|s| s.starts_with("accounts")));
+            assert!(matches!(vfs.readdir("/system/accounts/profiles"), Err(FsError::PermissionDenied)));
+        }
+        assert!(!format!("{profile:?}").contains("synthetic-private-client-secret"));
+        store.forget_profile("mail", ENDPOINT).unwrap();
+        drop(store);
+        assert!(mount(disk).profile("mail", ENDPOINT).unwrap().is_none());
+    }
+    #[test]
+    fn interrupted_profile_removal_or_replacement_does_not_restore_old_secret() {
+        for fault in 1..=3 {
+            let disk = MemBlockDevice::new_formatted_large();
+            let mut store = mount(disk.clone());
+            store.save_profile("mail", &client_profile()).unwrap();
+            store.mutations = 0; store.fail_at = Some(fault);
+            assert_eq!(store.forget_profile("mail", ENDPOINT), Err(Error::StorageUnavailable));
+            drop(store);
+            assert_eq!(mount(disk).profile("mail", ENDPOINT).unwrap().is_none(), fault > 1);
+        }
+        for fault in 1..=3 {
+            let disk = MemBlockDevice::new_formatted_large();
+            let mut store = mount(disk.clone());
+            store.save_profile("mail", &client_profile()).unwrap();
+            store.forget_profile("mail", ENDPOINT).unwrap();
+            store.mutations = 0; store.fail_at = Some(fault);
+            assert_eq!(store.save_profile("mail", &client_profile()), Err(Error::StorageUnavailable));
+            drop(store);
+            assert!(mount(disk).profile("mail", ENDPOINT).unwrap().is_none());
+        }
     }
     #[test]
     fn interrupted_disconnect_never_revives_after_marker_creation() {

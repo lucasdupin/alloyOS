@@ -1058,6 +1058,9 @@ impl AgentRuntime {
     pub fn pending_remote_install(&self) -> Option<alloyos_mcp::install::PendingRemoteInstall> {
         self.tool_registry.pending_remote_install()
     }
+    pub fn pending_client_profile_setup(&self)->Option<alloyos_mcp::account::PendingClientProfileSetup>{self.tool_registry.pending_client_profile_setup()}
+    pub fn dismiss_client_profile_setup(&mut self,id:&str)->Result<(),AiError>{self.tool_registry.dismiss_client_profile_setup(id)}
+    pub fn provision_client_profile(&mut self,id:&str,profile:&alloyos_mcp::account::ClientProfile)->Result<alloyos_mcp::account::ProfileProvisionResult,AiError>{self.tool_registry.provision_client_profile(id,profile)}
 
     /// Trusted display approval route; intentionally absent from model tools.
     pub fn confirm_remote_install(&mut self, id: &str, approved: bool) -> Result<ToolExecutionOutput, AiError> {
@@ -2355,6 +2358,7 @@ mod tests {
             }
             fn poll(&mut self)->Poll<Result<alloyos_mcp::account::AccountResponse,alloyos_mcp::account::AccountError>> {panic!("cleanup fixture is immediate")}
             fn cancel(&mut self){}
+            fn forget_profile(&mut self,_:&str,_:&str)->Result<(),alloyos_mcp::account::AccountError>{Ok(())}
         }
         runtime.tool_registry.set_account_broker(alloc::boxed::Box::new(CleanupBroker)).unwrap();
         let review=runtime.pending_remote_install().unwrap();

@@ -99,7 +99,7 @@ pub fn run() {
         let mut store = KernelCredentialStore::global();
         if mode == "connect" {
             store
-                .save_profile(&ClientProfile {
+                .save_profile(APP, &ClientProfile {
                     endpoint: ENDPOINT.into(),
                     issuer: ISSUER.into(),
                     client_id: "fixture-client".into(),

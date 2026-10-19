@@ -55,6 +55,7 @@ pub struct FerrofluidSystemUi {
     output_mute_toggles: Rc<Cell<usize>>,
     tile_discovery_requested: Rc<Cell<bool>>,
     remote_install_decisions: Rc<RefCell<VecDeque<(String, bool)>>>,
+    client_profile_decisions: Rc<RefCell<VecDeque<(String, Option<alloyos_mcp::account::ClientProfile>)>>>,
     tiles: Rc<RefCell<Vec<AppTile>>>,
     chat_items: Rc<RefCell<Vec<ChatItem>>>,
     available_tiles: Rc<RefCell<Vec<AppTile>>>,
@@ -183,6 +184,38 @@ impl FerrofluidSystemUi {
         let tile_discovery_requested = Rc::new(Cell::new(false));
         let requested = tile_discovery_requested.clone();
         ui.on_discover_tiles(move || requested.set(true));
+        let client_profile_decisions = Rc::new(RefCell::new(VecDeque::new()));
+        let decisions = client_profile_decisions.clone();
+        let weak = ui.as_weak();
+        ui.on_client_profile_submit(move |issuer, client, scopes, port, secret| {
+            let Some(ui) = weak.upgrade() else { return; };
+            if ui.get_client_profile_id().is_empty() || !decisions.borrow().is_empty() || ui.get_client_profile_busy() { return; }
+            let Ok(port) = port.trim().parse::<u16>() else {
+                ui.set_client_profile_error("Enter the registered loopback port (0–65535).".into());
+                return;
+            };
+            let profile = alloyos_mcp::account::ClientProfile {
+                endpoint: ui.get_client_profile_endpoint().as_str().into(),
+                issuer: issuer.trim().into(), client_id: client.trim().into(),
+                allowed_scopes: scopes.split_whitespace().map(String::from).collect(),
+                loopback_port: port,
+                client_secret: if secret.is_empty() { None } else { Some(secret.as_str().into()) },
+            };
+            if profile.validate().is_err() {
+                ui.set_client_profile_error("Check the HTTPS issuer, client ID, scopes and secret limits.".into());
+                return;
+            }
+            decisions.borrow_mut().push_back((ui.get_client_profile_id().as_str().into(), Some(profile)));
+            ui.set_client_profile_busy(true);
+        });
+        let decisions = client_profile_decisions.clone();
+        let weak = ui.as_weak();
+        ui.on_client_profile_cancel(move || {
+            let Some(ui) = weak.upgrade() else { return; };
+            if !ui.get_client_profile_id().is_empty() && decisions.borrow().is_empty() {
+                decisions.borrow_mut().push_back((ui.get_client_profile_id().as_str().into(), None));
+            }
+        });
         let remote_install_decisions = Rc::new(RefCell::new(VecDeque::new()));
         let decisions = remote_install_decisions.clone();
         let weak = ui.as_weak();
@@ -326,6 +359,7 @@ impl FerrofluidSystemUi {
             output_mute_toggles,
             tile_discovery_requested,
             remote_install_decisions,
+            client_profile_decisions,
             tiles,
             chat_items,
             available_tiles,
@@ -416,6 +450,23 @@ impl FerrofluidSystemUi {
 
     pub fn take_tile_discovery_request(&self) -> bool {
         self.tile_discovery_requested.replace(false)
+    }
+    pub fn set_client_profile_setup(&self, pending: Option<&alloyos_mcp::account::PendingClientProfileSetup>, error: &str) {
+        let id = pending.map(|p|p.id.as_str()).unwrap_or("");
+        if self.ui.get_client_profile_id().as_str() != id {
+            self.client_profile_decisions.borrow_mut().clear();
+            self.ui.set_client_profile_busy(false);
+            self.ui.invoke_release_editor();
+        }
+        self.ui.set_client_profile_name(pending.map(|p|p.name.as_str()).unwrap_or("").into());
+        self.ui.set_client_profile_endpoint(pending.map(|p|p.endpoint.as_str()).unwrap_or("").into());
+        self.ui.set_client_profile_error(error.into());
+        if !error.is_empty() { self.ui.set_client_profile_busy(false); }
+        self.ui.set_client_profile_id(id.into());
+        if pending.is_some() { self.ui.set_sidebar_open(false); }
+    }
+    pub fn take_client_profile_decision(&self) -> Option<(String, Option<alloyos_mcp::account::ClientProfile>)> {
+        self.client_profile_decisions.borrow_mut().pop_front()
     }
     pub fn set_pending_remote_install(&self, pending: Option<&alloyos_mcp::install::PendingRemoteInstall>) {
         let pending = pending.filter(|p|p.is_valid());
@@ -2222,6 +2273,78 @@ mod tests {
         }
         assert_eq!(ui.take_remote_install_decision(), Some(("install-2".into(), false)));
         ui.set_pending_remote_install(None);
+
+        let draft_before_profile = ui.ui.get_draft();
+        let profile_setup = alloyos_mcp::account::PendingClientProfileSetup {
+            id: "profile-1".into(), app_id: "mail".into(), name: "Mail service".into(),
+            endpoint: "https://mail.example/mcp".into(),
+        };
+        ui.set_client_profile_setup(Some(&profile_setup), "");
+        ui.render(ui.now.get() + Duration::from_millis(16));
+        assert!(ui.take_client_profile_decision().is_none());
+        if let Ok(path) = std::env::var("ALLOYOS_PROFILE_SCREENSHOT") {
+            let file = std::fs::File::create(path).unwrap();
+            let mut encoder = png::Encoder::new(file, ui.size.width, ui.size.height);
+            encoder.set_color(png::ColorType::Rgba); encoder.set_depth(png::BitDepth::Eight);
+            let bytes: Vec<u8> = ui.pixels().iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8, 255]).collect();
+            encoder.write_header().unwrap().write_image_data(&bytes).unwrap();
+        }
+        for (y, value) in [(940, "https://issuer.example"), (1230, "native-client"),
+            (1520, "mail.read"), (1810, "8381"), (2095, "synthetic-client-secret")] {
+            for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
+                ui.handle_input(InputEvent { kind, code: 0x110, x: 230, y });
+            }
+            for ch in value.chars() { ui.ui.invoke_soft_key(ch.to_string().into()); }
+            ui.ui.invoke_release_editor();
+            ui.render(ui.now.get() + Duration::from_millis(16));
+        }
+        assert_eq!(ui.ui.get_draft(), draft_before_profile, "registration typing never reaches chat");
+        assert!(ui.take_client_profile_decision().is_none(), "typing is not approval");
+        for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
+            ui.handle_input(InputEvent { kind, code: 0x110, x: 920, y: 2490 });
+        }
+        ui.render(ui.now.get() + Duration::from_millis(16));
+        assert!(ui.take_client_profile_decision().is_none(), "Review does not save");
+        if let Ok(path) = std::env::var("ALLOYOS_PROFILE_REVIEW_SCREENSHOT") {
+            let file = std::fs::File::create(path).unwrap();
+            let mut encoder = png::Encoder::new(file, ui.size.width, ui.size.height);
+            encoder.set_color(png::ColorType::Rgba); encoder.set_depth(png::BitDepth::Eight);
+            let bytes: Vec<u8> = ui.pixels().iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8, 255]).collect();
+            encoder.write_header().unwrap().write_image_data(&bytes).unwrap();
+        }
+
+        for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
+            ui.handle_input(InputEvent { kind, code: 0x110, x: 980, y: 2490 });
+        }
+        let (id, saved) = ui.take_client_profile_decision().expect("native Save must submit");
+        assert_eq!(id, "profile-1");
+        let saved = saved.unwrap();
+        assert_eq!(saved.endpoint, profile_setup.endpoint);
+        assert_eq!(saved.issuer, "https://issuer.example");
+        assert_eq!(saved.client_id, "native-client");
+        assert_eq!(saved.allowed_scopes, vec!["mail.read"]);
+        assert_eq!(saved.loopback_port, 8381);
+        assert_eq!(saved.client_secret.as_deref(), Some("synthetic-client-secret"));
+        assert!(!alloc::format!("{saved:?}").contains("synthetic-client-secret"));
+        ui.set_client_profile_setup(Some(&profile_setup), "Synthetic storage failure");
+        ui.render(ui.now.get() + Duration::from_millis(16));
+        for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
+            ui.handle_input(InputEvent { kind, code: 0x110, x: 980, y: 2490 });
+        }
+        ui.render(ui.now.get() + Duration::from_millis(16));
+        assert!(ui.take_client_profile_decision().is_none(), "failed Save requires another explicit Review, with the cleared secret explained");
+        let next_profile = alloyos_mcp::account::PendingClientProfileSetup { id: "profile-2".into(), ..profile_setup.clone() };
+        ui.set_client_profile_setup(Some(&next_profile), "");
+        ui.render(ui.now.get() + Duration::from_millis(16));
+        for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
+            ui.handle_input(InputEvent { kind, code: 0x110, x: 980, y: 2490 });
+        }
+        assert!(ui.take_client_profile_decision().is_none(), "replacing a review clears all previous fields and secret");
+        for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
+            ui.handle_input(InputEvent { kind, code: 0x110, x: 350, y: 2490 });
+        }
+        assert!(matches!(ui.take_client_profile_decision(), Some((id, None)) if id == "profile-2"), "Cancel submits no fields for the current review");
+        ui.set_client_profile_setup(None, "");
 
         // Key releases retain the original character even if Shift changes.
         let mut keys = EvdevKeyboard::default();

@@ -33,3 +33,19 @@ exchange plaintext while carrying guest requests. OS credential ownership does
 not make that development relay a confidential boundary against the host.
 Hermetic browser, OAuth and CobaltFS tests use synthetic credentials and providers;
 they do not establish real Gmail interoperability or hardware acceptance.
+
+When an installed connection lacks a client registration, its explicit connect
+request opens a native configuration form. The resource is fixed to the reviewed
+installed package. The user supplies issuer, client ID, allowed scopes and
+registered loopback port (or dynamic port where their registration permits it),
+then reviews and saves. A client secret is optional and masked; it is submitted
+only through the protected display intent and never returned in presentation
+state or chat. Cancel saves nothing. Profiles are bound to both app ID and exact
+resource, including when two apps use the same endpoint. Saving cancels an old
+flow and removes prior local credential authority before writing the profile;
+it does not initiate authorization or verify the provider registration.
+Ordinary disconnect retains the client registration for a later user-requested
+connection. Approved app removal also deletes the app-bound private registration,
+including an optional client secret, before reporting cleanup and deleting the
+package. A retained revocation marker blocks interrupted profile deletion or
+replacement; storage failure keeps the package installed and remains an error.

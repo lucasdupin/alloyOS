@@ -38,19 +38,11 @@ pub trait CredentialStore {
     fn load(&mut self, app: &str, endpoint: &str) -> Result<Option<PrivateAccount>, AccountError>;
     fn save(&mut self, account: &PrivateAccount) -> Result<SecretStorage, AccountError>;
     fn forget(&mut self, app: &str, endpoint: &str) -> Result<(), AccountError>;
-    fn profile(&mut self, endpoint: &str) -> Result<Option<ClientProfile>, AccountError>;
+    fn forget_profile(&mut self, _: &str, _: &str) -> Result<(), AccountError> {Err(AccountError::StorageUnavailable)}
+    fn profile(&mut self, app: &str, endpoint: &str) -> Result<Option<ClientProfile>, AccountError>;
+    fn save_profile(&mut self, _: &str, _: &ClientProfile) -> Result<SecretStorage, AccountError> {Err(AccountError::StorageUnavailable)}
 }
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ClientProfile {
-    pub endpoint: String,
-    pub issuer: String,
-    pub client_id: String,
-    pub allowed_scopes: Vec<String>,
-    pub loopback_port: u16,
-    /// Public native PKCE clients normally omit this. If configured it is private.
-    pub client_secret: Option<String>,
-}
+pub use alloyos_mcp::account::ClientProfile;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PrivateAccount {
@@ -70,11 +62,6 @@ pub struct PrivateAccount {
 impl core::fmt::Debug for PrivateAccount {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("PrivateAccount([redacted])")
-    }
-}
-impl core::fmt::Debug for ClientProfile {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("ClientProfile([private])")
     }
 }
 pub fn base64url(input: &[u8]) -> String {
@@ -143,6 +130,16 @@ fn decode(value: &str) -> Result<String, AccountError> {
 /// Exact duplicate-sensitive callback validation, owned by the OS. Issuer
 /// response parameter is required; the browser helper is not an OAuth authority.
 pub fn callback_code(query: &str, state: &str, issuer: &str) -> Result<String, AccountError> {
+    callback_code_for_metadata(query, state, issuer, true)
+}
+/// MCP 2026-07-28 / RFC9207: advertised support requires `iss`; otherwise
+/// omission is allowed, but any supplied issuer must still match exactly.
+pub fn callback_code_for_metadata(
+    query: &str,
+    state: &str,
+    issuer: &str,
+    require_issuer: bool,
+) -> Result<String, AccountError> {
     if query.len() > 8192 {
         return Err(AccountError::CallbackMismatch);
     }
@@ -156,7 +153,8 @@ pub fn callback_code(query: &str, state: &str, issuer: &str) -> Result<String, A
         }
     }
     if values.get("state").map(String::as_str) != Some(state)
-        || values.get("iss").map(String::as_str) != Some(issuer)
+        || values.get("iss").is_some_and(|value| value != issuer)
+        || (require_issuer && !values.contains_key("iss"))
     {
         return Err(AccountError::CallbackMismatch);
     }
@@ -196,6 +194,7 @@ struct Flow {
     verifier: String,
     redirect: String,
     authorization_endpoint: String,
+    require_issuer: bool,
     token_endpoint: String,
     revocation_endpoint: Option<String>,
     started: Option<u64>,
@@ -246,11 +245,12 @@ impl OsAccountBroker {
             .ok_or(AccountError::CredentialUnavailable)?;
         let profile = self
             .store
-            .profile(endpoint)?
+            .profile(app,endpoint)?
             .ok_or(AccountError::ClientRegistrationRequired)?;
         if profile.endpoint != endpoint
             || profile.issuer != record.issuer
             || profile.client_id != record.client_id
+            || record.scopes.iter().any(|scope|!profile.allowed_scopes.contains(scope))
         {
             return Err(AccountError::CredentialUnavailable);
         }
@@ -444,13 +444,15 @@ impl OsAccountBroker {
                         .is_some_and(|methods| {
                             methods.iter().any(|method| method.as_str() == Some("S256"))
                         })
-                    || value
-                        .get("authorization_response_iss_parameter_supported")
-                        .and_then(Value::as_bool)
-                        != Some(true)
                 {
                     return self.fail(AccountError::UnsupportedAuthorization);
                 }
+                flow.require_issuer =
+                    match value.get("authorization_response_iss_parameter_supported") {
+                        None => false,
+                        Some(Value::Bool(value)) => *value,
+                        _ => return self.fail(AccountError::UnsupportedAuthorization),
+                    };
                 flow.authorization_endpoint = match endpoint(&value, "authorization_endpoint") {
                     Ok(v) => v,
                     Err(e) => return self.fail(e),
@@ -646,7 +648,12 @@ impl OsAccountBroker {
                 },
             ))),
             (Stage::Callback, BrowserOutcome::Callback { query }) => {
-                let code = match callback_code(&query, &flow.state, &flow.profile.issuer) {
+                let code = match callback_code_for_metadata(
+                    &query,
+                    &flow.state,
+                    &flow.profile.issuer,
+                    flow.require_issuer,
+                ) {
                     Ok(code) => code,
                     Err(error) => return self.fail(error),
                 };
@@ -722,7 +729,7 @@ impl AccountBroker for OsAccountBroker {
                 if self.crypto.unix_seconds().is_none() {
                     return Poll::Ready(Err(AccountError::HostUnavailable));
                 }
-                let profile = match self.store.profile(&request.endpoint) {
+                let profile = match self.store.profile(&request.app_id,&request.endpoint) {
                     Ok(Some(profile)) => profile,
                     Ok(None) => return Poll::Ready(Err(AccountError::ClientRegistrationRequired)),
                     Err(e) => return Poll::Ready(Err(e)),
@@ -763,6 +770,7 @@ impl AccountBroker for OsAccountBroker {
                     verifier,
                     redirect: String::new(),
                     authorization_endpoint: String::new(),
+                    require_issuer: false,
                     token_endpoint: String::new(),
                     revocation_endpoint: None,
                     started: self.crypto.unix_seconds(),
@@ -829,11 +837,12 @@ impl AccountBroker for OsAccountBroker {
                     Some(token) => token,
                     None => return Poll::Ready(Err(AccountError::RefreshFailed)),
                 };
-                let profile = match self.store.profile(&request.endpoint) {
+                let profile = match self.store.profile(&request.app_id,&request.endpoint) {
                     Ok(Some(profile))
                         if profile.endpoint == request.endpoint
                             && profile.issuer == record.issuer
-                            && profile.client_id == record.client_id =>
+                            && profile.client_id == record.client_id
+                            && record.scopes.iter().all(|scope|profile.allowed_scopes.contains(scope)) =>
                     {
                         profile
                     }
@@ -883,7 +892,7 @@ impl AccountBroker for OsAccountBroker {
                                     .unwrap_or(&record.access_token)
                             )
                         );
-                        if let Ok(Some(profile)) = self.store.profile(&record.endpoint) {
+                        if let Ok(Some(profile)) = self.store.profile(&record.app_id,&record.endpoint) {
                             if profile.issuer == record.issuer
                                 && profile.client_id == record.client_id
                             {
@@ -927,6 +936,19 @@ impl AccountBroker for OsAccountBroker {
         self.flow = None;
         self.browser.cancel();
         self.network.cancel();
+    }
+    fn provision_profile(&mut self, app:&str, profile:&ClientProfile)->Result<SecretStorage,AccountError>{
+        profile.validate()?;
+        if self.flow.as_ref().is_some_and(|flow|flow.app!=app) {return Err(AccountError::Busy)}
+        self.cancel();
+        self.store.forget(app,&profile.endpoint)?;
+        self.store.save_profile(app,profile)
+    }
+    fn forget_profile(&mut self,app:&str,endpoint:&str)->Result<(),AccountError>{
+        if self.flow.as_ref().is_some_and(|flow|flow.app!=app){return Err(AccountError::Busy)}
+        self.cancel();
+        self.store.forget(app,endpoint)?;
+        self.store.forget_profile(app,endpoint)
     }
     fn note_challenge(&mut self, endpoint: &str, challenge: &str) -> Result<(), AccountError> {
         if !public_url(endpoint)

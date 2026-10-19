@@ -14,6 +14,10 @@ struct State {
     clock: Option<Option<u64>>,
     token_json: Option<String>,
     revoke_fails: bool,
+    configured_profile: Option<ClientProfile>,
+    profile_write_fails: bool,
+    profile_delete_fails: bool,
+    profile_removed: bool,
 }
 struct Store(Rc<RefCell<State>>);
 impl CredentialStore for Store {
@@ -35,7 +39,13 @@ impl CredentialStore for Store {
         s.forget = true;
         Ok(())
     }
-    fn profile(&mut self, e: &str) -> Result<Option<ClientProfile>, AccountError> {
+    fn profile(&mut self, _: &str, e: &str) -> Result<Option<ClientProfile>, AccountError> {
+        if self.0.borrow().profile_removed {
+            return Ok(None);
+        }
+        if let Some(profile) = &self.0.borrow().configured_profile {
+            return Ok(Some(profile.clone()));
+        }
         Ok(Some(ClientProfile {
             endpoint: e.into(),
             issuer: ISSUER.into(),
@@ -44,6 +54,31 @@ impl CredentialStore for Store {
             client_secret: None,
             loopback_port: 0,
         }))
+    }
+    fn save_profile(
+        &mut self,
+        _: &str,
+        profile: &ClientProfile,
+    ) -> Result<SecretStorage, AccountError> {
+        if self.0.borrow().profile_write_fails {
+            return Err(AccountError::StorageUnavailable);
+        }
+        self.0.borrow_mut().configured_profile = Some(profile.clone());
+        self.0.borrow_mut().profile_removed = false;
+        Ok(SecretStorage::OsPrivateStore)
+    }
+    fn forget_profile(&mut self, _: &str, _: &str) -> Result<(), AccountError> {
+        let mut state = self.0.borrow_mut();
+        assert!(
+            state.record.is_none(),
+            "forget token authority before private profile"
+        );
+        if state.profile_delete_fails {
+            return Err(AccountError::StorageUnavailable);
+        }
+        state.configured_profile = None;
+        state.profile_removed = true;
+        Ok(())
     }
 }
 struct Crypto(Rc<RefCell<State>>, u8);
@@ -626,4 +661,98 @@ fn asynchronous_network_and_browser_complete_between_polls() {
         b.bearer("mail", RESOURCE, &credential).unwrap(),
         "private-access"
     );
+}
+
+#[test]
+fn issuer_callback_validation_follows_all_specification_rows() {
+    for advertised in [true, false] {
+        assert_eq!(
+            callback_code_for_metadata("state=s&iss=i&code=c", "s", "i", advertised),
+            Ok("c".into())
+        );
+        assert_eq!(
+            callback_code_for_metadata("state=s&iss=other&code=c", "s", "i", advertised),
+            Err(AccountError::CallbackMismatch)
+        );
+        assert_eq!(
+            callback_code_for_metadata("state=s&iss=other&error=denied", "s", "i", advertised),
+            Err(AccountError::CallbackMismatch)
+        );
+    }
+    assert_eq!(
+        callback_code_for_metadata("state=s&code=c", "s", "i", true),
+        Err(AccountError::CallbackMismatch)
+    );
+    assert_eq!(
+        callback_code_for_metadata("state=s&code=c", "s", "i", false),
+        Ok("c".into())
+    );
+    assert_eq!(
+        callback_code_for_metadata("state=s&error=denied", "s", "i", false),
+        Err(AccountError::AuthorizationDenied)
+    );
+}
+
+#[test]
+fn changing_client_profile_drops_old_authority_even_if_profile_write_fails() {
+    for fail in [false, true] {
+        let s = Rc::new(RefCell::new(State::default()));
+        let mut b = broker(&s);
+        let reference = authorize(&mut b);
+        s.borrow_mut().profile_write_fails = fail;
+        let profile = ClientProfile {
+            endpoint: RESOURCE.into(),
+            issuer: ISSUER.into(),
+            client_id: "changed-client".into(),
+            allowed_scopes: vec![],
+            loopback_port: 0,
+            client_secret: None,
+        };
+        let result = b.provision_profile("mail", &profile);
+        assert_eq!(result.is_err(), fail);
+        assert!(s.borrow().record.is_none());
+        assert!(broker(&s).bearer("mail", RESOURCE, &reference).is_err());
+    }
+}
+
+#[test]
+fn approved_account_removal_forgets_private_profile_while_disconnect_retains_it() {
+    let s = Rc::new(RefCell::new(State::default()));
+    let mut b = broker(&s);
+    let reference = authorize(&mut b);
+    let mut private_profile = Store(s.clone()).profile("mail", RESOURCE).unwrap().unwrap();
+    private_profile.client_secret = Some("private-client-secret".into());
+    Store(s.clone())
+        .save_profile("mail", &private_profile)
+        .unwrap();
+    ready(b.start(&req(AccountOperation::Disconnect {
+        credential: Some(reference),
+    })))
+    .unwrap();
+    assert!(Store(s.clone())
+        .profile("mail", RESOURCE)
+        .unwrap()
+        .is_some());
+    b.forget_profile("mail", RESOURCE).unwrap();
+    assert!(Store(s.clone())
+        .profile("mail", RESOURCE)
+        .unwrap()
+        .is_none());
+    assert!(ready(broker(&s).start(&req(AccountOperation::Status))).is_err());
+}
+#[test]
+fn account_removal_profile_failure_never_reports_complete_cleanup() {
+    let s = Rc::new(RefCell::new(State::default()));
+    let mut b = broker(&s);
+    authorize(&mut b);
+    s.borrow_mut().profile_delete_fails = true;
+    assert_eq!(
+        b.forget_profile("mail", RESOURCE),
+        Err(AccountError::StorageUnavailable)
+    );
+    assert!(s.borrow().record.is_none());
+    assert!(Store(s.clone())
+        .profile("mail", RESOURCE)
+        .unwrap()
+        .is_some());
 }

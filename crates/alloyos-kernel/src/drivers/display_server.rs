@@ -387,6 +387,17 @@ impl DisplayProxy {
     pub fn take_tile_discovery_request(&self) -> bool {
         self.take(|event| matches!(event, Event::DiscoverTiles)).is_some()
     }
+    pub fn set_client_profile_setup(&self, pending: Option<&alloyos_mcp::account::PendingClientProfileSetup>, error: &str) {
+        self.state.borrow_mut().pending_client_profile_setup = pending.cloned();
+        self.state.borrow_mut().client_profile_error = error.chars().take(256).collect();
+    }
+    pub fn take_client_profile_decision(&self) -> Option<(String, Option<alloyos_mcp::account::ClientProfile>)> {
+        match self.take(|e| matches!(e, Event::ProvisionClientProfile { .. } | Event::CancelClientProfileSetup { .. }))? {
+            Event::ProvisionClientProfile { id, profile } => Some((id, Some(profile))),
+            Event::CancelClientProfileSetup { id } => Some((id, None)),
+            _ => None,
+        }
+    }
     pub fn set_pending_remote_install(&self, pending: Option<&alloyos_mcp::install::PendingRemoteInstall>) {
         self.state.borrow_mut().pending_remote_install = pending.filter(|p|p.is_valid()).cloned();
     }
@@ -559,6 +570,9 @@ pub fn syscall(
                 return -22;
             };
             match &e {
+                Event::ProvisionClientProfile { profile, .. } if profile.validate().is_err() => return -90,
+                Event::ProvisionClientProfile { id, .. } | Event::CancelClientProfileSetup { id }
+                    if id.is_empty() || id.len() > 64 || !id.bytes().all(|b|b.is_ascii_alphanumeric() || b == b'-') => return -90,
                 Event::RemoteInstallDecision { id, .. } if id.is_empty() || id.len() > 64
                     || !id.bytes().all(|b|b.is_ascii_alphanumeric() || b == b'-') => return -90,
                 Event::Submit(s) if s.len() > 16384 => return -90,
@@ -567,6 +581,8 @@ pub fn syscall(
                 }
                 _ => {}
             }
+            // Profile submissions can contain a secret. Do not retain their wire copy.
+            b.fill(0);
             service.events.push_back(e);
             0
         }
@@ -651,6 +667,21 @@ mod tests {
             ),
             -22
         );
+        let mut profile = alloyos_mcp::account::ClientProfile {
+            endpoint: "https://mail.example/mcp".into(), issuer: "https://issuer.example".into(),
+            client_id: "native-client".into(), allowed_scopes: alloc::vec!["mail.read".into()],
+            loopback_port: 8381, client_secret: Some("synthetic-private-client-secret".into()),
+        };
+        let profile_event = serde_json::to_vec(&Event::ProvisionClientProfile { id: "profile-1".into(), profile: profile.clone() }).unwrap();
+        space.copy_out(address, &profile_event).unwrap();
+        assert_eq!(syscall(display::DISPLAY_EVENT, address, profile_event.len() as u64, 0, &task, &mut space), 0);
+        assert!(matches!(SERVICE.lock().events.pop_front(), Some(Event::ProvisionClientProfile { id, profile })
+            if id == "profile-1" && profile.client_secret.as_deref() == Some("synthetic-private-client-secret")));
+        profile.client_secret = Some("invalid secret".into());
+        let invalid_profile = serde_json::to_vec(&Event::ProvisionClientProfile { id: "profile-1".into(), profile }).unwrap();
+        space.copy_out(address, &invalid_profile).unwrap();
+        assert_eq!(syscall(display::DISPLAY_EVENT, address, invalid_profile.len() as u64, 0, &task, &mut space), -90);
+        assert!(SERVICE.lock().events.is_empty());
         // Package approval shares the authenticated, bounded display channel.
         let event = serde_json::to_vec(&Event::RemoteInstallDecision { id: "install-1".into(), approved: true }).unwrap();
         space.copy_out(address, &event).unwrap();
@@ -689,5 +720,8 @@ mod tests {
         );
         assert_eq!(syscall(display::DISPLAY_EVENT, address, event.len() as u64, 0, &task, &mut space), -1,
             "an unauthorized process cannot approve package changes");
+        space.copy_out(address, &profile_event).unwrap();
+        assert_eq!(syscall(display::DISPLAY_EVENT, address, profile_event.len() as u64, 0, &task, &mut space), -1,
+            "an unauthorized process cannot provision private client registration");
     }
 }

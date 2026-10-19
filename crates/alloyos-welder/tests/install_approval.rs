@@ -330,8 +330,20 @@ fn package_changed_after_removal_review_is_not_deleted_and_model_cannot_approve(
 struct RemovalBroker {
     request: Option<alloyos_mcp::account::AccountRequest>,
     fail: bool,
+    profile_fail: bool,
 }
 impl alloyos_welder::accounts::AccountBroker for RemovalBroker {
+    fn forget_profile(
+        &mut self,
+        _: &str,
+        _: &str,
+    ) -> Result<(), alloyos_mcp::account::AccountError> {
+        if self.profile_fail {
+            Err(alloyos_mcp::account::AccountError::StorageUnavailable)
+        } else {
+            Ok(())
+        }
+    }
     fn start(
         &mut self,
         request: &alloyos_mcp::account::AccountRequest,
@@ -381,6 +393,7 @@ fn remote_removal_waits_for_account_cleanup_and_does_not_claim_provider_revocati
         .set_account_broker(Box::new(RemovalBroker {
             request: None,
             fail: false,
+            profile_fail: false,
         }))
         .unwrap();
     execute(&mut registry, "mcp_uninstall_app", json!({"app_id":"mail"})).unwrap();
@@ -408,6 +421,7 @@ fn failed_account_cleanup_preserves_the_package_and_reports_removal_failure() {
         .set_account_broker(Box::new(RemovalBroker {
             request: None,
             fail: true,
+            profile_fail: false,
         }))
         .unwrap();
     execute(&mut registry, "mcp_uninstall_app", json!({"app_id":"mail"})).unwrap();
@@ -426,4 +440,30 @@ fn failed_account_cleanup_preserves_the_package_and_reports_removal_failure() {
         assert_eq!(backend.borrow().files[&path], content);
     }
     assert!(registry.mcp_registry().guard_for("mail").is_some());
+}
+
+#[test]
+fn private_profile_cleanup_failure_preserves_package_after_token_disconnect() {
+    let (mut registry, backend) = registry();
+    propose(&mut registry);
+    let review = registry.pending_remote_install().unwrap();
+    registry.confirm_remote_install(&review.id, true).unwrap();
+    registry
+        .set_account_broker(Box::new(RemovalBroker {
+            request: None,
+            fail: false,
+            profile_fail: true,
+        }))
+        .unwrap();
+    execute(&mut registry, "mcp_uninstall_app", json!({"app_id":"mail"})).unwrap();
+    let review = registry.pending_remote_install().unwrap();
+    registry.confirm_remote_install(&review.id, true).unwrap();
+    registry.poll_account_connections();
+    let error = registry
+        .take_package_change_result()
+        .unwrap()
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("configuration cleanup failed"));
+    assert!(backend.borrow().files.contains_key("/apps/mail/mail.mcp"));
 }

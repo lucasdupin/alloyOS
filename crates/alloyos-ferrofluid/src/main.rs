@@ -13,10 +13,11 @@ fn call(n: u64, a: u64, b: u64, c: u64) -> i64 {
     unsafe { syscall3(n, a, b, c) }
 }
 fn send(event: Event) {
-    if let Ok(b) = serde_json::to_vec(&event) {
+    if let Ok(mut b) = serde_json::to_vec(&event) {
         loop {
             let status = call(display::DISPLAY_EVENT, b.as_ptr() as u64, b.len() as u64, 0);
             if status >= 0 {
+                b.fill(0);
                 break;
             }
             if status == -11 {
@@ -90,6 +91,7 @@ pub extern "C" fn _start(heap_start: usize, heap_length: usize) -> ! {
                     ui.set_available_tiles(&s.available);
                     ui.set_tile_discovery_status(s.tile_catalog_loaded, &s.tile_catalog_error);
                     ui.set_pending_remote_install(s.pending_remote_install.as_ref());
+                    ui.set_client_profile_setup(s.pending_client_profile_setup.as_ref(), &s.client_profile_error);
                     ui.set_tiles(&s.tiles);
                     ui.set_chat_items(&s.items);
                     if s.pinned != pins {
@@ -141,6 +143,10 @@ pub extern "C" fn _start(heap_start: usize, heap_length: usize) -> ! {
         }
         if ui.take_tile_discovery_request() {
             send(Event::DiscoverTiles);
+        }
+        while let Some((id, profile)) = ui.take_client_profile_decision() {
+            match profile { Some(profile) => send(Event::ProvisionClientProfile { id, profile }),
+                None => send(Event::CancelClientProfileSetup { id }) }
         }
         while let Some((id, approved)) = ui.take_remote_install_decision() {
             send(Event::RemoteInstallDecision { id, approved });

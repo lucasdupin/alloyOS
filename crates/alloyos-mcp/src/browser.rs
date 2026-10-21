@@ -16,7 +16,11 @@ pub struct BrowserRequest {
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum BrowserOperation {
     Prepare { port: u16 },
-    Open { authorization_url: String },
+    Open {
+        authorization_url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resource: Option<String>,
+    },
     Poll,
     Cancel,
 }
@@ -86,7 +90,7 @@ impl BrowserRequest {
                 .attempt
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
-            || matches!(&self.operation,BrowserOperation::Open{authorization_url} if authorization_url.len()>16384)
+            || matches!(&self.operation,BrowserOperation::Open{authorization_url,resource} if authorization_url.len()>16384 || resource.as_ref().is_some_and(|resource|!crate::account::valid_oauth_resource_binding(&self.endpoint,resource)))
         {
             return Err(BrowserError::InvalidRequest);
         }

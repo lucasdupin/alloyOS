@@ -235,6 +235,7 @@ fn valid_profile(profile: &ClientProfile) -> bool {
 }
 fn valid_account(account: &PrivateAccount) -> bool {
     valid_secret(&account.access_token)
+        && alloyos_mcp::account::valid_oauth_resource_binding(&account.endpoint,account.oauth_resource.as_deref().unwrap_or(&account.endpoint))
         && account.refresh_token.as_ref().is_none_or(|s| valid_secret(s))
         && valid_endpoint(&account.issuer).is_ok() && !account.issuer.contains('?')
         && valid_endpoint(&account.token_endpoint).is_ok()
@@ -315,7 +316,7 @@ mod tests {
     const ENDPOINT: &str = "https://service.example/mcp";
     fn account() -> PrivateAccount {
         PrivateAccount {
-            app_id: "mail".into(), endpoint: ENDPOINT.into(),
+            app_id: "mail".into(), endpoint: ENDPOINT.into(), oauth_resource: None,
             issuer: "https://issuer.example".into(), client_id: "native-client".into(), issued_at: 1_900_000_000,
             reference: "abcdefghijklmnopqrstuvwxyz0123456789".into(),
             access_token: "synthetic-private-token".into(), refresh_token: Some("synthetic-refresh".into()),
@@ -447,4 +448,18 @@ mod tests {
         drop(store);
         assert!(matches!(mount(disk).load("mail", ENDPOINT), Err(Error::StorageUnavailable)));
     }
+    #[test]
+    fn validated_origin_audience_survives_remount_without_widening_transport_binding() {
+        let disk=MemBlockDevice::new_formatted_large();let mut record=account();record.oauth_resource=Some("https://service.example".into());
+        mount(disk.clone()).save(&record).unwrap();let mut restored=mount(disk.clone());
+        assert_eq!(restored.load("mail",ENDPOINT).unwrap().unwrap().oauth_resource,record.oauth_resource);
+        for (app,endpoint) in [("other",ENDPOINT),("mail","https://service.example/other"),("mail","https://service.example/mcp?tenant=other")] {assert!(restored.load(app,endpoint).unwrap().is_none());}
+        for resource in ["https://service.example/parent","https://other.example","https://service.example?tenant=other"] {
+            record.oauth_resource=Some(resource.into());assert_eq!(restored.save(&record),Err(Error::InvalidRequest));
+        }
+        let path=format!("{ROOT}/records/{}.json",key("mail",ENDPOINT).unwrap());
+        restored.write(&path,&serde_json::to_vec(&record).unwrap()).unwrap();drop(restored);
+        assert!(matches!(mount(disk).load("mail",ENDPOINT),Err(Error::StorageUnavailable)));
+    }
+
 }

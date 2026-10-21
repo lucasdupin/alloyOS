@@ -19,6 +19,7 @@ struct Flow {
     redirect: String,
     started: Instant,
     opened: bool,
+    resource: Option<String>,
 }
 #[derive(Default)]
 struct Assistant {
@@ -100,18 +101,23 @@ impl Assistant {
                         redirect: redirect.clone(),
                         started: Instant::now(),
                         opened: false,
+                        resource: None,
                     },
                 );
                 Ok(BrowserOutcome::Prepared {
                     redirect_uri: redirect,
                 })
             }
-            BrowserOperation::Open { authorization_url } => {
+            BrowserOperation::Open { authorization_url, resource } => {
                 let flow = self.flows.get_mut(&request.attempt).ok_or(Error::Expired)?;
-                validate_authorization_url(authorization_url, &flow.redirect, &flow.endpoint)?;
+                let resource=resource.as_deref().unwrap_or(&flow.endpoint);
+                if !alloyos_mcp::account::valid_oauth_resource_binding(&flow.endpoint,resource){return Err(Error::InvalidRequest)}
+                if flow.resource.as_ref().is_some_and(|previous|previous!=resource){return Err(Error::InvalidRequest)}
+                validate_authorization_url(authorization_url, &flow.redirect, resource)?;
                 if !flow.opened {
                     open_browser(authorization_url)?;
                     flow.opened = true;
+                    flow.resource=Some(resource.to_string());
                 }
                 Ok(BrowserOutcome::Opened)
             }
@@ -403,10 +409,13 @@ mod tests {
         }
     }
     fn authorization_url(redirect: &str) -> String {
+        authorization_url_for_resource(redirect,ENDPOINT)
+    }
+    fn authorization_url_for_resource(redirect: &str, resource: &str) -> String {
         let mut url = Url::parse("https://identity.example/authorize").unwrap();
         url.query_pairs_mut().extend_pairs([
             ("redirect_uri", redirect),
-            ("resource", ENDPOINT),
+            ("resource", resource),
             ("response_type", "code"),
             ("code_challenge_method", "S256"),
             ("state", "guest-owned-state"),
@@ -433,13 +442,14 @@ mod tests {
         assert!(matches!(
             assistant
                 .handle(&request(BrowserOperation::Open {
+                    resource: None,
                     authorization_url: authorization_url.clone()
                 }))
                 .unwrap(),
             BrowserOutcome::Opened
         ));
         assistant
-            .handle(&request(BrowserOperation::Open { authorization_url }))
+            .handle(&request(BrowserOperation::Open { authorization_url, resource: None }))
             .unwrap();
         assert_eq!(
             TEST_BROWSER.with(|slot| slot.borrow().as_ref().unwrap().len()),
@@ -511,6 +521,7 @@ mod tests {
             }
             assert!(matches!(
                 assistant.handle(&request(BrowserOperation::Open {
+                    resource: None,
                     authorization_url: url
                 })),
                 Err(Error::InvalidRequest)
@@ -612,4 +623,27 @@ mod tests {
             assert!(hosted_url(url).is_err(), "{url}");
         }
     }
+    #[test]
+    fn explicit_origin_resource_keeps_transport_binding_and_rejects_changed_audience() {
+        let _browser=MockBrowser::new();let mut assistant=Assistant::default();
+        let BrowserOutcome::Prepared{redirect_uri}=assistant.handle(&request(BrowserOperation::Prepare{port:0})).unwrap()else{panic!()};
+        let origin="https://mail.example";
+        let open=BrowserOperation::Open{authorization_url:authorization_url_for_resource(&redirect_uri,origin),resource:Some(origin.into())};
+        assert!(matches!(assistant.handle(&request(open)).unwrap(),BrowserOutcome::Opened));
+        assert!(assistant.handle(&request(BrowserOperation::Open{authorization_url:authorization_url(&redirect_uri),resource:None})).is_err());
+        for resource in ["https://mail.example/tenant-other","https://other.example","https://mail.example?audience=other"] {
+            assert!(assistant.handle(&request(BrowserOperation::Open{authorization_url:authorization_url_for_resource(&redirect_uri,resource),resource:Some(resource.into())})).is_err());
+        }
+        TEST_BROWSER.with(|slot|assert_eq!(slot.borrow().as_ref().unwrap().len(),1));
+    }
+    #[test]
+    fn legacy_open_omission_defaults_to_transport_and_explicit_resource_must_match_url() {
+        let legacy:BrowserRequest=serde_json::from_value(serde_json::json!({"request_id":1,"app_id":"mail","endpoint":ENDPOINT,"attempt":"attempt-0123456789abcdef","operation":{"op":"open","authorization_url":"https://identity.example/authorize"}})).unwrap();
+        assert!(matches!(legacy.operation,BrowserOperation::Open{resource:None,..}));
+        let _browser=MockBrowser::new();let mut assistant=Assistant::default();
+        let BrowserOutcome::Prepared{redirect_uri}=assistant.handle(&request(BrowserOperation::Prepare{port:0})).unwrap()else{panic!()};
+        assert!(assistant.handle(&request(BrowserOperation::Open{authorization_url:authorization_url(&redirect_uri),resource:Some("https://mail.example".into())})).is_err());
+        TEST_BROWSER.with(|slot|assert!(slot.borrow().as_ref().unwrap().is_empty()));
+    }
+
 }

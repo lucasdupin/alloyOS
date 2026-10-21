@@ -7,6 +7,16 @@ pub const MAX_ACCOUNT_FRAME_BYTES: usize = 32768;
 pub const MAX_ACCOUNTS: usize = 32;
 pub const MAX_SCOPES: usize = 32;
 
+/// Resource metadata may validate the exact endpoint or its exact origin via
+/// root well-known fallback. This bound alone does not prove discovery succeeded.
+pub fn valid_oauth_resource_binding(endpoint: &str, resource: &str) -> bool {
+    if crate::transport::remote_mcp_authority(endpoint).is_none()
+        || crate::transport::remote_mcp_authority(resource).is_none() {return false;}
+    if endpoint == resource {return true;}
+    let authority = endpoint[8..].split(['/', '?']).next().unwrap_or("");
+    resource == &endpoint[..8 + authority.len()]
+}
+
 /// Trusted native input. Never place this structure in public display state,
 /// model context, logs, or ordinary VFS caches.
 #[derive(Clone, Serialize, Deserialize)]

@@ -19,6 +19,8 @@ struct State {
     profile_delete_fails: bool,
     profile_removed: bool,
     prm_json: Option<String>,
+    metadata_404: Vec<String>,
+    token_resource: Option<String>,
 }
 struct Store(Rc<RefCell<State>>);
 impl CredentialStore for Store {
@@ -121,7 +123,9 @@ impl BrowserAssistant for Browser {
             BrowserOperation::Prepare { .. } => BrowserOutcome::Prepared {
                 redirect_uri: "http://127.0.0.1:3000/callback".into(),
             },
-            BrowserOperation::Open { authorization_url } => {
+            BrowserOperation::Open {
+                authorization_url, ..
+            } => {
                 assert!(authorization_url.contains("code_challenge_method=S256"));
                 assert!(!authorization_url.contains("access_token"));
                 BrowserOutcome::Opened
@@ -132,7 +136,10 @@ impl BrowserAssistant for Browser {
                     .browser
                     .iter()
                     .find_map(|r| {
-                        if let BrowserOperation::Open { authorization_url } = &r.operation {
+                        if let BrowserOperation::Open {
+                            authorization_url, ..
+                        } = &r.operation
+                        {
                             Some(authorization_url)
                         } else {
                             None
@@ -177,6 +184,13 @@ impl OAuthNetwork for Network {
         if r.url.ends_with("/revoke") && self.0.borrow().revoke_fails {
             return Poll::Ready(Err(AccountError::TransportFailed));
         }
+        if self.0.borrow().metadata_404.contains(&r.url) {
+            return Poll::Ready(Ok(HttpResponse {
+                status: 404,
+                headers: vec![],
+                body: String::new(),
+            }));
+        }
         let body = if r.url.contains("oauth-protected-resource")
             || r.url.ends_with("/custom-metadata")
         {
@@ -194,7 +208,15 @@ impl OAuthNetwork for Network {
             );
             "{}".into()
         } else {
-            assert!(r.body.contains("resource=https%3A%2F%2Fmail.example%2Fmcp"));
+            let resource = self
+                .0
+                .borrow()
+                .token_resource
+                .clone()
+                .unwrap_or_else(|| RESOURCE.into());
+            assert!(r
+                .body
+                .contains(&format!("resource={}", form_encode(&resource))));
             if r.body.contains("authorization_code") {
                 assert!(r.body.contains("code_verifier="));
                 assert!(r.body.contains("code=test-code"));
@@ -768,7 +790,10 @@ fn authorization_url(s: &Rc<RefCell<State>>) -> String {
         .browser
         .iter()
         .find_map(|request| {
-            if let BrowserOperation::Open { authorization_url } = &request.operation {
+            if let BrowserOperation::Open {
+                authorization_url, ..
+            } = &request.operation
+            {
                 Some(authorization_url.clone())
             } else {
                 None
@@ -860,5 +885,254 @@ fn malformed_ambiguous_or_unbounded_resource_scopes_fail_before_browser() {
         assert!(ready(b.start(&req(AccountOperation::Begin { scopes: vec![] }))).is_err());
         assert!(s.borrow().browser.is_empty());
         assert!(s.borrow().record.is_none());
+    }
+}
+
+fn metadata_for_resource(resource: &str) -> String {
+    serde_json::json!({"resource":resource,"authorization_servers":[ISSUER]}).to_string()
+}
+fn authorize_endpoint(b: &mut OsAccountBroker, endpoint: &str) -> CredentialReference {
+    let mut request = req(AccountOperation::Begin {
+        scopes: vec!["mail.read".into()],
+    });
+    request.endpoint = endpoint.into();
+    let response = ready(b.start(&request)).unwrap();
+    let AccountOutcome::Authorizing { attempt } = response.outcome else {
+        panic!()
+    };
+    request.operation = AccountOperation::Poll { attempt };
+    let response = ready(b.start(&request)).unwrap();
+    let AccountOutcome::Authorized { credential, .. } = response.outcome else {
+        panic!()
+    };
+    credential
+}
+#[test]
+fn root_fallback_audience_is_persisted_but_transport_app_and_reference_remain_exact() {
+    let origin = "https://mail.example";
+    let s = Rc::new(RefCell::new(State {
+        metadata_404: vec!["https://mail.example/.well-known/oauth-protected-resource/mcp".into()],
+        prm_json: Some(metadata_for_resource(origin)),
+        token_resource: Some(origin.into()),
+        ..State::default()
+    }));
+    let mut b = broker(&s);
+    let reference = authorize_endpoint(&mut b, RESOURCE);
+    let record = s.borrow().record.clone().unwrap();
+    assert_eq!(record.endpoint, RESOURCE);
+    assert_eq!(record.oauth_resource.as_deref(), Some(origin));
+    let wire = serde_json::to_vec(&record).unwrap();
+    s.borrow_mut().record = Some(serde_json::from_slice(&wire).unwrap());
+    let open = s
+        .borrow()
+        .browser
+        .iter()
+        .find_map(|r| {
+            if let BrowserOperation::Open {
+                authorization_url,
+                resource,
+            } = &r.operation
+            {
+                Some((
+                    r.endpoint.clone(),
+                    authorization_url.clone(),
+                    resource.clone(),
+                ))
+            } else {
+                None
+            }
+        })
+        .unwrap();
+    assert_eq!(open.0, RESOURCE);
+    assert_eq!(open.2.as_deref(), Some(origin));
+    assert!(open
+        .1
+        .contains(&format!("resource={}", form_encode(origin))));
+    let mut restored = broker(&s);
+    assert_eq!(
+        restored.bearer("mail", RESOURCE, &reference).unwrap(),
+        "private-access"
+    );
+    for (app, endpoint) in [
+        ("other", RESOURCE),
+        ("mail", "https://mail.example/other"),
+        ("mail", "https://mail.example/mcp?tenant=other"),
+        ("mail", "https://mail.example"),
+    ] {
+        assert!(restored.bearer(app, endpoint, &reference).is_err())
+    }
+    ready(restored.start(&req(AccountOperation::Refresh {
+        credential: reference,
+    })))
+    .unwrap();
+    assert_eq!(
+        s.borrow()
+            .record
+            .as_ref()
+            .unwrap()
+            .oauth_resource
+            .as_deref(),
+        Some(origin)
+    );
+}
+#[test]
+fn path_and_query_resources_match_exactly_and_preserve_discovery_query() {
+    for endpoint in [
+        RESOURCE,
+        "https://mail.example/tenant-one/mcp",
+        "https://mail.example/mcp?tenant=one",
+        "https://mail.example?tenant=one",
+    ] {
+        let s = Rc::new(RefCell::new(State {
+            prm_json: Some(metadata_for_resource(endpoint)),
+            token_resource: Some(endpoint.into()),
+            ..State::default()
+        }));
+        let mut b = broker(&s);
+        authorize_endpoint(&mut b, endpoint);
+        assert_eq!(
+            s.borrow()
+                .record
+                .as_ref()
+                .unwrap()
+                .oauth_resource
+                .as_deref(),
+            Some(endpoint)
+        );
+        let expected = format!(
+            "https://mail.example/.well-known/oauth-protected-resource{}",
+            &endpoint["https://mail.example".len()..]
+        );
+        assert_eq!(s.borrow().requests[0].0, expected);
+    }
+}
+#[test]
+fn header_metadata_requires_actual_transport_resource_and_never_falls_back_on_failure() {
+    let metadata = "https://metadata.example/custom-metadata";
+    for resource in [
+        RESOURCE,
+        "https://mail.example",
+        "https://mail.example/tenant-other",
+        "https://other.example/mcp",
+    ] {
+        let s = Rc::new(RefCell::new(State {
+            prm_json: Some(metadata_for_resource(resource)),
+            ..State::default()
+        }));
+        let mut b = broker(&s);
+        b.note_challenge(
+            RESOURCE,
+            &format!("Bearer resource_metadata=\"{metadata}\""),
+        )
+        .unwrap();
+        let result = ready(b.start(&req(AccountOperation::Begin {
+            scopes: vec!["mail.read".into()],
+        })));
+        assert_eq!(result.is_ok(), resource == RESOURCE);
+        assert_eq!(s.borrow().requests[0].0, metadata);
+        if resource != RESOURCE {
+            assert!(s.borrow().browser.is_empty())
+        }
+    }
+    let s = Rc::new(RefCell::new(State {
+        metadata_404: vec![metadata.into()],
+        ..State::default()
+    }));
+    let mut b = broker(&s);
+    b.note_challenge(
+        RESOURCE,
+        &format!("Bearer resource_metadata=\"{metadata}\""),
+    )
+    .unwrap();
+    assert!(ready(b.start(&req(AccountOperation::Begin { scopes: vec![] }))).is_err());
+    assert_eq!(s.borrow().requests.len(), 1);
+}
+#[test]
+fn constructed_metadata_rejects_same_origin_parent_tenant_query_and_cross_origin_confusion() {
+    for (endpoint, returned, root) in [
+        (
+            "https://mail.example/tenant-one/mcp",
+            "https://mail.example/tenant-one",
+            false,
+        ),
+        (RESOURCE, "https://mail.example", false),
+        (RESOURCE, "https://other.example/mcp", false),
+        (
+            "https://mail.example/mcp?tenant=one",
+            "https://mail.example/mcp?tenant=two",
+            false,
+        ),
+        ("https://mail.example/mcp?tenant=one", RESOURCE, false),
+        (RESOURCE, RESOURCE, true),
+        (RESOURCE, "https://mail.example/tenant-other", true),
+    ] {
+        let path = format!(
+            "https://mail.example/.well-known/oauth-protected-resource{}",
+            &endpoint["https://mail.example".len()..]
+        );
+        let s = Rc::new(RefCell::new(State {
+            prm_json: Some(metadata_for_resource(returned)),
+            metadata_404: if root { vec![path] } else { vec![] },
+            ..State::default()
+        }));
+        let mut b = broker(&s);
+        let mut request = req(AccountOperation::Begin { scopes: vec![] });
+        request.endpoint = endpoint.into();
+        assert!(ready(b.start(&request)).is_err());
+        assert!(s.borrow().browser.is_empty());
+        assert!(s.borrow().record.is_none());
+    }
+}
+#[test]
+fn old_or_replaced_challenges_do_not_change_another_resource_candidate() {
+    let other = "https://mail.example/tenant-other/mcp";
+    let s = Rc::new(RefCell::new(State {
+        prm_json: Some(metadata_for_resource(other)),
+        ..State::default()
+    }));
+    let mut b = broker(&s);
+    b.note_challenge(
+        RESOURCE,
+        "Bearer resource_metadata=\"https://metadata.example/custom-metadata\"",
+    )
+    .unwrap();
+    let mut request = req(AccountOperation::Begin { scopes: vec![] });
+    request.endpoint = other.into();
+    ready(b.start(&request)).unwrap();
+    assert_eq!(
+        s.borrow().requests[0].0,
+        "https://mail.example/.well-known/oauth-protected-resource/tenant-other/mcp"
+    );
+    b.cancel();
+    s.borrow_mut().prm_json = Some(metadata_for_resource(RESOURCE));
+    s.borrow_mut().requests.clear();
+    b.note_challenge(RESOURCE, "Bearer").unwrap();
+    ready(b.start(&req(AccountOperation::Begin { scopes: vec![] }))).unwrap();
+    assert_eq!(
+        s.borrow().requests[0].0,
+        "https://mail.example/.well-known/oauth-protected-resource/mcp"
+    );
+}
+#[test]
+fn legacy_records_default_only_to_exact_endpoint_and_invalid_persisted_audience_is_rejected() {
+    let s = Rc::new(RefCell::new(State::default()));
+    let mut b = broker(&s);
+    let reference = authorize(&mut b);
+    let mut json = serde_json::to_value(s.borrow().record.as_ref().unwrap()).unwrap();
+    json.as_object_mut().unwrap().remove("oauth_resource");
+    s.borrow_mut().record = Some(serde_json::from_value(json).unwrap());
+    assert!(broker(&s).bearer("mail", RESOURCE, &reference).is_ok());
+    for resource in [
+        "https://mail.example/other",
+        "https://other.example",
+        "https://mail.example?aud=other",
+    ] {
+        s.borrow_mut().record.as_mut().unwrap().oauth_resource = Some(resource.into());
+        assert!(broker(&s).bearer("mail", RESOURCE, &reference).is_err());
+        assert!(ready(broker(&s).start(&req(AccountOperation::Status))).is_err());
+        assert!(ready(broker(&s).start(&req(AccountOperation::Refresh {
+            credential: reference.clone()
+        })))
+        .is_err())
     }
 }

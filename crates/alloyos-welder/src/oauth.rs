@@ -48,6 +48,9 @@ pub use alloyos_mcp::account::ClientProfile;
 pub struct PrivateAccount {
     pub app_id: String,
     pub endpoint: String,
+    /// Validated OAuth audience. Legacy omission retains exact-endpoint scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth_resource: Option<String>,
     pub reference: String,
     pub issuer: String,
     pub client_id: String,
@@ -187,6 +190,8 @@ pub struct OsAccountBroker {
 struct Flow {
     app: String,
     endpoint: String,
+    resource: String,
+    allow_root_fallback: bool,
     profile: ClientProfile,
     scopes: Vec<String>,
     attempt: String,
@@ -257,6 +262,7 @@ impl OsAccountBroker {
         if record.app_id != app
             || record.endpoint != endpoint
             || record.reference != reference.for_transport()
+            || !alloyos_mcp::account::valid_oauth_resource_binding(endpoint,record.oauth_resource.as_deref().unwrap_or(endpoint))
             || !valid_token(&record.access_token)
             || self
                 .crypto
@@ -288,6 +294,10 @@ impl OsAccountBroker {
         }
     }
     fn authorized(&mut self, record: PrivateAccount) -> Result<AccountOutcome, AccountError> {
+        if !alloyos_mcp::account::valid_oauth_resource_binding(
+            &record.endpoint,record.oauth_resource.as_deref().unwrap_or(&record.endpoint)) {
+            return Err(AccountError::CredentialUnavailable);
+        }
         let credential = CredentialReference::new(record.reference.clone())?;
         let storage = self.store.save(&record)?;
         Ok(AccountOutcome::Authorized {
@@ -364,13 +374,14 @@ impl OsAccountBroker {
             Err(error) => return self.fail(error),
         };
         if response.status == 404 {
-            if matches!(job.stage, Stage::Resource) {
+            if matches!(job.stage, Stage::Resource) && self.flow.as_ref().is_some_and(|flow|flow.allow_root_fallback) {
                 let endpoint = &job.request.endpoint[8..];
                 let authority = endpoint
                     .split(['/', '?'])
                     .next()
                     .unwrap_or(endpoint)
                     .to_string();
+                self.flow.as_mut().unwrap().resource=alloc::format!("https://{authority}");
                 return self.http(
                     job.request,
                     Stage::ResourceRoot,
@@ -411,7 +422,7 @@ impl OsAccountBroker {
         match job.stage {
             Stage::Resource | Stage::ResourceRoot => {
                 let flow = self.flow.as_mut().unwrap();
-                if value.get("resource").and_then(Value::as_str) != Some(flow.endpoint.as_str())
+                if value.get("resource").and_then(Value::as_str) != Some(flow.resource.as_str())
                     || !value
                         .get("authorization_servers")
                         .and_then(Value::as_array)
@@ -573,6 +584,7 @@ impl OsAccountBroker {
                     PrivateAccount {
                         app_id: flow.app.clone(),
                         endpoint: flow.endpoint.clone(),
+                        oauth_resource: Some(flow.resource.clone()),
                         reference,
                         issuer: flow.profile.issuer.clone(),
                         client_id: flow.profile.client_id.clone(),
@@ -649,13 +661,15 @@ impl OsAccountBroker {
                 }
                 let challenge = base64url(&self.crypto.sha256(flow.verifier.as_bytes()));
                 let scope = if flow.scopes.is_empty() { String::new() } else { alloc::format!("&scope={}",form_encode(&flow.scopes.join(" "))) };
-                let url=alloc::format!("{}{}response_type=code&client_id={}&redirect_uri={}{}&state={}&code_challenge={}&code_challenge_method=S256&resource={}",flow.authorization_endpoint,if flow.authorization_endpoint.contains('?'){"&"}else{"?"},form_encode(&flow.profile.client_id),form_encode(&redirect_uri),scope,form_encode(&flow.state),challenge,form_encode(&flow.endpoint));
+                let url=alloc::format!("{}{}response_type=code&client_id={}&redirect_uri={}{}&state={}&code_challenge={}&code_challenge_method=S256&resource={}",flow.authorization_endpoint,if flow.authorization_endpoint.contains('?'){"&"}else{"?"},form_encode(&flow.profile.client_id),form_encode(&redirect_uri),scope,form_encode(&flow.state),challenge,form_encode(&flow.resource));
+                let resource=(flow.resource!=flow.endpoint).then(||flow.resource.clone());
                 self.flow.as_mut().unwrap().redirect = redirect_uri;
                 self.browser_start(
                     job.request,
                     Stage::Open,
                     BrowserOperation::Open {
                         authorization_url: url,
+                        resource,
                     },
                 )
             }
@@ -681,7 +695,7 @@ impl OsAccountBroker {
                     Ok(code) => code,
                     Err(error) => return self.fail(error),
                 };
-                let mut body=alloc::format!("grant_type=authorization_code&code={}&redirect_uri={}&client_id={}&code_verifier={}&resource={}",form_encode(&code),form_encode(&flow.redirect),form_encode(&flow.profile.client_id),form_encode(&flow.verifier),form_encode(&flow.endpoint));
+                let mut body=alloc::format!("grant_type=authorization_code&code={}&redirect_uri={}&client_id={}&code_verifier={}&resource={}",form_encode(&code),form_encode(&flow.redirect),form_encode(&flow.profile.client_id),form_encode(&flow.verifier),form_encode(&flow.resource));
                 if let Some(secret) = &flow.profile.client_secret {
                     body.push_str("&client_secret=");
                     body.push_str(&form_encode(secret));
@@ -787,6 +801,8 @@ impl AccountBroker for OsAccountBroker {
                 self.flow = Some(Flow {
                     app: request.app_id.clone(),
                     endpoint: request.endpoint.clone(),
+                    resource: request.endpoint.clone(),
+                    allow_root_fallback: advertised.as_ref().is_none_or(|(metadata,_)|metadata.is_none()),
                     profile,
                     scopes: scopes.clone(),
                     attempt,
@@ -799,18 +815,21 @@ impl AccountBroker for OsAccountBroker {
                     revocation_endpoint: None,
                     started: self.crypto.unix_seconds(),
                 });
-                let suffix = request.endpoint[8..].split('?').next().unwrap_or("");
-                let (authority, path) =
-                    suffix.split_once('/').map_or((suffix, ""), |(a, p)| (a, p));
+                let suffix = &request.endpoint[8..];
+                let boundary=suffix.find(['/', '?']).unwrap_or(suffix.len());
+                let authority=&suffix[..boundary];
+                let tail=&suffix[boundary..];
                 let metadata = advertised
                     .and_then(|(metadata, _)| metadata)
                     .unwrap_or_else(|| {
                         alloc::format!(
-                            "https://{authority}/.well-known/oauth-protected-resource{}{}",
-                            if path.is_empty() { "" } else { "/" },
-                            path
+                            "https://{authority}/.well-known/oauth-protected-resource{}",
+                            if tail=="/" {""} else {tail}
                         )
                     });
+                if metadata==alloc::format!("https://{authority}/.well-known/oauth-protected-resource") {
+                    self.flow.as_mut().unwrap().allow_root_fallback=false;
+                }
                 self.http(request.clone(), Stage::Resource, get(metadata))
             }
             AccountOperation::Poll { attempt } => {
@@ -843,6 +862,7 @@ impl AccountBroker for OsAccountBroker {
                     Ok(Some(record))
                         if record.app_id == request.app_id
                             && record.endpoint == request.endpoint
+                            && alloyos_mcp::account::valid_oauth_resource_binding(&record.endpoint,record.oauth_resource.as_deref().unwrap_or(&record.endpoint))
                             && record.reference == credential.for_transport() =>
                     {
                         record
@@ -876,7 +896,7 @@ impl AccountBroker for OsAccountBroker {
                     "grant_type=refresh_token&refresh_token={}&client_id={}&resource={}",
                     form_encode(refresh),
                     form_encode(&profile.client_id),
-                    form_encode(&record.endpoint)
+                    form_encode(record.oauth_resource.as_deref().unwrap_or(&record.endpoint))
                 );
                 if let Some(secret) = profile.client_secret {
                     body.push_str("&client_secret=");

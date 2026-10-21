@@ -258,7 +258,7 @@ mod crypto_tests {
         let request = BrowserRequest {
             request_id: 42, app_id: "mail".into(), endpoint: "https://mail.example/mcp".into(),
             attempt: "synthetic-attempt-0123456789".into(),
-            operation: BrowserOperation::Open { authorization_url: "https://auth.example/?state=private-state".into() },
+            operation: BrowserOperation::Open { resource: None, authorization_url: "https://auth.example/?state=private-state".into() },
         };
         let mut browser = HostBrowserAssistant::default();
         assert!(browser.start(&request).is_pending());

@@ -170,9 +170,11 @@ device access. The current QEMU boot path loads the kernel ELF directly.
 - [x] **Storage foundation**
   - VFS mount table, persistent CobaltFS, RamFS and DevFS
   - VirtIO block transport for filesystem disks
-- [ ] **Agent storage integration**
+- [x] **Agent storage integration**
   - File tools, configuration, setup and knowledge use kernel VFS storage
-  - Verify durable agent data across reboot and distinguish volatile fallback; conversation history is session-only and is not restored after reboot
+  - Five-boot guest gate verifies setup/configuration, pinned Tile order, app data, native actions and periodic refresh across reboot; conversation history remains session-only
+  - Diskless RamFS configuration/setup changes are explicitly session-only and disappear on reboot; its unavailable display executable means this fallback gate is headless
+  - Reproduce with [`scripts/agent-durability.md`](scripts/agent-durability.md); model replies are synthetic, with no provider/account/microphone actions
 
 ---
 
@@ -498,7 +500,7 @@ increment.
 
 | Milestone | Deliverable | Target Crate(s) | Status |
 |---|---|---|---|
-| **M1: ARM64 Core & CobaltFS** | Boot entry, kernel services, VFS and persistent storage | `alloyos-kernel`, `alloyos-user` | Foundation implemented; agent persistence pending |
+| **M1: ARM64 Core & CobaltFS** | Boot entry, kernel services, VFS and persistent storage | `alloyos-kernel`, `alloyos-user` | Foundation and guest agent/configuration durability verified |
 | **M2: Networking & Model Transport** | Guest TCP/IP and authenticated Forge cloud access | `alloyos-kernel`, `alloyos-user`, `alloyos-forge`, `alloyos-dev-harness` | Implemented |
 | **M3: Boot & Model Readiness** | Liquid boot logo, resident weight loading and workspace transition | `alloyos-boot`, `alloyos-kernel`, `alloyos-ferrofluid` | Logo turbulence and loading implemented |
 | **M4: Ferrofluid System UI & side panel** | Independently built protected display server, System UI rendering, pinned Tile drawer, chat bridge and native input | `alloyos-ferrofluid`, `alloyos-keyboard`, `alloyos-kernel` | Protected independent display executable, chat/keyboard IPC and supervised recovery implemented; remaining side panel/Tile, IRQ wakeup and voice work tracked above |

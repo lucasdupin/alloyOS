@@ -178,13 +178,14 @@ impl AgentRuntime {
             self.setup_visible = true;
             self.save_setup(next).and_then(|_| self.render_setup())
         };
+        let persistent = self.tool_registry.is_knowledge_persistent();
         Some(result.map(|output| {
             crate::ConsoleTurnOutput {
                 active_provider: self.active_provider_name(),
                 active_model: self.active_model_id().into(),
-                response_text: output.chat_text(),
+                response_text: if persistent { output.chat_text() } else { format!("{}\n\nSettings are stored for this session only; storage is volatile.", output.chat_text()) },
                 tool_outputs: Vec::new(),
-                config_persisted: true,
+                config_persisted: persistent,
             }
         }))
     }

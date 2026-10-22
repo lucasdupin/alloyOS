@@ -221,12 +221,12 @@ impl AgentRuntime {
     }
     pub fn switch_provider(&mut self, name: &str) -> Result<ActiveProvider, AiError> {
         let provider = self.gateway.switch_provider(name)?;
-        self.persist_config_to_vfs();
+        self.persist_config_checked()?;
         Ok(provider)
     }
     pub fn cycle_model(&mut self) -> Result<(), AiError> {
         self.gateway.cycle_model()?;
-        self.persist_config_to_vfs();
+        self.persist_config_checked()?;
         Ok(())
     }
     pub fn serialize_config(&self) -> String {
@@ -325,6 +325,12 @@ impl AgentRuntime {
         self.load_config_str(&conf)
     }
 
+    fn persist_config_checked(&mut self) -> Result<(), AiError> {
+        let serialized = self.serialize_config();
+        self.tool_registry.persist_system_config(Self::CONFIG_PATH, &serialized)
+            .map_err(AiError::ConfigError)
+    }
+
     fn persist_config_to_vfs(&mut self) {
         let serialized = self.serialize_config();
         self.tool_registry.vfs_write(Self::CONFIG_PATH, serialized);
@@ -421,8 +427,12 @@ impl AgentRuntime {
                 })
             }
             "pause" => {
+                let previous = self.tool_registry.is_knowledge_learning_paused();
                 self.tool_registry.set_knowledge_learning_paused(true);
-                self.persist_config_to_vfs();
+                if let Err(error) = self.persist_config_checked() {
+                    self.tool_registry.set_knowledge_learning_paused(previous);
+                    return Err(error);
+                }
                 let call = alloyos_forge::provider::ToolCall::new(
                     "knowledge_pause_cmd",
                     "knowledge_search",
@@ -431,20 +441,25 @@ impl AgentRuntime {
                 let out = self
                     .tool_registry
                     .execute_tool(&call, &mut self.ui_synthesizer)?;
-                let msg = "Knowledge profile learning paused and persisted to /etc/ai.conf."
-                    .to_string();
+                let config_persisted = self.tool_registry.is_knowledge_persistent();
+                let msg = if config_persisted { "Knowledge profile learning paused; settings saved to /etc/ai.conf." }
+                    else { "Knowledge profile learning paused for this session only; RamFS storage is volatile." }.to_string();
                 on_token(&msg);
                 Ok(ConsoleTurnOutput {
                     active_provider: self.active_provider_name(),
                     active_model: self.active_model_id().to_string(),
                     response_text: msg,
                     tool_outputs: vec![out],
-                    config_persisted: true,
+                    config_persisted,
                 })
             }
             "resume" => {
+                let previous = self.tool_registry.is_knowledge_learning_paused();
                 self.tool_registry.set_knowledge_learning_paused(false);
-                self.persist_config_to_vfs();
+                if let Err(error) = self.persist_config_checked() {
+                    self.tool_registry.set_knowledge_learning_paused(previous);
+                    return Err(error);
+                }
                 let call = alloyos_forge::provider::ToolCall::new(
                     "knowledge_resume_cmd",
                     "knowledge_search",
@@ -453,15 +468,16 @@ impl AgentRuntime {
                 let out = self
                     .tool_registry
                     .execute_tool(&call, &mut self.ui_synthesizer)?;
-                let msg = "Knowledge profile learning resumed and persisted to /etc/ai.conf."
-                    .to_string();
+                let config_persisted = self.tool_registry.is_knowledge_persistent();
+                let msg = if config_persisted { "Knowledge profile learning resumed; settings saved to /etc/ai.conf." }
+                    else { "Knowledge profile learning resumed for this session only; RamFS storage is volatile." }.to_string();
                 on_token(&msg);
                 Ok(ConsoleTurnOutput {
                     active_provider: self.active_provider_name(),
                     active_model: self.active_model_id().to_string(),
                     response_text: msg,
                     tool_outputs: vec![out],
-                    config_persisted: true,
+                    config_persisted,
                 })
             }
             "forget" => {
@@ -699,21 +715,21 @@ impl AgentRuntime {
             self.switch_provider(provider_arg)?;
             if let Some(custom_model) = custom_model_arg {
                 self.gateway.set_model(custom_model)?;
-                self.persist_config_to_vfs();
+                self.persist_config_checked()?;
             }
 
-            let msg = format!(
-                "Switched active AI model provider to '{}' ({}) and persisted to /etc/ai.conf.",
-                self.active_provider_name(),
-                self.active_model_id()
-            );
+            let config_persisted = self.tool_registry.is_knowledge_persistent();
+            let storage = if config_persisted { "saved to /etc/ai.conf" }
+                else { "applied for this session only; RamFS storage is volatile" };
+            let msg = format!("Switched active AI model provider to '{}' ({}) and {}.",
+                self.active_provider_name(), self.active_model_id(), storage);
             on_token(&msg);
             return Ok(ConsoleTurnOutput {
                 active_provider: self.active_provider_name(),
                 active_model: self.active_model_id().to_string(),
                 response_text: msg,
                 tool_outputs: Vec::new(),
-                config_persisted: true,
+                config_persisted,
             });
         }
 

@@ -1543,6 +1543,17 @@ mod tests {
         assert!(ui.take_tile_event().is_none(), "scrolling must not dispatch tile actions");
     }
 
+    fn launcher_fixture_for_reorder(template: &AppTile, id: &str, title: &str) -> AppTile {
+        let mut tile = template.clone();
+        tile.tile_id = id.into();
+        tile.title = title.into();
+        tile.subtitle.clear();
+        tile.refresh_resource_uri = None;
+        tile.items.clear();
+        tile.actions.clear();
+        tile
+    }
+
     #[test]
     fn system_ui_renders_and_accepts_local_input() {
         use alloyos_proto::display::{PHONE_HEIGHT, PHONE_SCALE, PHONE_WIDTH};
@@ -2114,6 +2125,48 @@ mod tests {
         ui.set_reduced_motion(true);
         ui.ui.invoke_pin_tile("fixture.now".into(), false);
         assert_eq!(ui.ui.get_dashboard_tiles().row_count(), 0);
+
+        // Reordering is reachable through the pinned card's actual native
+        // control, without changing membership or opening discovery.
+        let reorder_first = launcher_fixture_for_reorder(&clock, "reorder.first", "First");
+        let reorder_second = launcher_fixture_for_reorder(&clock, "reorder.second", "Second");
+        ui.set_tiles(&[reorder_first.clone(), reorder_second.clone()]);
+        ui.restore_dashboard(&[reorder_first.tile_id.clone(), reorder_second.tile_id.clone()]);
+        ui.ui.set_sidebar_open(true);
+        ui.render(ui.now.get() + Duration::from_millis(16));
+        if let Ok(path) = std::env::var("ALLOYOS_REORDER_SCREENSHOT") {
+            let file = std::fs::File::create(path).unwrap();
+            let mut encoder = png::Encoder::new(file, ui.size.width, ui.size.height);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let bytes: Vec<u8> = ui.pixels().iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8, 255]).collect();
+            encoder.write_header().unwrap().write_image_data(&bytes).unwrap();
+        }
+
+        let initial_order = ui.dashboard_state().pinned_ids().to_vec();
+        let initial_revision = ui.dashboard_state().revision();
+        for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
+            ui.handle_input(InputEvent { kind, code: 0x110, x: 735, y: 390 });
+        }
+        assert_eq!(ui.dashboard_state().revision(), initial_revision, "top row cannot move");
+        ui.ui.set_reply_pending(true);
+        for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
+            ui.handle_input(InputEvent { kind, code: 0x110, x: 735, y: 660 });
+        }
+        assert_eq!(ui.dashboard_state().pinned_ids(), initial_order, "pending reply disables reorder");
+        ui.ui.set_reply_pending(false);
+        for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
+            ui.handle_input(InputEvent { kind, code: 0x110, x: 735, y: 660 });
+        }
+        ui.render(ui.now.get() + Duration::from_millis(16));
+        let reordered = ui.dashboard_state().pinned_ids().to_vec();
+        assert_eq!(reordered, [String::from("reorder.second"), String::from("reorder.first")]);
+        assert!(ui.dashboard_state().revision() > initial_revision, "reorder reaches the existing persistence publisher");
+        ui.restore_dashboard(&initial_order);
+        ui.restore_dashboard(&reordered);
+        assert_eq!(ui.ui.get_dashboard_tiles().row_data(0).unwrap().tile_id.as_str(), "reorder.second");
+        assert!(!ui.ui.get_available_tiles_expanded());
+        assert!(!ui.take_tile_discovery_request(), "ordering never loads the app catalog");
 
         // Discovery works before an app has ever appeared in chat. Pinning its
         // actual exposed descriptor makes its actions available in the drawer.

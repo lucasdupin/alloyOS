@@ -236,6 +236,8 @@ component MarkdownText inherits VerticalLayout {
 }
 
 component TileCard inherits Rectangle {
+    in property <bool> reorder-visible: false;
+    in property <bool> reorder-enabled: false;
     min-width: 0px;
     clip: true;
     in property <TileView> tile;
@@ -263,6 +265,17 @@ component TileCard inherits Rectangle {
         spacing: 10px;
         HorizontalBox {
             Text { text: root.tile.title; color: AlloyPalette.text; font-size: 20px; font-weight: 700; font-family: "Quicksand Bold"; wrap: word-wrap; horizontal-stretch: 1; min-width: 0px; }
+            if root.reorder-visible: AlloyButton {
+                text: "↑";
+                flat: true;
+                enabled: root.reorder-enabled && !root.pending;
+                button-label: "Move " + root.tile.title + " to top";
+                min-width: 32px;
+                max-width: 32px;
+                height: 32px;
+                horizontal-stretch: 0;
+                clicked => { root.move(); }
+            }
             AlloyButton {
                 flat: true;
                 icon-only: true;
@@ -358,6 +371,7 @@ component DrippingColumn inherits Rectangle {
 
 // Keep a departing card alive until its slide and the stack's reflow finish.
 component PinnedTileRow inherits Rectangle {
+    in property <bool> reorder-enabled;
     in property <TileView> tile;
     in property <bool> pinned;
     in property <bool> pending;
@@ -385,6 +399,8 @@ component PinnedTileRow inherits Rectangle {
         height: self.preferred-height;
         tile: root.tile;
         pinned: root.pinned;
+        reorder-visible: true;
+        reorder-enabled: root.reorder-enabled;
         pending: root.pending || !root.pinned;
         animate x { duration: root.reduced-motion ? 0ms : 200ms; easing: ease-in; }
         action(id) => { root.action(id); }
@@ -947,7 +963,8 @@ export component SystemUi inherits Window {
                                 wrap: word-wrap;
                                 vertical-stretch: 0;
                             }
-                            for tile in root.dashboard-tiles: PinnedTileRow {
+                            for tile[index] in root.dashboard-tiles: PinnedTileRow {
+                                reorder-enabled: index > 0;
                                 tile: tile; pending: root.reply-pending;
                                 pinned: root.tile-is-pinned(tile.tile-id, root.dashboard-pins);
                                 reduced-motion: root.reduced-motion;

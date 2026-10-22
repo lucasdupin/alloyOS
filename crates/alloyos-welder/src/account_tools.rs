@@ -17,6 +17,7 @@ pub(super) struct PendingAccountCall {
     stage: Stage,
     scopes: Vec<String>,
     recovering: bool,
+    authorization_attempted: bool,
 }
 #[derive(Clone, Copy)]
 enum Stage {
@@ -229,6 +230,7 @@ impl NativeToolRegistry {
                 endpoint,
                 scopes,
                 recovering: call.name == "mcp_connect",
+                authorization_attempted: false,
                 stage: match call.name.as_str() {
                     "mcp_disconnect" => Stage::Disconnect,
                     "mcp_refresh_connection" => Stage::Refresh,
@@ -295,18 +297,23 @@ impl NativeToolRegistry {
                             return Poll::Ready(self.account_output(call, &pending.app, None));
                         }
                         Some(RemoteConnectionStatus::AuthorizationRequired { challenge })
-                            if matches!(pending.stage, Stage::Probe) =>
+                            if pending.call.name == "mcp_connect" && !pending.authorization_attempted =>
                         {
+                            let _ = self.accounts.borrow_mut().observe_transport(
+                                &pending.app, &pending.endpoint, false, true);
+                            // Revocation must not force manual disconnect just to
+                            // reauthorize. Reuse the existing explicit connect
+                            // intent, without enlarging the approved scope set.
+                            if pending.scopes.is_empty() {
+                                pending.scopes = self.accounts.borrow().status(&pending.app)
+                                    .map(|record|record.scopes.clone()).unwrap_or_default();
+                            }
                             let noted = self.accounts.borrow_mut().note_challenge(&pending.endpoint, &challenge);
                             if let Err(error) = noted {
                                 return Poll::Ready(self.account_output(call, &pending.app, Some(error)));
                             }
-                            let _ = self.accounts.borrow_mut().observe_transport(
-                                &pending.app,
-                                &pending.endpoint,
-                                false,
-                                true,
-                            );
+                            let _ = self.mcp_registry.borrow_mut().set_remote_trusted_bearer(&pending.app,None);
+                            let _ = self.mcp_registry.borrow_mut().set_remote_credential_reference(&pending.app,None);
                             pending.stage = Stage::StartAuthorization;
                             continue;
                         }
@@ -333,10 +340,10 @@ impl NativeToolRegistry {
                         }
                     }
                 }
-                Stage::StartAuthorization => self
-                    .accounts
-                    .borrow_mut()
-                    .begin_authorization(&pending.app, pending.scopes.clone()),
+                Stage::StartAuthorization => {
+                    pending.authorization_attempted = true;
+                    self.accounts.borrow_mut().begin_authorization(&pending.app, pending.scopes.clone())
+                },
                 Stage::Broker => self.accounts.borrow_mut().poll(),
                 Stage::Disconnect => {
                     let _ = self.mcp_registry.borrow_mut().set_remote_trusted_bearer(&pending.app, None);

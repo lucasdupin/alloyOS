@@ -405,15 +405,22 @@ impl HttpTransport for McpWire {
     }
 }
 fn drive(registry: &mut alloyos_welder::NativeToolRegistry, tool: &str) -> serde_json::Value {
-    let call = alloyos_forge::provider::ToolCall::new(
-        tool,
+    drive_arguments(
+        registry,
         tool,
         if tool == "mcp_connect" {
             "{\"app\":\"mail\",\"scopes\":[\"mail.read\"]}"
         } else {
             "{\"app\":\"mail\"}"
         },
-    );
+    )
+}
+fn drive_arguments(
+    registry: &mut alloyos_welder::NativeToolRegistry,
+    tool: &str,
+    arguments: &str,
+) -> serde_json::Value {
+    let call = alloyos_forge::provider::ToolCall::new(tool, tool, arguments);
     let mut ui = alloyos_welder::AgentUiSynthesizer::new();
     for _ in 0..100 {
         match registry.poll_execute_tool(&call, &mut ui) {
@@ -422,6 +429,8 @@ fn drive(registry: &mut alloyos_welder::NativeToolRegistry, tool: &str) -> serde
                 assert!(!output.output_json.contains("private-access"));
                 assert!(!output.output_json.contains("private-refresh"));
                 assert!(!output.output_json.contains("test-code"));
+                assert!(!output.output_json.contains("revoked-token"));
+                assert!(!output.output_json.contains("still-rejected"));
                 return serde_json::from_str(&output.output_json).unwrap();
             }
             Poll::Ready(Err(e)) => panic!("{e}"),
@@ -1134,5 +1143,131 @@ fn legacy_records_default_only_to_exact_endpoint_and_invalid_persisted_audience_
             credential: reference.clone()
         })))
         .is_err())
+    }
+}
+
+fn revoked_account() -> Rc<RefCell<State>> {
+    let state = Rc::new(RefCell::new(State::default()));
+    authorize(&mut broker(&state));
+    let mut value = state.borrow_mut();
+    value.record.as_mut().unwrap().access_token = "revoked-token".into();
+    value.browser.clear();
+    value.requests.clear();
+    drop(value);
+    state
+}
+fn browser_opens(state: &Rc<RefCell<State>>) -> usize {
+    state
+        .borrow()
+        .browser
+        .iter()
+        .filter(|request| matches!(request.operation, BrowserOperation::Open { .. }))
+        .count()
+}
+#[test]
+fn explicit_connect_reauthorizes_revoked_saved_token_once_then_verifies_actual_mcp() {
+    let state = revoked_account();
+    let (mut registry, _, seen) = native_registry(&state, false);
+    let output = drive_arguments(&mut registry, "mcp_connect", r#"{"app":"mail"}"#);
+    assert_eq!(output["connection"]["phase"], "ready");
+    assert_eq!(browser_opens(&state), 1);
+    assert_eq!(
+        output["connection"]["scopes"],
+        serde_json::json!(["mail.read"])
+    );
+    assert!(seen.borrow().iter().any(|method| method == "tools/list"));
+    assert!(!seen.borrow().iter().any(|method| method == "tools/call"));
+    assert_eq!(
+        state
+            .borrow()
+            .requests
+            .iter()
+            .filter(|(url, _)| url.ends_with("/token"))
+            .count(),
+        1
+    );
+}
+#[test]
+fn rejected_reauthorization_exits_needs_auth_without_an_infinite_browser_loop() {
+    let state = revoked_account();
+    state.borrow_mut().token_json=Some(r#"{"token_type":"Bearer","access_token":"still-rejected","expires_in":100,"scope":"mail.read"}"#.into());
+    let (mut registry, _, _) = native_registry(&state, false);
+    let output = drive_arguments(&mut registry, "mcp_connect", r#"{"app":"mail"}"#);
+    assert_eq!(output["ok"], false);
+    assert_eq!(output["connection"]["phase"], "needs_auth");
+    assert_eq!(browser_opens(&state), 1);
+    assert_eq!(
+        state
+            .borrow()
+            .requests
+            .iter()
+            .filter(|(url, _)| url.ends_with("/token"))
+            .count(),
+        1
+    );
+}
+struct AlwaysUnauthorized {
+    challenge: String,
+}
+impl HttpTransport for AlwaysUnauthorized {
+    fn request(&mut self, _: &HttpRequest) -> Result<HttpResponse, String> {
+        Ok(HttpResponse {
+            status: 401,
+            headers: vec![("WWW-Authenticate".into(), self.challenge.clone())],
+            body: String::new(),
+        })
+    }
+}
+#[test]
+fn status_and_refresh_do_not_turn_rejected_credentials_into_browser_authorization() {
+    let state = Rc::new(RefCell::new(State::default()));
+    let (mut registry, _, _) = native_registry(&state, false);
+    drive(&mut registry, "mcp_connect");
+    state.borrow_mut().browser.clear();
+    registry.set_http_transport(Box::new(AlwaysUnauthorized {
+        challenge: "Bearer".into(),
+    }));
+    drive(&mut registry, "mcp_connection_status");
+    let output = drive(&mut registry, "mcp_refresh_connection");
+    assert_eq!(output["ok"], false);
+    assert_eq!(output["connection"]["phase"], "needs_auth");
+    assert_eq!(browser_opens(&state), 0);
+}
+#[test]
+fn reauthorization_preserves_profile_limits_and_rejects_untrusted_challenge_metadata() {
+    for invalid_metadata in 0..3 {
+        let state = revoked_account();
+        let (mut registry, _, _) = native_registry(&state, false);
+        if invalid_metadata == 1 {
+            registry.set_http_transport(Box::new(AlwaysUnauthorized {
+                challenge: "Bearer resource_metadata=\"http://localhost/metadata\"".into(),
+            }));
+        }
+        if invalid_metadata == 2 {
+            state.borrow_mut().prm_json=Some(serde_json::json!({"resource":RESOURCE,"authorization_servers":["https://attacker.example"]}).to_string());
+            registry.set_http_transport(Box::new(AlwaysUnauthorized {
+                challenge: "Bearer resource_metadata=\"https://metadata.example/custom-metadata\""
+                    .into(),
+            }));
+        }
+        let args = if invalid_metadata != 0 {
+            r#"{"app":"mail"}"#
+        } else {
+            r#"{"app":"mail","scopes":["mail.write"]}"#
+        };
+        let output = drive_arguments(&mut registry, "mcp_connect", args);
+        assert_eq!(output["ok"], false);
+        assert_ne!(output["connection"]["phase"], "ready");
+        assert_eq!(browser_opens(&state), 0);
+        assert!(!state
+            .borrow()
+            .requests
+            .iter()
+            .any(|(url, _)| url.ends_with("/token")));
+        assert_eq!(
+            state.borrow().record.as_ref().unwrap().access_token,
+            "revoked-token"
+        );
+        assert_eq!(state.borrow().record.as_ref().unwrap().issuer, ISSUER);
     }
 }

@@ -214,6 +214,7 @@ pub struct ToolExecutionOutput {
 /// 4. Welder owns `/knowledge/`; apps cannot directly rewrite the user profile.
 #[derive(Clone)]
 pub struct NativeToolRegistry {
+    pub(crate) setup_service: Rc<RefCell<crate::setup_service::Port>>,
     tools: Vec<ToolSpec>,
     vfs_files: BTreeMap<String, String>,
     vfs_backend: Option<Rc<RefCell<dyn ToolVfsBackend>>>,
@@ -295,6 +296,7 @@ impl NativeToolRegistry {
 
         let tools = Self::default_tool_specs();
         Self {
+            setup_service: Rc::new(RefCell::new(crate::setup_service::Port::default())),
             tools,
             vfs_files,
             vfs_backend: None,

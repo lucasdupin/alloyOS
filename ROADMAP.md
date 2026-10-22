@@ -304,6 +304,9 @@ console model commands; task complexity does not change the selected provider.
   - Define bounded, versioned IPC for display requests/replies and authorized model, filesystem, app, scheduler and voice operations. Preserve kernel-derived caller identity and capability checks; Forge and existing kernel services may remain in the host behind these interfaces
   - Implemented: shared `alloyos-fs` owns CobaltFS, block/filesystem contracts and development-image formatting; xtask no longer imports `alloyos-kernel`, directly or transitively
   - Implemented: the kernel reads an isolated boot-wordmark asset and does not import Ferrofluid/Slint or watch the UI source tree. Preserve the pixel-matched handoff to Ferrofluid
+  - Implemented first service slice: `/system/welder` executes the active six-step setup render/transition planner in a protected EL0 process. Existing bounded, versioned private IPC carries setup snapshots and proposals. The host independently checks current-step state/effects and consent controls, then applies only fixed Clock, preferred-name knowledge and learning-preference effects. Account credentials and native installation/profile approvals stay outside the worker
+  - Validated: real guest setup render/name transition, contained EL0 fault, nonyielding-worker timeout, restart from the host snapshot, and replay rejection. The worker cannot invent privileged dispatch. See [setup service boundary and gate](scripts/welder-service.md)
+  - Still open: conversation, model/tool orchestration and persistence adapters remain in the kernel host, which still depends on `alloyos-welder`. Fault restart reuses a cached validated executable; updating/reloading that executable and the unchanged-kernel wizard-edit acceptance below are not verified
   - Extend executable packaging and launch/restart tooling to update Welder and Ferrofluid without building or relinking either the host kernel library or guest kernel when shared ABI and kernel sources are unchanged
   - Acceptance: after a baseline build, edit only setup text/logic, rebuild and package Welder, then boot or restart it and verify the changed wizard. Cargo build evidence must show no kernel compilation/linking; the guest kernel artifact hash and modification time must remain unchanged
   - Repeat the unchanged-kernel check for a Ferrofluid-only UI edit. Verify setup persistence, tool authorization and recovery after a Welder service fault; shared ABI changes must rebuild both endpoints
@@ -357,7 +360,7 @@ not a deferral of the underlying connection/account implementation.
 
 - [ ] Reintroduce optional app setup after designing a natural, LLM-led conversation around what the user wants to do (email, documents, calendar), rather than listing installed apps or asking about a side panel.
 - [ ] Discover and suggest working web-hosted MCP connections only when relevant to the user's stated needs, then obtain explicit installation approval. Exclude local-only servers; a mixed listing is eligible only through its verified remote endpoint.
-- [ ] Delegate account connection and authorization to each MCP app, with honest readiness, retry, skip, and resume behavior.
+- [ ] Let apps declare hosted endpoints and requested scopes; the OS brokers user authorization and owns account credentials, with honest readiness, retry, skip, and resume behavior.
 - [ ] Keep setup questions in chat and tiles reserved for useful widgets; widget selection/pinning is separate from onboarding.
 
 App selection and connection are currently skipped in first-run setup. The active flow covers the user's name, the agent's name, city/country for Clock, clock format, learning preferences, and review.

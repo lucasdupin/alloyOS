@@ -141,6 +141,7 @@ dependencies = [
  "alloyos-js",
  "alloyos-mcp",
  "alloyos-proto",
+ "alloyos-user",
  "serde",
  "serde_json",
 ]

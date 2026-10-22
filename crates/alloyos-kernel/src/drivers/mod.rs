@@ -9,6 +9,7 @@ pub mod forge_https;
 pub mod mcp_https;
 pub mod mcp_accounts;
 pub mod system_ui;
+pub mod welder_service;
 pub mod voice;
 pub mod virtio_blk;
 pub mod virtio_gpu;

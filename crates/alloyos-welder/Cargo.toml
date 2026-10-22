@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+alloyos-user = { path = "../alloyos-user", optional = true }
 alloyos-forge = { path = "../alloyos-forge" }
 alloyos-js = { path = "../alloyos-js" }
 alloyos-mcp = { path = "../alloyos-mcp" }
@@ -11,3 +12,12 @@ serde = { version = "1", default-features = false, features = ["alloc", "derive"
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 
 alloyos-proto = { path = "../alloyos-proto" }
+
+[features]
+executable = ["dep:alloyos-user"]
+
+[[bin]]
+name = "welder"
+path = "src/bin/welder.rs"
+required-features = ["executable"]
+test = false

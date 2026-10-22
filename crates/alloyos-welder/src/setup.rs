@@ -26,7 +26,7 @@ pub enum SetupStage {
     Review,
     Complete,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SetupState {
     pub version: u32,
@@ -240,6 +240,17 @@ impl AgentRuntime {
         } else {
             String::new()
         };
+        if !matches!(self.setup.stage, SetupStage::Apps | SetupStage::AppSetup) {
+            let response = self.tool_registry.setup_exchange(crate::setup_service::Request {
+                version: crate::setup_service::VERSION, id: 0, state: self.setup.clone(),
+                revision: self.setup_revision, operation: crate::setup_service::Operation::Render,
+                clock_report, persistent: self.tool_registry.is_knowledge_persistent(),
+            }).map_err(AiError::ConfigError)?;
+            let view = response.view.ok_or_else(|| invalid("Welder did not return a setup view"))?;
+            self.setup_revision = view.revision;
+            self.setup_view = if self.setup_active() { Some(view.clone()) } else { None };
+            return Ok(view);
+        }
         let s = &self.setup;
         let (title, prompt) = if s.deferred {
             (
@@ -453,6 +464,9 @@ impl AgentRuntime {
     pub(crate) fn answer_setup(&mut self, input: &str) -> Result<SetupView, AiError> {
         if !self.setup_active() {
             return Err(invalid("Open setup before answering"));
+        }
+        if !matches!(self.setup.stage, SetupStage::Apps | SetupStage::AppSetup) {
+            return self.answer_setup_service(input);
         }
         let trimmed = input.trim();
         let lower = trimmed.to_lowercase();
@@ -691,6 +705,37 @@ impl AgentRuntime {
             }
         }
         self.save_setup(next)?;
+        self.render_setup()
+    }
+    fn answer_setup_service(&mut self, input: &str) -> Result<SetupView, AiError> {
+        use crate::setup_service::{Effect, Operation, Request, VERSION};
+        let response = self.tool_registry.setup_exchange(Request {
+            version: VERSION, id: 0, state: self.setup.clone(), revision: self.setup_revision,
+            operation: Operation::Answer { value: input.into() }, clock_report: String::new(),
+            persistent: self.tool_registry.is_knowledge_persistent(),
+        }).map_err(AiError::ConfigError)?;
+        let plan = response.plan.ok_or_else(|| invalid("Welder did not return a setup plan"))?;
+        // The transport validates this plan against the original step and input
+        // before any privileged effect. Child output cannot select paths/tools.
+        for effect in plan.effects {
+            match effect {
+                Effect::PreferredName { value } => self.tool_registry.knowledge_upsert(
+                    KnowledgeEntry::new(KnowledgeCategory::Profile,"Preferred name",&value,
+                        KnowledgeBasis::Explicit,"System setup","setup","global"),None).map(|_| ())?,
+                Effect::Clock { timezone, format } => { self.clock_settings("clock.configure",
+                    serde_json::json!({"timezone":timezone,"clock_format":format}))?; },
+                Effect::Learning { paused } => {
+                    let previous = self.is_learning_paused();
+                    self.tool_registry.set_knowledge_learning_paused(paused);
+                    let conf = self.serialize_config();
+                    if let Err(error) = self.tool_registry.persist_system_config(Self::CONFIG_PATH,&conf) {
+                        self.tool_registry.set_knowledge_learning_paused(previous);
+                        return Err(AiError::ConfigError(error));
+                    }
+                }
+            }
+        }
+        self.save_setup(plan.next)?;
         self.render_setup()
     }
 }

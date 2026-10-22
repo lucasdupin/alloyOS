@@ -12,7 +12,8 @@ RUNTIME_MARKERS = (b'APP-PROCESS: hostile package parser limits and host recover
            b'APP-PROCESS: private heap exhaustion and restart PASS',
            b'APP-PROCESS: display input and shared kernel operation denial PASS',
            b'APP-PROCESS: timer cancels nonyielding process and peer continues PASS',
-           b'DISPLAY-PROCESS: real EL0 fault, restart, conversation/dashboard restoration PASS')
+           b'DISPLAY-PROCESS: real EL0 fault, restart, conversation/dashboard restoration PASS',
+           b'WELDER-SERVICE: protected setup transition, fault/timeout restart and replay rejection PASS')
 ISOLATION_MARKER = b'[process-selftest] PASS: EL0 syscalls, IPC, invalid pointers, privileged memory fault, timer preemption and kernel survival'
 FATAL_MARKERS = (b'[crash] kernel-panic ', b'[crash] exception domain=kernel ')
 

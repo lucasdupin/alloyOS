@@ -387,7 +387,7 @@ fn build_crates_mode_with_disk(
 }
 
 fn build_processes(root: &Path, _release: bool) -> Result<()> {
-    for (package, binary, features) in [("alloyos-ferrofluid", "ferrofluid", "executable"), ("alloyos-user", "app-runner", "")] {
+    for (package, binary, features) in [("alloyos-ferrofluid", "ferrofluid", "executable"), ("alloyos-welder", "welder", "executable"), ("alloyos-user", "app-runner", "")] {
         let mut cmd=Command::new("cargo");cmd.current_dir(root).args(["rustc", "-p",package,"--bin",binary,"--target","aarch64-unknown-none"]);
         if !features.is_empty(){cmd.args(["--features",features]);} cmd.arg("--release");
         if binary=="app-runner" {cmd.args(["--", "-C", "strip=debuginfo", "-C", "link-arg=-Tcrates/alloyos-ferrofluid/process.ld"]);} else {cmd.args(["--", "-C", "strip=debuginfo"]);}
@@ -410,7 +410,7 @@ fn package_processes_inner(root:&Path, _release:bool, disk:&Path)->Result<()> {
     let profile="release";
     let staging=root.join("target").join("process-package");
     std::fs::create_dir_all(staging.join("system"))?;std::fs::create_dir_all(staging.join("bin"))?;
-    for (binary,dir) in [("ferrofluid","system"),("app-runner","bin")] {
+    for (binary,dir) in [("ferrofluid","system"),("welder","system"),("app-runner","bin")] {
       std::fs::copy(root.join("target/aarch64-unknown-none").join(profile).join(binary),staging.join(dir).join(binary))?;
     }
     image::copy_tree(disk,&staging,"/")

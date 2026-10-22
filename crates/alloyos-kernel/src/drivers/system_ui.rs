@@ -88,6 +88,8 @@ pub fn run(
 
     #[cfg(feature="process-runtime-selftest")]
     ui.acceptance();
+    #[cfg(feature="process-runtime-selftest")]
+    super::welder_service::acceptance();
     let mut profile_error = String::new();
     loop {
         ui.poll();

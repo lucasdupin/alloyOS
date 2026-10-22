@@ -420,6 +420,10 @@ pub fn init_kernel_agent_runtime(forge: Rc<RefCell<Forge>>) -> AgentRuntime {
     let backend = KernelVfsBackend::global_rc();
     backend.borrow_mut().set_forge(forge.clone());
     let mut runtime = AgentRuntime::with_vfs_backend(backend);
+    #[cfg(target_os = "none")]
+    runtime.tool_registry.set_setup_service(alloc::boxed::Box::new(
+        crate::drivers::welder_service::WelderService::default(),
+    ));
     runtime.set_forge(forge);
     runtime.tool_registry.set_http_transport(alloc::boxed::Box::new(crate::drivers::mcp_https::HostRegistryHttp::default()));
     let _ = runtime.tool_registry.set_account_broker(alloc::boxed::Box::new(

@@ -753,14 +753,15 @@ impl AccountBroker for OsAccountBroker {
         match &request.operation {
             AccountOperation::Begin { scopes } => {
                 let advertised = self.challenges.get(&request.endpoint).cloned();
-                let scopes = if scopes.is_empty() {
-                    advertised
-                        .as_ref()
-                        .map(|(_, scopes)| scopes.clone())
-                        .unwrap_or_default()
-                } else {
-                    scopes.clone()
-                };
+                let mut scopes = scopes.clone();
+                if let Some((_,required)) = &advertised {
+                    for scope in required {
+                        if !scopes.contains(scope) {scopes.push(scope.clone());}
+                    }
+                }
+                if !alloyos_mcp::account::valid_scopes(&scopes) {
+                    return Poll::Ready(Err(AccountError::UnsupportedAuthorization));
+                }
                 if self.flow.is_some() {
                     return Poll::Ready(Err(AccountError::Busy));
                 }
@@ -772,6 +773,9 @@ impl AccountBroker for OsAccountBroker {
                     Ok(None) => return Poll::Ready(Err(AccountError::ClientRegistrationRequired)),
                     Err(e) => return Poll::Ready(Err(e)),
                 };
+                if scopes.iter().any(|scope|!profile.allowed_scopes.contains(scope)) {
+                    return Poll::Ready(Err(AccountError::ClientRegistrationRequired));
+                }
                 if profile.endpoint != request.endpoint
                     || !public_url(&profile.issuer)
                     || profile.issuer.contains('?')
@@ -1001,61 +1005,12 @@ impl AccountBroker for OsAccountBroker {
         {
             return Err(AccountError::UnsupportedAuthorization);
         }
-        let mut rest = challenge.trim();
-        if !rest
-            .get(..6)
-            .is_some_and(|scheme| scheme.eq_ignore_ascii_case("bearer"))
-        {
+        let parsed = alloyos_mcp::account::parse_bearer_challenge(challenge)?;
+        let metadata = parsed.resource_metadata;
+        if metadata.as_ref().is_some_and(|url|!public_url(url)) {
             return Err(AccountError::UnsupportedAuthorization);
         }
-        rest = rest[6..].trim();
-        let mut metadata = None;
-        let mut scopes = Vec::new();
-        let mut seen = alloc::collections::BTreeSet::new();
-        while !rest.is_empty() {
-            let (name, value) = rest
-                .split_once('=')
-                .ok_or(AccountError::UnsupportedAuthorization)?;
-            let name = name.trim().to_ascii_lowercase();
-            if !seen.insert(name.clone()) {
-                return Err(AccountError::UnsupportedAuthorization);
-            }
-            let value = value.trim_start();
-            let (value, tail) = if let Some(value) = value.strip_prefix('"') {
-                let (end, tail) = value
-                    .split_once('"')
-                    .ok_or(AccountError::UnsupportedAuthorization)?;
-                (end, tail)
-            } else {
-                value
-                    .split_once(',')
-                    .map_or((value, ""), |(value, tail)| (value, tail))
-            };
-            if value.contains('\\') {
-                return Err(AccountError::UnsupportedAuthorization);
-            }
-            if name == "resource_metadata" {
-                if !public_url(value) {
-                    return Err(AccountError::UnsupportedAuthorization);
-                }
-                metadata = Some(value.to_string());
-            }
-            if name == "scope" {
-                scopes = value
-                    .split_ascii_whitespace()
-                    .map(ToString::to_string)
-                    .collect();
-                if !alloyos_mcp::account::valid_scopes(&scopes) {
-                    return Err(AccountError::UnsupportedAuthorization);
-                }
-            }
-            rest = tail.trim();
-            if let Some(tail) = rest.strip_prefix(',') {
-                rest = tail.trim()
-            } else if !rest.is_empty() {
-                return Err(AccountError::UnsupportedAuthorization);
-            }
-        }
+        let scopes = parsed.scopes;
         if self.challenges.len() >= 32 && !self.challenges.contains_key(endpoint) {
             return Err(AccountError::Busy);
         }

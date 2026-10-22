@@ -29,6 +29,10 @@ optional discovery adapter, not a required provider or runtime dependency.
   Provide a secure OAuth/token lifecycle, refresh and revocation, persisting only
   appropriate configuration and protected token references. Keep credentials out
   of model context, normal logs and app-facing presentation.
+  Current implementation includes bounded cooperative calls, legacy session
+  expiry recovery without call replay, one-attempt explicit credential recovery,
+  and challenged scope unions within privately approved profile limits. Live
+  official Gmail interoperability and account acceptance remain unverified.
 - [ ] **Pass hosted Gmail acceptance.** Discover or select a compatible hosted
   endpoint → approve installation → authorize the account through OAuth → verify
   `initialize` and `tools/list` → read/search authorized Gmail through an actual

@@ -556,7 +556,13 @@ impl RemoteMcpApp {
                 self.modern=false;self.phase=ConnectPhase::Initialize;return Poll::Pending;
             }
         }
-        if response.status == 401 {
+        let mut challenges=response.headers.iter().filter(|(name,_)|name.eq_ignore_ascii_case("www-authenticate"));
+        let challenge=challenges.next().map(|(_,value)|value);
+        let unique_challenge=challenges.next().is_none();
+        let insufficient_scope=response.status==403 && unique_challenge && challenge.is_some_and(|challenge|
+            crate::account::parse_bearer_challenge(challenge).is_ok_and(|parsed|
+                parsed.error.as_deref()==Some("insufficient_scope") && !parsed.scopes.is_empty()));
+        if response.status == 401 || insufficient_scope {
             self.status = RemoteConnectionStatus::AuthorizationRequired { challenge: response.headers.iter()
                 .find(|(name,_)|name.eq_ignore_ascii_case("www-authenticate"))
                 .map(|(_,value)|value.clone()).unwrap_or_default() };

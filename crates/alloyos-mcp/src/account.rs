@@ -7,6 +7,60 @@ pub const MAX_ACCOUNT_FRAME_BYTES: usize = 32768;
 pub const MAX_ACCOUNTS: usize = 32;
 pub const MAX_SCOPES: usize = 32;
 
+/// A single bounded Bearer challenge. Multiple schemes, duplicate parameters,
+/// controls and escape sequences fail closed instead of differing across layers.
+pub struct BearerChallenge {
+    pub resource_metadata: Option<String>,
+    pub scopes: Vec<String>,
+    pub error: Option<String>,
+}
+pub fn parse_bearer_challenge(value: &str) -> Result<BearerChallenge, AccountError> {
+    if value.len()>8192 || value.bytes().any(|b|b.is_ascii_control() || !b.is_ascii()) {
+        return Err(AccountError::UnsupportedAuthorization);
+    }
+    let mut rest=value.trim();
+    if !rest.get(..6).is_some_and(|s|s.eq_ignore_ascii_case("bearer"))
+        || !rest.get(6..).is_some_and(|s|s.is_empty() || s.starts_with(' ')) {
+        return Err(AccountError::UnsupportedAuthorization);
+    }
+    rest=rest[6..].trim();
+    let mut result=BearerChallenge{resource_metadata:None,scopes:Vec::new(),error:None};
+    let mut seen=alloc::collections::BTreeSet::new();
+    while !rest.is_empty() {
+        let (name,tail)=rest.split_once('=').ok_or(AccountError::UnsupportedAuthorization)?;
+        let name=name.trim().to_ascii_lowercase();
+        if name.is_empty() || !name.bytes().all(|b|b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b)) || !seen.insert(name.clone()) {
+            return Err(AccountError::UnsupportedAuthorization);
+        }
+        let tail=tail.trim_start();
+        let (value,tail)=if let Some(tail)=tail.strip_prefix('"') {
+            tail.split_once('"').ok_or(AccountError::UnsupportedAuthorization)?
+        } else {
+            let (value,tail)=tail.find(',').map_or((tail,""),|index|tail.split_at(index));
+            let value=value.trim_end();
+            if value.is_empty() || !value.bytes().all(|b|b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b)) {return Err(AccountError::UnsupportedAuthorization);}
+            // Keep separator handling identical for quoted and token values.
+            (value, tail)
+        };
+        if value.contains('\\') {return Err(AccountError::UnsupportedAuthorization);}
+        match name.as_str() {
+            "resource_metadata"=>result.resource_metadata=Some(value.into()),
+            "error"=>result.error=Some(value.into()),
+            "scope"=>{
+                result.scopes=value.split_ascii_whitespace().map(String::from).collect();
+                if !valid_scopes(&result.scopes) || result.scopes.iter().collect::<alloc::collections::BTreeSet<_>>().len()!=result.scopes.len() {return Err(AccountError::UnsupportedAuthorization);}
+            },
+            _=>{},
+        }
+        rest=tail.trim();
+        if !rest.is_empty() {
+            rest=rest.strip_prefix(',').ok_or(AccountError::UnsupportedAuthorization)?.trim();
+            if rest.is_empty(){return Err(AccountError::UnsupportedAuthorization);}
+        }
+    }
+    Ok(result)
+}
+
 /// Resource metadata may validate the exact endpoint or its exact origin via
 /// root well-known fallback. This bound alone does not prove discovery succeeded.
 pub fn valid_oauth_resource_binding(endpoint: &str, resource: &str) -> bool {
@@ -267,5 +321,20 @@ impl AccountResponse {
             }
             _ => Ok(()),
         }
+    }
+}
+
+#[cfg(test)]
+mod challenge_tests {
+    use super::*;
+    #[test]
+    fn bearer_challenges_reject_ambiguous_or_malformed_parameters() {
+        for value in ["Bearerish scope=read", "Bearer scope=read,", "Bearer scope=read,,error=x", "Bearer scope=\"read\" scope=\"write\"", "Bearer scope=\"a a\"", "Bearer scope=\"a\", SCOPE=\"b\"", "Bearer scope=\"unterminated", "Bearer error=insufficient_scope\r\n", "Bearer =x"] {
+            assert!(parse_bearer_challenge(value).is_err(),"{value}");
+        }
+        let parsed=parse_bearer_challenge("bEaReR error=insufficient_scope , scope=\"a b\"").unwrap();
+        assert_eq!(parsed.error.as_deref(),Some("insufficient_scope"));
+        assert_eq!(parsed.scopes,["a","b"]);
+        assert!(parse_bearer_challenge("Bearer").is_ok());
     }
 }

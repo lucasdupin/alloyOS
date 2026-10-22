@@ -3,7 +3,7 @@ use alloyos_mcp::transport::{HttpClient,HttpRequest,HttpResponse,HttpTransport};
 use std::{cell::RefCell,collections::BTreeMap,rc::Rc,task::Poll};
 
 #[derive(Default)]
-struct Trace { requests:Vec<HttpRequest>, cancelled:usize, unauthorized:bool, expire_call:bool, modern:bool }
+struct Trace { requests:Vec<HttpRequest>, cancelled:usize, unauthorized:bool, expire_call:bool, modern:bool, forbidden:Option<Vec<(String,String)>> }
 struct Cooperative { trace:Rc<RefCell<Trace>>, pending:Option<HttpResponse>, ticks:usize }
 impl HttpTransport for Cooperative {
     fn request(&mut self,_:&HttpRequest)->Result<HttpResponse,String> {panic!("remote protocol must never block")}
@@ -12,7 +12,9 @@ impl HttpTransport for Cooperative {
         let rpc:serde_json::Value=serde_json::from_str(&request.body).unwrap();
         let method=rpc["method"].as_str().unwrap();
         let mut trace=self.trace.borrow_mut();trace.requests.push(request.clone());
-        let response=if trace.unauthorized {
+        let response=if let Some(headers)=&trace.forbidden {
+            HttpResponse{status:403,headers:headers.clone(),body:String::new()}
+        } else if trace.unauthorized {
             HttpResponse {status:401,headers:vec![("WWW-Authenticate".into(),"Bearer resource_metadata=\"https://example.com/.well-known/oauth-protected-resource\"".into())],body:String::new()}
         } else if !trace.modern && request.headers.iter().any(|(name,value)|name=="MCP-Protocol-Version" && value=="2026-07-28") {
             HttpResponse {status:400,headers:vec![],body:String::new()}
@@ -138,4 +140,22 @@ fn oauth_route_requires_os_marker_tls_and_form_content_type() {
     assert!(!allowed_oauth_http(&request));request.headers.pop();
     request.url="http://accounts.example.com/token".into();assert!(!allowed_oauth_http(&request));
     request.url="https://127.0.0.1/token".into();assert!(!allowed_oauth_http(&request));
+}
+
+#[test]
+fn insufficient_scope_is_authorization_needed_but_generic_or_ambiguous_403_is_not() {
+    for (headers,needs_auth) in [
+        (vec![("WWW-Authenticate".into(),r#"Bearer error="insufficient_scope", scope="mail.write""#.into())],true),
+        (vec![],false),
+        (vec![("WWW-Authenticate".into(),r#"Bearer error="access_denied", scope="mail.write""#.into())],false),
+        (vec![("WWW-Authenticate".into(),r#"Bearer error="insufficient_scope""#.into())],false),
+        (vec![("WWW-Authenticate".into(),r#"Bearer error="insufficient_scope", scope="a", scope="b""#.into())],false),
+        (vec![("WWW-Authenticate".into(),r#"Bearer error="insufficient_scope", scope="a""#.into()),("www-authenticate".into(),"Bearer".into())],false),
+    ] {
+        let trace=Rc::new(RefCell::new(Trace{modern:true,forbidden:Some(headers),..Default::default()}));
+        let mut app=app(trace.clone());
+        assert!(call(&mut app).is_err());
+        assert_eq!(matches!(app.connection_status(),RemoteConnectionStatus::AuthorizationRequired{..}),needs_auth);
+        assert_eq!(trace.borrow().requests.len(),1,"403 must not replay or open authorization");
+    }
 }

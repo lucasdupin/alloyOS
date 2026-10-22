@@ -549,7 +549,7 @@ fn challenge_metadata_is_bound_and_scopes_cannot_bypass_profile() {
         .unwrap();
     assert_eq!(
         ready(b.start(&req(AccountOperation::Begin { scopes: vec![] }))).unwrap_err(),
-        AccountError::InvalidRequest
+        AccountError::ClientRegistrationRequired
     );
 }
 #[test]
@@ -1269,5 +1269,64 @@ fn reauthorization_preserves_profile_limits_and_rejects_untrusted_challenge_meta
             "revoked-token"
         );
         assert_eq!(state.borrow().record.as_ref().unwrap().issuer, ISSUER);
+    }
+}
+
+#[test]
+fn challenged_scope_union_preserves_previous_grants_without_expanding_private_profile() {
+    let state=Rc::new(RefCell::new(State::default()));
+    let mut profile=Store(state.clone()).profile("mail",RESOURCE).unwrap().unwrap();
+    profile.allowed_scopes.push("mail.write".into());
+    state.borrow_mut().configured_profile=Some(profile);
+    let mut broker=broker(&state);
+    broker.note_challenge(RESOURCE,r#"Bearer error="insufficient_scope", scope="mail.write""#).unwrap();
+    let response=ready(broker.start(&req(AccountOperation::Begin{scopes:vec!["mail.read".into()]}))).unwrap();
+    assert!(matches!(response.outcome,AccountOutcome::Authorizing{..}));
+    let url=state.borrow().browser.iter().find_map(|request|match &request.operation {
+        BrowserOperation::Open{authorization_url,..}=>Some(authorization_url.clone()),_=>None
+    }).unwrap();
+    assert!(url.contains("scope=mail.read%20mail.write"));
+    broker.cancel();
+    state.borrow_mut().browser.clear();
+    broker.note_challenge(RESOURCE,r#"Bearer error="insufficient_scope", scope="mail.admin""#).unwrap();
+    assert_eq!(ready(broker.start(&req(AccountOperation::Begin{scopes:vec!["mail.read".into()]}))).unwrap_err(),AccountError::ClientRegistrationRequired);
+    assert_eq!(browser_opens(&state),0);
+    assert!(!state.borrow().configured_profile.as_ref().unwrap().allowed_scopes.contains(&"mail.admin".into()));
+}
+
+struct ScopeUpgrade(McpWire);
+impl HttpTransport for ScopeUpgrade {
+    fn request(&mut self, request: &HttpRequest) -> Result<HttpResponse,String> {
+        if request.headers.iter().any(|(name,value)|name=="X-AlloyOS-Trusted-Bearer" && value=="revoked-token") {
+            return Ok(HttpResponse{status:403,headers:vec![("WWW-Authenticate".into(),r#"Bearer error="insufficient_scope", scope="mail.write""#.into())],body:String::new()});
+        }
+        self.0.request(request)
+    }
+}
+#[test]
+fn explicit_connect_steps_up_once_within_profile_or_requests_native_configuration() {
+    for approved in [true,false] {
+        let state=revoked_account();
+        if approved {
+            let mut profile=Store(state.clone()).profile("mail",RESOURCE).unwrap().unwrap();
+            profile.allowed_scopes.push("mail.write".into());
+            state.borrow_mut().configured_profile=Some(profile);
+            state.borrow_mut().token_json=Some(r#"{"token_type":"Bearer","access_token":"private-access","expires_in":100,"scope":"mail.read mail.write"}"#.into());
+        }
+        let (mut registry,_,seen)=native_registry(&state,false);
+        registry.set_http_transport(Box::new(ScopeUpgrade(McpWire{fail:false,seen:seen.clone()})));
+        let output=drive_arguments(&mut registry,"mcp_connect",r#"{"app":"mail"}"#);
+        assert_eq!(output["ok"],approved);
+        assert_eq!(browser_opens(&state),usize::from(approved));
+        if approved {
+            assert_eq!(output["connection"]["phase"],"ready");
+            assert_eq!(output["connection"]["scopes"],serde_json::json!(["mail.read","mail.write"]));
+            assert!(seen.borrow().iter().any(|method|method=="tools/list"));
+        } else {
+            assert!(registry.pending_client_profile_setup().is_some());
+            assert_ne!(output["connection"]["phase"],"ready");
+            assert!(state.borrow().record.as_ref().unwrap().scopes==vec!["mail.read"]);
+        }
+        assert!(!seen.borrow().iter().any(|method|method=="tools/call"));
     }
 }

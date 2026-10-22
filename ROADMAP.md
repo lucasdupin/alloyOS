@@ -4,6 +4,8 @@
 
 ## Top Next Priority: Connect Web-Hosted MCP Servers
 
+Selected provider route: [official Gmail MCP preview setup](scripts/google-gmail-mcp.md).
+
 Deliver a user-initiated external MCP connection end to end, with Gmail as the
 first acceptance target. This comes before protected Welder/setup separation and
 the remaining feature work below. Choose a hosted Gmail provider only after its

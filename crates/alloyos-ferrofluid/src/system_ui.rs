@@ -61,6 +61,7 @@ pub struct FerrofluidSystemUi {
     available_tiles: Rc<RefCell<Vec<AppTile>>>,
     dashboard: Rc<RefCell<crate::DashboardState>>,
     tile_events: Rc<RefCell<VecDeque<crate::TileEvent>>>,
+    image_cache: Rc<RefCell<crate::tile_images::ImageCache>>,
     rgb: Vec<slint::Rgb8Pixel>,
     argb: Vec<u32>,
     size: PhysicalSize,
@@ -97,6 +98,9 @@ impl FerrofluidSystemUi {
         }))
         .map_err(|_| slint::PlatformError::Other("Slint platform already installed".into()))?;
         let ui = SystemUi::new()?;
+        let image_cache = Rc::new(RefCell::new(crate::tile_images::ImageCache::default()));
+        let images = image_cache.clone();
+        ui.global::<TileImages>().on_resolve(move |src, _| images.borrow().get(&src));
         ui.on_tile_is_pinned(|id, tiles| {
             use slint::Model;
             tiles.iter().any(|tile| tile.tile_id == id)
@@ -187,7 +191,7 @@ impl FerrofluidSystemUi {
         let client_profile_decisions = Rc::new(RefCell::new(VecDeque::new()));
         let decisions = client_profile_decisions.clone();
         let weak = ui.as_weak();
-        ui.on_client_profile_submit(move |issuer, client, scopes, port, secret| {
+        ui.on_client_profile_submit(move |issuer, client, scopes, port, secret, offline, reprompt| {
             let Some(ui) = weak.upgrade() else { return; };
             if ui.get_client_profile_id().is_empty() || !decisions.borrow().is_empty() || ui.get_client_profile_busy() { return; }
             let Ok(port) = port.trim().parse::<u16>() else {
@@ -200,6 +204,9 @@ impl FerrofluidSystemUi {
                 allowed_scopes: scopes.split_whitespace().map(String::from).collect(),
                 loopback_port: port,
                 client_secret: if secret.is_empty() { None } else { Some(secret.as_str().into()) },
+                authorization_options: if offline {
+                    alloyos_mcp::account::AuthorizationOptions::GoogleOffline{reprompt_consent:reprompt}
+                } else {alloyos_mcp::account::AuthorizationOptions::Standard},
             };
             if profile.validate().is_err() {
                 ui.set_client_profile_error("Check the HTTPS issuer, client ID, scopes and secret limits.".into());
@@ -365,6 +372,7 @@ impl FerrofluidSystemUi {
             available_tiles,
             dashboard,
             tile_events,
+            image_cache,
             rgb: vec![slint::Rgb8Pixel::default(); width as usize * height as usize],
             argb: vec![0xff000000; width as usize * height as usize],
             size,
@@ -492,6 +500,13 @@ impl FerrofluidSystemUi {
         self.ui.set_tile_catalog_error(error.into());
     }
 
+    pub fn set_image_assets(&self, assets: &[alloyos_mcp::tile_images::ImageAsset]) {
+        if self.image_cache.borrow_mut().update(assets) {
+            let images = self.ui.global::<TileImages>();
+            images.set_revision(images.get_revision().wrapping_add(1));
+            self.backdrop_dirty.set(true);
+        }
+    }
     /// Render semantic app descriptors in the chat thread.
     pub fn set_tiles(&self, tiles: &[AppTile]) {
         self.backdrop_dirty.set(true);
@@ -951,6 +966,8 @@ fn update_dashboard(ui: &SystemUi, tiles: &[AppTile], available: &[AppTile]) {
 
 fn tile_to_view(tile: &AppTile) -> TileView {
     TileView {
+        image_source: tile.image.as_ref().filter(|image| image.valid_for(&tile.tile_id)).map(|image| image.src.as_str()).unwrap_or("").into(),
+        image_alt: tile.image.as_ref().map(|image| image.alt.as_str()).unwrap_or("").into(),
         tile_id: tile.tile_id.as_str().into(),
         title: tile.title.as_str().into(),
         subtitle: tile.subtitle.as_str().into(),
@@ -1395,6 +1412,7 @@ mod tests {
                 title: alloc::format!("Plan tile {index}"),
                 subtitle: "Details embedded in the conversation".into(),
                 refresh_resource_uri: None,
+                image: None,
                 items: vec![TileItem {
                     id: "detail".into(),
                     title: alloc::format!("Task {index}"),
@@ -1942,6 +1960,7 @@ mod tests {
             title: "Clock".into(),
             subtitle: String::new(),
             refresh_resource_uri: None,
+            image: None,
             items: Vec::new(),
             actions: vec![refresh.clone()],
         }]);
@@ -2042,6 +2061,7 @@ mod tests {
             title: "Clock".into(),
             subtitle: "System uptime".into(),
             refresh_resource_uri: Some("mcp://fixture/now".into()),
+            image: None,
             items: vec![],
             actions: vec![TileAction::new("refresh", "Refresh", "fixture.now", alloc::collections::BTreeMap::new())],
         };
@@ -2175,6 +2195,7 @@ mod tests {
             title: "Project board".into(),
             subtitle: "Track the next steps".into(),
             refresh_resource_uri: Some("mcp://discovery/board".into()),
+            image: None,
             items: Vec::new(),
             actions: vec![TileAction::new("list", "Show tasks", "discovery.list", Default::default())],
         };
@@ -2397,6 +2418,27 @@ mod tests {
             ui.handle_input(InputEvent { kind, code: 0x110, x: 350, y: 2490 });
         }
         assert!(matches!(ui.take_client_profile_decision(), Some((id, None)) if id == "profile-2"), "Cancel submits no fields for the current review");
+        let google_profile = alloyos_mcp::account::PendingClientProfileSetup { id:"google-profile".into(), ..profile_setup.clone() };
+        ui.set_client_profile_setup(Some(&google_profile), "");
+        ui.render(ui.now.get() + Duration::from_millis(16));
+        for kind in [InputEventKind::PointerButtonDown, InputEventKind::PointerButtonUp] {
+            ui.handle_input(InputEvent {kind,code:0x110,x:230,y:940});
+        }
+        for ch in "https://accounts.google.com".chars() {ui.ui.invoke_soft_key(ch.to_string().into());}
+        ui.ui.invoke_release_editor();
+        ui.render(ui.now.get() + Duration::from_millis(16));
+        if let Ok(path)=std::env::var("ALLOYOS_GOOGLE_PROFILE_SCREENSHOT") {
+            let file=std::fs::File::create(path).unwrap();
+            let mut encoder=png::Encoder::new(file,ui.size.width,ui.size.height);
+            encoder.set_color(png::ColorType::Rgba);encoder.set_depth(png::BitDepth::Eight);
+            let bytes:Vec<u8>=ui.pixels().iter().flat_map(|p|[(p>>16)as u8,(p>>8)as u8,*p as u8,255]).collect();
+            encoder.write_header().unwrap().write_image_data(&bytes).unwrap();
+        }
+        ui.ui.invoke_client_profile_submit("https://issuer.example".into(), "native-client".into(), "mail.read".into(), "0".into(), "".into(), true, true);
+        assert!(ui.take_client_profile_decision().is_none(), "provider option cannot apply to another issuer");
+        ui.ui.invoke_client_profile_submit("https://accounts.google.com".into(), "native-client".into(), "mail.read".into(), "0".into(), "".into(), true, true);
+        let (_,google)=ui.take_client_profile_decision().unwrap();
+        assert!(matches!(google.unwrap().authorization_options,alloyos_mcp::account::AuthorizationOptions::GoogleOffline{reprompt_consent:true}));
         ui.set_client_profile_setup(None, "");
 
         // Key releases retain the original character even if Shift changes.

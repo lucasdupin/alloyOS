@@ -120,7 +120,12 @@ export struct TileActionView { id: string, label: string }
 export struct AvailableTileView { tile-id: string, title: string }
 export struct TileView {
     tile-id: string, title: string, subtitle: string,
+    image-source: string, image-alt: string,
     items: [TileItemView], actions: [TileActionView], refreshable: bool,
+}
+export global TileImages {
+    in property <int> revision;
+    pure callback resolve(string, int) -> image;
 }
 
 export struct MarkdownWordView { text: string, strong: bool, x: float, y: float, width: float, height: float }
@@ -289,6 +294,25 @@ component TileCard inherits Rectangle {
             }
         }
         if root.tile.subtitle != "": Text { text: root.tile.subtitle; color: AlloyPalette.muted; wrap: word-wrap; min-height: self.preferred-height; }
+        if root.tile.image-source != "": tile-picture := Rectangle {
+            property <image> picture: TileImages.resolve(root.tile.image-source, TileImages.revision);
+            height: self.picture.width > 0 ? min(220px, self.width * self.picture.height / max(1, self.picture.width)) : 56px;
+            vertical-stretch: 0;
+            if tile-picture.picture.width > 0: Image {
+                source: tile-picture.picture;
+                width: parent.width;
+                height: parent.height;
+                image-fit: contain;
+            }
+            if tile-picture.picture.width == 0: Text {
+                text: root.tile.image-alt != "" ? root.tile.image-alt : "Image unavailable";
+                color: AlloyPalette.muted;
+                wrap: word-wrap;
+                vertical-alignment: center;
+                width: parent.width;
+                height: parent.height;
+            }
+        }
         for item in root.tile.items: VerticalLayout {
             min-height: self.preferred-height;
             vertical-stretch: 0;
@@ -440,13 +464,17 @@ component Logotype inherits Text {
 
 component ClientProfileForm inherits Rectangle {
     in property <string> request-id;
-    changed request-id => { issuer.text = ""; client.text = ""; scopes.text = ""; port.text = ""; secret.text = ""; root.reviewing = false; }
+    changed request-id => { issuer.text = ""; client.text = ""; scopes.text = ""; port.text = ""; secret.text = ""; root.reviewing = false; root.offline = false; root.reprompt = false; }
     in property <string> app-name;
     in property <bool> busy;
     in property <string> endpoint;
     in property <string> error;
     changed error => { if root.error != "" { root.reviewing = false; } }
-    callback submit(string, string, string, string, string);
+    callback submit(string, string, string, string, string, bool, bool);
+    property <bool> offline: false;
+    property <bool> reprompt: false;
+    property <bool> google-issuer: issuer.text == "https://accounts.google.com";
+    changed google-issuer => { if !root.google-issuer { root.offline = false; root.reprompt = false; } }
     callback cancel();
     out property <bool> has-focus: issuer.has-focus || client.has-focus || scopes.has-focus || port.has-focus || secret.has-focus;
     callback focus-changed(bool);
@@ -483,6 +511,18 @@ component ClientProfileForm inherits Rectangle {
                 Text { text: "Client secret (optional)"; color: AlloyPalette.text; }
                 secret := AlloyLineEdit { field-label: "Optional client secret"; visible: !root.reviewing; password: true; placeholder-text: "Leave empty for a public PKCE client"; }
                 if root.reviewing: Text { text: secret.text == "" ? "No client secret" : "Client secret provided (hidden)"; color: AlloyPalette.muted; }
+                if root.google-issuer: AlloyButton {
+                    enabled: !root.busy && !root.reviewing;
+                    text: "Request Google offline access: " + (root.offline ? "Yes" : "No");
+                    button-label: "Request Google offline access";
+                    clicked => { root.offline = !root.offline; if !root.offline { root.reprompt = false; } }
+                }
+                if root.google-issuer: AlloyButton {
+                    enabled: !root.busy && !root.reviewing && root.offline;
+                    text: "Ask Google for consent again: " + (root.reprompt ? "Yes" : "No");
+                    button-label: "Ask Google for consent again";
+                    clicked => { root.reprompt = !root.reprompt; }
+                }
                 Text { text: "Private storage is unencrypted at rest. Changes remove any previous local account access."; color: AlloyPalette.muted; wrap: word-wrap; }
                 if root.error != "": Text { text: root.error + " The secret field was cleared; re-enter it if required before reviewing again."; color: AlloyPalette.text; wrap: word-wrap; }
             }
@@ -497,7 +537,7 @@ component ClientProfileForm inherits Rectangle {
                 enabled: !root.busy && issuer.text != "" && client.text != "" && port.text != "";
                 clicked => {
                     if root.reviewing {
-                        root.submit(issuer.text, client.text, scopes.text, port.text, secret.text);
+                        root.submit(issuer.text, client.text, scopes.text, port.text, secret.text, root.offline, root.reprompt);
                         secret.text = "";
                     } else { root.reviewing = true; }
                 }
@@ -548,7 +588,7 @@ export component SystemUi inherits Window {
     in property <bool> client-profile-busy;
     property <bool> client-profile-focused: false;
     changed client-profile-id => { root.client-profile-focused = false; }
-    callback client-profile-submit(string, string, string, string, string);
+    callback client-profile-submit(string, string, string, string, string, bool, bool);
     callback client-profile-cancel();
     in property <string> pending-install-id;
     in property <bool> pending-install-removal;
@@ -1104,9 +1144,9 @@ export component SystemUi inherits Window {
             focus-changed(focused) => { root.client-profile-focused = focused; }
             endpoint: root.client-profile-endpoint;
             error: root.client-profile-error;
-            submit(issuer, client, scopes, port, secret) => {
+            submit(issuer, client, scopes, port, secret, offline, reprompt) => {
                 root.release-editor();
-                root.client-profile-submit(issuer, client, scopes, port, secret);
+                root.client-profile-submit(issuer, client, scopes, port, secret, offline, reprompt);
             }
             cancel => { root.release-editor(); root.client-profile-cancel(); }
         }

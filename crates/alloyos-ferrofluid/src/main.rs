@@ -88,6 +88,7 @@ pub extern "C" fn _start(heap_start: usize, heap_length: usize) -> ! {
                     ui.set_active_model(&s.model);
                     ui.set_model_selection_status(&s.model_status);
                     ui.set_transcript(&s.transcript);
+                    ui.set_image_assets(&s.images);
                     ui.set_available_tiles(&s.available);
                     ui.set_tile_discovery_status(s.tile_catalog_loaded, &s.tile_catalog_error);
                     ui.set_pending_remote_install(s.pending_remote_install.as_ref());

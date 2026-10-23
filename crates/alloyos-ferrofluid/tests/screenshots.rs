@@ -200,6 +200,7 @@ fn system_ui_screenshots() {
             title: title.into(),
             subtitle: String::new(),
             refresh_resource_uri: None,
+            image: None,
             items: vec![TileItem {
                 id: "value".into(),
                 title: value.into(),
@@ -215,6 +216,7 @@ fn system_ui_screenshots() {
         title: "Analytics".into(),
         subtitle: String::new(),
         refresh_resource_uri: None,
+        image: None,
         items: vec![TileItem {
             id: "value".into(),
             title: "94% target reached".into(),

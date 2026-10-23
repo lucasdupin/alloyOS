@@ -11,6 +11,9 @@ path = "src/lib.rs"
 alloyos-user = { path = "../alloyos-user", optional = true }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 libm = "0.2"
+zune-core = { version = "=0.5.3", default-features = false }
+zune-jpeg = { version = "=0.5.15", default-features = false }
+zune-png = { version = "=0.5.1", default-features = false }
 alloyos-keyboard = { path = "../alloyos-keyboard" }
 alloyos-proto = { path = "../alloyos-proto" }
 alloyos-mcp = { path = "../alloyos-mcp" }

@@ -187,6 +187,40 @@ pub(crate) fn public_image_address(ip: std::net::IpAddr) -> bool {
     }
 }
 
+/// Fetch a bounded image without credentials, proxy inheritance or private-network access.
+/// Resolve once, validate every address, then pin curl to the validated address.
+pub fn image_get(url: &str) -> Result<serde_json::Value, String> {
+    use std::net::ToSocketAddrs;
+    use alloyos_mcp::tile_images::{image_url_host, MAX_IMAGE_BYTES};
+    let host = image_url_host(url).ok_or("invalid image URL")?;
+    let addresses: Vec<_> = (host,443).to_socket_addrs().map_err(|_| "image DNS failed")?.collect();
+    if addresses.is_empty() || addresses.iter().any(|a| !public_image_address(a.ip())) { return Err("image destination is not public".into()); }
+    let ip = match addresses[0].ip() {
+        std::net::IpAddr::V4(ip) => ip.to_string(),
+        std::net::IpAddr::V6(ip) => format!("[{ip}]"),
+    };
+    let config = format!("url = {}\nrequest = \"GET\"\nproto = \"=https\"\nnoproxy = \"*\"\nresolve = {}\nconnect-timeout = 5\nmax-time = 10\nmax-filesize = {}\nsilent\nwrite-out = \"\\n%{{http_code}}\"\n", quote(url), quote(&format!("{host}:443:{ip}")), MAX_IMAGE_BYTES);
+    let mut child = Command::new("curl").args(["-q", "--config", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|_| "image HTTP process failed")?;
+    use std::io::Write;
+    let mut stdin = child.stdin.take().ok_or("image stdin unavailable")?;
+    stdin.write_all(config.as_bytes()).map_err(|_| "image config write failed")?;
+    drop(stdin);
+    let mut bytes = Vec::new();
+    let read = child.stdout.take().ok_or("image stdout unavailable")?.take(MAX_IMAGE_BYTES as u64 + 5).read_to_end(&mut bytes);
+    if read.is_err() || bytes.len() > MAX_IMAGE_BYTES + 4 { let _ = child.kill(); let _ = child.wait(); return Err("image response too large or unreadable".into()); }
+    if !child.wait().map_err(|_| "image wait failed")?.success() { return Err("image HTTPS failed".into()); }
+    image_response(&bytes)
+}
+
+fn image_response(bytes: &[u8]) -> Result<serde_json::Value, String> {
+    let split = bytes.iter().rposition(|b| *b == b'\n').ok_or("image status missing")?;
+    let body = &bytes[..split];
+    let status = &bytes[split+1..];
+    if status != b"200" || body.len() > alloyos_mcp::tile_images::MAX_IMAGE_BYTES { return Err("image request failed or exceeded limit".into()); }
+    if !body.starts_with(b"\x89PNG\r\n\x1a\n") && !body.starts_with(&[0xff,0xd8]) { return Err("unsupported image format".into()); }
+    Ok(serde_json::json!({"status":200,"headers":[],"body":alloyos_mcp::tile_images::encode(body)}))
+}
+
 pub fn registry_post(url: &str, body: &str, headers: &[(String, String)]) -> Result<serde_json::Value, String> {
     if !alloyos_mcp::transport::allowed_public_post(url) { return Err("registry destination rejected".into()); }
     if body.len() > 1024 * 1024 || headers.len() > 8 { return Err("registry request too large".into()); }
@@ -377,6 +411,10 @@ pub fn registry_relay(line: &str) -> Option<String> {
                     body:value["body"].as_str().ok_or("missing MCP request")?.into()};
                 if fields[2]=="authhttp" && !alloyos_mcp::transport::allowed_oauth_http(&request) {return Err("invalid account HTTP request".into());}
                 mcp_post_with_id(&request,id)
+            }
+            "image" => {
+                if value["method"] != "IMAGE" || value["body"] != "" || value["headers"].as_array().is_none_or(|h| !h.is_empty()) { return Err("invalid image request".into()); }
+                image_get(value["url"].as_str().ok_or("missing image URL")?)
             }
             "get" => {
                 if value["method"] != "GET" || value["body"] != "" || value["headers"].as_array().is_none_or(|headers| !headers.is_empty()) { return Err("invalid registry HTTP method/headers".into()); }
@@ -624,6 +662,24 @@ mod tests {
             let base = Duration::from_secs(1 << index);
             assert!(*delay >= base && *delay <= base + Duration::from_millis(500));
         }
+    }
+
+    #[test]
+    fn image_relay_rejects_private_addresses_and_preserves_binary_bytes() {
+        for ip in ["127.0.0.1", "10.0.0.1", "169.254.169.254", "100.64.0.1", "192.0.2.1", "198.18.0.1", "224.0.0.1", "::1", "fc00::1", "fe80::1", "2001:db8::1", "2002:7f00:1::1"] {
+            assert!(!public_image_address(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"] {
+            assert!(public_image_address(ip.parse().unwrap()), "{ip}");
+        }
+        let bytes = b"\x89PNG\r\n\x1a\n\0\xff\n200";
+        let response = image_response(bytes).unwrap();
+        assert_eq!(alloyos_mcp::tile_images::decode(response["body"].as_str().unwrap()).unwrap(), &bytes[..bytes.len()-4]);
+        assert!(image_response(b"<html>not an image</html>\n200").is_err());
+        assert!(image_response(b"\xff\xd8body\n302").is_err());
+        let value = serde_json::json!({"method":"IMAGE","url":"https://example.com/image.png","headers":[["Authorization","secret"]],"body":""});
+        let frame = format!("MCPHTTP1\t9\timage\t{}\n", encode_hex(&value.to_string()));
+        assert!(registry_relay(&frame).unwrap().contains("\terror\t"));
     }
 
     #[test]

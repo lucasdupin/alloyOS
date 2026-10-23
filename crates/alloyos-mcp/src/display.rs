@@ -84,6 +84,8 @@ pub struct State {
     #[serde(default)]
     pub voice_error: String,
     #[serde(default)]
+    pub images: Vec<crate::tile_images::ImageAsset>,
+    #[serde(default)]
     pub tile_catalog_loaded: bool,
     #[serde(default)]
     pub tile_catalog_error: String,

@@ -321,6 +321,8 @@ pub struct AppTile {
     pub title: String,
     pub subtitle: String,
     pub refresh_resource_uri: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<crate::tile_images::TileImage>,
     pub items: Vec<TileItem>,
     pub actions: Vec<TileAction>,
 }
@@ -336,6 +338,10 @@ impl AppTile {
             ("tile_id", McpValue::Text(self.tile_id.clone())),
             ("title", McpValue::Text(self.title.clone())),
             ("subtitle", McpValue::Text(self.subtitle.clone())),
+            ("image", self.image.as_ref().map(|image| McpValue::Map(mcp_map(&[
+                ("src", McpValue::Text(image.src.clone())),
+                ("alt", McpValue::Text(image.alt.clone())),
+            ]))).unwrap_or(McpValue::Null)),
             (
                 "refresh_resource_uri",
                 match &self.refresh_resource_uri {

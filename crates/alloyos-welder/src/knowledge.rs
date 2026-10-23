@@ -1204,6 +1204,7 @@ pub fn build_knowledge_tile(
         title: "User Knowledge".to_string(),
         subtitle,
         refresh_resource_uri: Some("knowledge://profile".to_string()),
+        image: None,
         items,
         actions: vec![inspect_action, toggle_action],
     }

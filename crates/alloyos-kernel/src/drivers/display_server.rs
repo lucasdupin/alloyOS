@@ -84,6 +84,8 @@ pub struct DisplayProxy {
     dashboard_revision: u64,
     retry_at: u64,
     restart_count: u32,
+    image_http: super::mcp_https::HostRegistryHttp,
+    image_pending: Option<String>,
 }
 impl DisplayProxy {
     pub fn new() -> Self {
@@ -112,6 +114,8 @@ impl DisplayProxy {
             dashboard_revision: 0,
             retry_at: 0,
             restart_count: 0,
+            image_http: Default::default(),
+            image_pending: None,
         };
         proxy.launch();
         proxy.flush();
@@ -169,6 +173,7 @@ impl DisplayProxy {
         }
     }
     pub fn poll(&mut self) {
+        self.poll_images();
         if self
             .task
             .as_ref()
@@ -278,6 +283,57 @@ impl DisplayProxy {
                 }
             }
         }
+    }
+    fn poll_images(&mut self) {
+        use alloyos_mcp::{tile_images::{self, ImageAsset, MAX_IMAGES, MAX_IMAGE_BYTES, MAX_IMAGE_CACHE_BYTES}, transport::{HttpTransport, HttpRequest}};
+        use core::task::Poll;
+        let mut sources = Vec::<String>::new();
+        {
+            let state = self.state.borrow();
+            // Prioritize the conversation over undisplayed inventory cards.
+            for tile in state.items.iter().rev().filter_map(|item| match item { ChatItem::Tile(tile) => Some(tile), _ => None })
+                .chain(state.tiles.iter()).chain(state.available.iter()) {
+                if let Some(image) = &tile.image {
+                    if image.valid_for(&tile.tile_id) && !sources.contains(&image.src) && sources.len() < MAX_IMAGES { sources.push(image.src.clone()); }
+                }
+            }
+        }
+        self.state.borrow_mut().images.retain(|asset| sources.contains(&asset.src));
+        if self.image_pending.as_ref().is_some_and(|src| !sources.contains(src)) {
+            self.image_http.cancel_request();
+            self.image_pending = None;
+        }
+        if let Some(src) = self.image_pending.clone() {
+            if let Poll::Ready(response) = self.image_http.poll_request() {
+                self.image_pending = None;
+                let data = response.ok().filter(|r| r.status == 200).map(|r| r.body).unwrap_or_default();
+                let data = if tile_images::decode(&data).is_some() { data } else { String::new() };
+                self.store_image(ImageAsset { src, data });
+            }
+            return;
+        }
+        let next = sources.into_iter().find(|src| !self.state.borrow().images.iter().any(|asset| &asset.src == src));
+        let Some(src) = next else { return; };
+        let used: usize = self.state.borrow().images.iter().map(|asset| asset.data.len()/2).sum();
+        if used >= MAX_IMAGE_CACHE_BYTES {
+            self.store_image(ImageAsset { src, data: String::new() });
+        } else if tile_images::image_url_host(&src).is_some() {
+            let request = HttpRequest { method: "IMAGE", url: src.clone(), headers: Vec::new(), body: String::new() };
+            match self.image_http.start_request(&request) {
+                Poll::Pending => self.image_pending = Some(src),
+                Poll::Ready(response) => self.store_image(ImageAsset { src, data: response.ok().filter(|r| r.status == 200).map(|r| r.body).unwrap_or_default() }),
+            }
+        } else {
+            let data = read_bounded_file(&src, MAX_IMAGE_BYTES).map(|bytes| tile_images::encode(&bytes)).unwrap_or_default();
+            self.store_image(ImageAsset { src, data });
+        }
+    }
+    fn store_image(&self, mut asset: alloyos_mcp::tile_images::ImageAsset) {
+        use alloyos_mcp::tile_images::{MAX_IMAGE_BYTES, MAX_IMAGE_CACHE_BYTES};
+        let mut state = self.state.borrow_mut();
+        let used: usize = state.images.iter().map(|a| a.data.len()/2).sum();
+        if asset.data.len() > MAX_IMAGE_BYTES * 2 || used + asset.data.len()/2 > MAX_IMAGE_CACHE_BYTES { asset.data.clear(); }
+        state.images.push(asset);
     }
     #[cfg(feature = "process-runtime-selftest")]
     pub fn acceptance(&mut self) {
@@ -483,10 +539,13 @@ fn trim_text(text: &mut String, maximum: usize) {
     }
 }
 pub fn read_executable(path: &str) -> Result<Vec<u8>, ()> {
+    read_bounded_file(path, 64 * 1024 * 1024)
+}
+fn read_bounded_file(path: &str, limit: usize) -> Result<Vec<u8>, ()> {
     let vfs = crate::fs::vfs::VFS.lock();
     let vfs = vfs.as_ref().ok_or(())?;
     let inode = vfs.lookup(path).map_err(|_| ())?;
-    if inode.size == 0 || inode.size > 64 * 1024 * 1024 {
+    if inode.size == 0 || inode.size > limit || inode.kind != crate::fs::vfs::InodeKind::File {
         return Err(());
     }
     let mut handle = crate::fs::vfs::FileHandle {
@@ -671,6 +730,7 @@ mod tests {
             endpoint: "https://mail.example/mcp".into(), issuer: "https://issuer.example".into(),
             client_id: "native-client".into(), allowed_scopes: alloc::vec!["mail.read".into()],
             loopback_port: 8381, client_secret: Some("synthetic-private-client-secret".into()),
+            authorization_options: Default::default(),
         };
         let profile_event = serde_json::to_vec(&Event::ProvisionClientProfile { id: "profile-1".into(), profile: profile.clone() }).unwrap();
         space.copy_out(address, &profile_event).unwrap();

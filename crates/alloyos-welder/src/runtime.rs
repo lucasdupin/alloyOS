@@ -1146,7 +1146,7 @@ impl AgentRuntime {
             let entry = if self.pinned_tile_ids.contains(&tile.tile_id) { tile.clone() }
                 else { alloyos_mcp::AppTile {
                     tile_id: tile.tile_id.clone(), title: tile.title.clone(), subtitle: tile.subtitle.clone(),
-                    refresh_resource_uri: None, items: Vec::new(), actions: Vec::new(),
+                    refresh_resource_uri: None, image: None, items: Vec::new(), actions: Vec::new(),
                 } };
             if let Some(existing) = available.iter_mut().find(|existing| existing.tile_id == tile.tile_id) { *existing = entry; }
             else { available.push(entry); }
@@ -1375,6 +1375,7 @@ mod tests {
         for tile in &catalog {
             assert!(tile.items.is_empty());
             assert!(tile.actions.is_empty());
+            assert!(tile.image.is_none());
             assert!(tile.refresh_resource_uri.is_none());
         }
         assert_eq!(dashboard_render_count(&runtime), 0);
@@ -1390,7 +1391,7 @@ mod tests {
         assert_eq!(dashboard_render_count(&runtime), 1);
         let catalog = runtime.available_dashboard_tiles();
         let unpinned = catalog.iter().find(|tile| tile.tile_id == "sample_timer.now").unwrap();
-        assert!(unpinned.items.is_empty() && unpinned.actions.is_empty());
+        assert!(unpinned.items.is_empty() && unpinned.actions.is_empty() && unpinned.image.is_none());
         runtime.discover_dashboard_tiles().unwrap();
         assert_eq!(dashboard_render_count(&runtime), 1);
         assert_eq!(runtime.available_dashboard_tiles().len(), catalog.len());

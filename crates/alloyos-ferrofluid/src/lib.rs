@@ -18,3 +18,4 @@ mod boot_liquid;
 mod sidebar;
 
 mod markdown;
+mod tile_images;

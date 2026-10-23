@@ -23,6 +23,7 @@ pub mod packages;
 pub mod registry;
 pub mod sandbox;
 pub mod transport;
+pub mod tile_images;
 mod remote;
 
 pub use apps::{JsApp, RemoteMcpApp};

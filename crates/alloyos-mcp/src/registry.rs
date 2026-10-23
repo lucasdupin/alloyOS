@@ -57,6 +57,7 @@ pub trait McpApp {
         self.tiles().into_iter().map(|mut tile| {
             tile.items.clear();
             tile.actions.clear();
+            tile.image = None;
             tile.refresh_resource_uri = None;
             tile
         }).collect()
@@ -551,6 +552,7 @@ impl McpRegistry {
                 tile.subtitle = tile.subtitle.chars().take(256).collect();
                 tile.items.clear();
                 tile.actions.clear();
+                tile.image = None;
                 tile.refresh_resource_uri = None;
                 tiles.push(tile);
             }

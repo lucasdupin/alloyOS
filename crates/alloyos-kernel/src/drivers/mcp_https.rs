@@ -45,6 +45,11 @@ impl HttpTransport for HostRegistryHttp {
             if alloyos_mcp::transport::allowed_public_post(&request.url) { "post" }
             else if alloyos_mcp::transport::allowed_remote_mcp(request) { "mcp" }
             else { return Poll::Ready(Err("unsupported or invalid hosted MCP POST request".into())); }
+        } else if request.method == "IMAGE" {
+            if !request.headers.is_empty() || !request.body.is_empty() || alloyos_mcp::tile_images::image_url_host(&request.url).is_none() {
+                return Poll::Ready(Err("invalid image URL".into()));
+            }
+            "image"
         } else if request.method == "GET" {
             if !request.headers.is_empty() || !request.body.is_empty() || !alloyos_mcp::transport::allowed_public_get(&request.url) {
                 return Poll::Ready(Err("only public MCP Registry and DuckDuckGo search are wired to this transport".into()));

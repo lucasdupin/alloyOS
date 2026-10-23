@@ -249,7 +249,19 @@ pub fn parse_app_tile_from_json(json: &str) -> Result<AppTile, String> {
             }
         }
     }
+    let image = match map.get("image") {
+        None | Some(McpValue::Null) => None,
+        Some(McpValue::Map(image)) => {
+            let src = image.get("src").and_then(McpValue::as_str).ok_or("image.src must be a string")?;
+            let alt = image.get("alt").and_then(McpValue::as_str).unwrap_or("");
+            let image = crate::tile_images::TileImage { src: src.into(), alt: alt.into() };
+            if !image.valid_for(&tile_id) { return Err("invalid tile image source".into()); }
+            Some(image)
+        }
+        _ => return Err("image must be an object".into()),
+    };
     Ok(AppTile {
+        image,
         tile_id,
         title,
         subtitle,
@@ -510,6 +522,7 @@ impl McpApp for JsApp {
             title: self.manifest.name.clone(),
             subtitle: id.clone(),
             refresh_resource_uri: None,
+            image: None,
             items: Vec::new(),
             actions: Vec::new(),
         }).collect()

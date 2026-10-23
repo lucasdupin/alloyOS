@@ -19,6 +19,7 @@ struct State {
     profile_delete_fails: bool,
     profile_removed: bool,
     prm_json: Option<String>,
+    as_json: Option<String>,
     metadata_404: Vec<String>,
     token_resource: Option<String>,
 }
@@ -55,6 +56,7 @@ impl CredentialStore for Store {
             client_id: "public-native-client".into(),
             allowed_scopes: vec!["mail.read".into()],
             client_secret: None,
+            authorization_options: Default::default(),
             loopback_port: 0,
         }))
     }
@@ -198,9 +200,9 @@ impl OAuthNetwork for Network {
                 format!(r#"{{"resource":"{RESOURCE}","authorization_servers":["{ISSUER}"]}}"#)
             })
         } else if r.url.contains("oauth-authorization-server") {
-            format!(
+            self.0.borrow().as_json.clone().unwrap_or_else(||format!(
                 r#"{{"issuer":"{ISSUER}","authorization_endpoint":"{ISSUER}/authorize","token_endpoint":"{ISSUER}/token","revocation_endpoint":"{ISSUER}/revoke","code_challenge_methods_supported":["S256"],"authorization_response_iss_parameter_supported":true}}"#
-            )
+            ))
         } else if r.url.ends_with("/revoke") {
             assert!(
                 self.0.borrow().record.is_none(),
@@ -741,6 +743,7 @@ fn changing_client_profile_drops_old_authority_even_if_profile_write_fails() {
             allowed_scopes: vec![],
             loopback_port: 0,
             client_secret: None,
+            authorization_options: Default::default(),
         };
         let result = b.provision_profile("mail", &profile);
         assert_eq!(result.is_err(), fail);
@@ -1329,4 +1332,35 @@ fn explicit_connect_steps_up_once_within_profile_or_requests_native_configuratio
         }
         assert!(!seen.borrow().iter().any(|method|method=="tools/call"));
     }
+}
+
+#[test]
+fn google_offline_parameters_are_explicit_typed_and_do_not_replace_reserved_fields() {
+    for options in [AuthorizationOptions::Standard,AuthorizationOptions::GoogleOffline{reprompt_consent:false},AuthorizationOptions::GoogleOffline{reprompt_consent:true}] {
+        let state=Rc::new(RefCell::new(State::default()));
+        let mut profile=Store(state.clone()).profile("mail",RESOURCE).unwrap().unwrap();
+        profile.issuer="https://accounts.google.com".into();
+        profile.authorization_options=options.clone();
+        state.borrow_mut().configured_profile=Some(profile);
+        state.borrow_mut().prm_json=Some(serde_json::json!({"resource":RESOURCE,"authorization_servers":["https://accounts.google.com"]}).to_string());
+        state.borrow_mut().as_json=Some(serde_json::json!({"issuer":"https://accounts.google.com","authorization_endpoint":"https://accounts.google.com/o/oauth2/v2/auth","token_endpoint":"https://oauth2.googleapis.com/token","code_challenge_methods_supported":["S256"]}).to_string());
+        let mut broker=broker(&state);
+        ready(broker.start(&req(AccountOperation::Begin{scopes:vec!["mail.read".into()]}))).unwrap();
+        let url=state.borrow().browser.iter().find_map(|request|match &request.operation{BrowserOperation::Open{authorization_url,..}=>Some(authorization_url.clone()),_=>None}).unwrap();
+        for parameter in ["client_id=","state=","redirect_uri=","scope=","code_challenge=","code_challenge_method=","resource="] {
+            assert_eq!(url.matches(parameter).count(),1,"{parameter}");
+        }
+        assert_eq!(url.contains("access_type=offline"),!matches!(options,AuthorizationOptions::Standard));
+        assert_eq!(url.contains("prompt=consent"),matches!(options,AuthorizationOptions::GoogleOffline{reprompt_consent:true}));
+    }
+    let state=Rc::new(RefCell::new(State::default()));
+    let mut profile=Store(state.clone()).profile("mail",RESOURCE).unwrap().unwrap();
+    profile.authorization_options=AuthorizationOptions::GoogleOffline{reprompt_consent:true};
+    assert!(profile.validate().is_err());
+    profile.issuer="https://accounts.google.com/".into();
+    assert!(profile.validate().is_err(),"never normalize an issuer alias");
+    let mut legacy=serde_json::to_value(&profile).unwrap();
+    legacy.as_object_mut().unwrap().remove("authorization_options");
+    let legacy:ClientProfile=serde_json::from_value(legacy).unwrap();
+    assert_eq!(legacy.authorization_options,AuthorizationOptions::Standard);
 }

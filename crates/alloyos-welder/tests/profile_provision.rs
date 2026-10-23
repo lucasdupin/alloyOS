@@ -83,6 +83,7 @@ fn profile() -> ClientProfile {
         allowed_scopes: vec!["mail.read".into()],
         loopback_port: 0,
         client_secret: Some("private-client-secret".into()),
+        authorization_options: Default::default(),
     }
 }
 #[test]

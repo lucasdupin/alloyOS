@@ -662,6 +662,7 @@ impl OsAccountBroker {
                 let challenge = base64url(&self.crypto.sha256(flow.verifier.as_bytes()));
                 let scope = if flow.scopes.is_empty() { String::new() } else { alloc::format!("&scope={}",form_encode(&flow.scopes.join(" "))) };
                 let url=alloc::format!("{}{}response_type=code&client_id={}&redirect_uri={}{}&state={}&code_challenge={}&code_challenge_method=S256&resource={}",flow.authorization_endpoint,if flow.authorization_endpoint.contains('?'){"&"}else{"?"},form_encode(&flow.profile.client_id),form_encode(&redirect_uri),scope,form_encode(&flow.state),challenge,form_encode(&flow.resource));
+                let url=alloc::format!("{}{}",url,flow.profile.authorization_options.query_suffix());
                 let resource=(flow.resource!=flow.endpoint).then(||flow.resource.clone());
                 self.flow.as_mut().unwrap().redirect = redirect_uri;
                 self.browser_start(
@@ -776,7 +777,7 @@ impl AccountBroker for OsAccountBroker {
                 if scopes.iter().any(|scope|!profile.allowed_scopes.contains(scope)) {
                     return Poll::Ready(Err(AccountError::ClientRegistrationRequired));
                 }
-                if profile.endpoint != request.endpoint
+                if profile.validate().is_err() || profile.endpoint != request.endpoint
                     || !public_url(&profile.issuer)
                     || profile.issuer.contains('?')
                     || profile.client_id.is_empty()

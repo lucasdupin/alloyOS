@@ -349,17 +349,21 @@ mod tests {
             endpoint: ENDPOINT.into(), issuer: "https://issuer.example".into(),
             client_id: "native-client".into(), allowed_scopes: alloc::vec!["read".into()],
             loopback_port: 8381, client_secret: Some("synthetic-private-client-secret".into()),
+            authorization_options: Default::default(),
         }
     }
     #[test]
     fn client_profiles_are_private_app_and_resource_bound_after_remount() {
         let disk = MemBlockDevice::new_formatted_large();
-        let profile = client_profile();
+        let mut profile = client_profile();
+        profile.issuer="https://accounts.google.com".into();
+        profile.authorization_options=alloyos_mcp::account::AuthorizationOptions::GoogleOffline{reprompt_consent:true};
         let mut store = mount(disk.clone());
         assert_eq!(store.save_profile("mail", &profile).unwrap(), SecretStorage::OsPrivateStore);
         drop(store);
         let mut store = mount(disk.clone());
         assert_eq!(store.profile("mail", ENDPOINT).unwrap().unwrap().client_secret, profile.client_secret);
+        assert_eq!(store.profile("mail", ENDPOINT).unwrap().unwrap().authorization_options,profile.authorization_options);
         assert!(store.profile("other", ENDPOINT).unwrap().is_none());
         assert!(store.profile("mail", "https://service.example/other").unwrap().is_none());
         {

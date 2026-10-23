@@ -71,6 +71,24 @@ pub fn valid_oauth_resource_binding(endpoint: &str, resource: &str) -> bool {
     resource == &endpoint[..8 + authority.len()]
 }
 
+/// Explicitly reviewed provider authorization behavior; never an arbitrary query map.
+#[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag="provider",rename_all="snake_case",deny_unknown_fields)]
+pub enum AuthorizationOptions {
+    #[default]
+    Standard,
+    GoogleOffline { reprompt_consent: bool },
+}
+impl AuthorizationOptions {
+    pub fn query_suffix(&self)->&'static str {
+        match self {
+            Self::Standard=>"",
+            Self::GoogleOffline{reprompt_consent:false}=>"&access_type=offline",
+            Self::GoogleOffline{reprompt_consent:true}=>"&access_type=offline&prompt=consent",
+        }
+    }
+}
+
 /// Trusted native input. Never place this structure in public display state,
 /// model context, logs, or ordinary VFS caches.
 #[derive(Clone, Serialize, Deserialize)]
@@ -82,6 +100,8 @@ pub struct ClientProfile {
     pub allowed_scopes: Vec<String>,
     pub loopback_port: u16,
     pub client_secret: Option<String>,
+    #[serde(default)]
+    pub authorization_options: AuthorizationOptions,
 }
 impl core::fmt::Debug for ClientProfile {
     fn fmt(&self,f:&mut core::fmt::Formatter<'_>)->core::fmt::Result{f.write_str("ClientProfile([private])")}
@@ -89,6 +109,7 @@ impl core::fmt::Debug for ClientProfile {
 impl ClientProfile {
     pub fn validate(&self)->Result<(),AccountError>{
         let endpoint=|value:&str|value.len()<=8192 && crate::transport::remote_mcp_authority(value).is_some() && !value.contains('#');
+        if !matches!(self.authorization_options,AuthorizationOptions::Standard) && self.issuer!="https://accounts.google.com" {return Err(AccountError::InvalidRequest);}
         if !endpoint(&self.endpoint)||!endpoint(&self.issuer)||self.issuer.contains('?')||self.client_id.is_empty()||self.client_id.len()>512||self.client_id.bytes().any(|b|b.is_ascii_control()||b.is_ascii_whitespace())||!valid_scopes(&self.allowed_scopes)||self.client_secret.as_ref().is_some_and(|secret|secret.is_empty()||secret.len()>4000||secret.bytes().any(|b|!b.is_ascii_graphic())) {return Err(AccountError::InvalidRequest)}
         Ok(())
     }
@@ -336,5 +357,19 @@ mod challenge_tests {
         assert_eq!(parsed.error.as_deref(),Some("insufficient_scope"));
         assert_eq!(parsed.scopes,["a","b"]);
         assert!(parse_bearer_challenge("Bearer").is_ok());
+    }
+}
+
+#[cfg(test)]
+mod authorization_option_tests {
+    use super::*;
+    #[test]
+    fn typed_options_cannot_override_authorization_protocol_parameters() {
+        for json in [r#"{"provider":"google_offline","reprompt_consent":true,"state":"override"}"#,
+            r#"{"provider":"google_offline","reprompt_consent":"yes"}"#,
+            r#"{"provider":"other","client_id":"override"}"#] {
+            assert!(serde_json::from_str::<AuthorizationOptions>(json).is_err());
+        }
+        assert_eq!(AuthorizationOptions::default(),AuthorizationOptions::Standard);
     }
 }

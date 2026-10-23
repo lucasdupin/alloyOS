@@ -106,6 +106,7 @@ pub fn run() {
                     allowed_scopes: vec!["read".into()],
                     loopback_port: 39173,
                     client_secret: None,
+                    authorization_options: Default::default(),
                 })
                 .map_err(|_| "fixture profile save failed")?;
         }

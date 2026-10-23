@@ -204,3 +204,34 @@ The C++ compiler report embeds upstream newlib source/build identity and actual
 establish libc syscall coverage, pthreads, Rust `std`, libc++, JavaScriptCore or
 WPE. Probe-only unavailable system hooks fail with errors rather than pretending
 to provide filesystem, signals or process services.
+
+### Native POSIX/C++ ABI sysroot and WTF/JSCOnly toolchain foundation
+
+```sh
+python3 scripts/web-engine/build-sysroot.py --output /private/tmp/alloyos-sysroot
+python3 scripts/web-engine/build-jsc.py \
+  --sysroot /private/tmp/alloyos-sysroot \
+  --output /private/tmp/alloyos-jsc-foundation
+```
+
+Verified on 2026-10-22 (host cross-compilation and static ELF linkage):
+
+- `scripts/web-engine/sysroot/` and `scripts/web-engine/build-sysroot.py` produce
+  deterministic `liballoyos_posix.a` and `liballoyos_cxxrt.a` archives for
+  `aarch64-unknown-none` (either standalone or layered over `--newlib`).
+- `liballoyos_posix.a` maps `mmap`/`munmap`/`mprotect` to protected syscalls
+  404–407 (rejecting `PROT_EXEC` and file-backed/shared mappings with `ENOTSUP`),
+  `pthread_*` and `sched_yield` to syscalls 408–413 and 24 with private
+  stack + Variant I static TLS reservations, `clock_gettime(CLOCK_MONOTONIC)` to
+  syscall 228, and `getrandom`/`getentropy` to syscall 318 (`GetRandom`,
+  chunking >256-byte requests and failing closed on `EAGAIN`).
+- `liballoyos_cxxrt.a` supplies `operator new`/`delete` (sized, aligned, and
+  nothrow), `__cxa_pure_virtual`, `__cxa_guard_acquire`/`release`/`abort`, and
+  `__cxa_atexit`/`__cxa_finalize`.
+- Both multi-file `sysroot-verify.elf` and `jsc-platform-probe.elf` link with
+  `rust-lld --no-undefined --fatal-warnings` against `process.ld` and pass
+  `ET_EXEC` segment and Variant I `PT_TLS` checks.
+- Remaining blockers before building and guest-verifying `JavaScriptCore`
+  (`JSCOnly` C-loop): host `cmake`/`ninja` tools, full target `libc++` headers,
+  cross-compiled target ICU >= 70.1 archives in the sysroot, WTF alloyOS
+  platform selection, and QEMU guest execution of the JSC acceptance binary.

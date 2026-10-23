@@ -181,6 +181,63 @@ The probe provides bounded heap growth and honest error-return hooks for
 unavailable system services. This narrow proof does not establish a complete
 libc platform, pthreads, libc++, Rust `std`, JavaScriptCore or WPE.
 
+### Native alloyOS POSIX/C++ ABI sysroot and CMake toolchain foundation
+
+`scripts/web-engine/build-sysroot.py` builds the alloyOS AArch64 compatibility
+headers and static archives (`liballoyos_posix.a` and `liballoyos_cxxrt.a`),
+either standalone or layered over a cross-built `aarch64-none-elf` newlib
+sysroot (`--newlib`), and links a multi-file C++23 verification executable
+(`verify/sysroot-verify.elf`) with `--no-undefined`:
+
+```sh
+python3 scripts/web-engine/build-sysroot.py --output /private/tmp/alloyos-sysroot
+python3 scripts/web-engine/build-jsc.py \
+  --sysroot /private/tmp/alloyos-sysroot \
+  --output /private/tmp/alloyos-jsc-foundation
+```
+
+Supplied by `scripts/web-engine/sysroot/`:
+
+- `liballoyos_posix.a` (`crt0.o`, `syscalls.o`, `mman.o`, `pthread.o`,
+  `time_random.o`):
+  - `sys/mman.h` (`mmap`, `munmap`, `mprotect`, `madvise`, `posix_madvise`)
+    backed by protected syscalls `MEMORY_RESERVE` (404), `MEMORY_COMMIT` (405),
+    `MEMORY_DECOMMIT` (406), and `MEMORY_RELEASE` (407). Supports anonymous
+    private reservations (`MAP_PRIVATE | MAP_ANONYMOUS`), `PROT_NONE`,
+    `PROT_READ`, and `PROT_READ | PROT_WRITE`, while rejecting `PROT_EXEC` and
+    file-backed/shared mappings with `ENOTSUP`/`EINVAL`.
+  - `pthread.h` and `sched.h` (`pthread_create`, `pthread_join`,
+    `pthread_detach`, `pthread_self`, `pthread_equal`, `pthread_exit`,
+    `pthread_attr_*`, `pthread_mutex_*`, `pthread_cond_*`, `pthread_once`,
+    `pthread_key_*`, `sched_yield`) backed by protected syscalls
+    `THREAD_CREATE` (408), `THREAD_EXIT` (409), `THREAD_JOIN` (410),
+    `WORD_WAIT` (411), `WORD_WAKE` (412), `GETTID` (413), and `Yield` (24),
+    allocating per-thread guard/stack/Variant I static TLS reservations.
+  - `time.h` and `sys/random.h` (`clock_gettime(CLOCK_MONOTONIC)` via syscall
+    228, `nanosleep` via `WORD_WAIT` monotonic deadlines, and
+    `getrandom`/`getentropy` via syscall 318 `SyscallNo::GetRandom` with 256-byte
+    chunking and fail-closed `EAGAIN` handling).
+- `liballoyos_cxxrt.a` (`cxxrt.o`): replaceable `operator new`/`delete` and
+  `operator new[]`/`delete[]` (including sized, `std::nothrow_t`, and C++17
+  `std::align_val_t` overloads), `__cxa_pure_virtual`, `__cxa_deleted_virtual`,
+  Itanium/ARM64 C++ static initialization guards (`__cxa_guard_acquire`,
+  `__cxa_guard_release`, `__cxa_guard_abort` over `WORD_WAIT`/`WORD_WAKE`), and
+  `__cxa_atexit`/`__cxa_finalize`.
+- `scripts/web-engine/alloyos-toolchain.cmake`: CMake cross-compilation
+  toolchain file targeting `aarch64-unknown-none` with `--sysroot` isolation and
+  `CMAKE_FIND_ROOT_PATH_MODE_{LIBRARY,INCLUDE,PACKAGE}=ONLY` so host Darwin or
+  Linux libraries are never treated as target dependencies.
+
+Verification status (2026-10-22): `build-sysroot.py` and `build-jsc.py` compile
+all C17/C++23 sysroot archives cleanly with Apple Clang 17 and Rust `llvm-ar`,
+and link both `sysroot-verify.elf` and `jsc-platform-probe.elf` with `rust-lld`
+(`--no-undefined --fatal-warnings -z max-page-size=4096`), verifying `ET_EXEC`
+segments and Variant I `PT_TLS` coverage. This proves cross-compilation and
+static ELF linkage of the POSIX/C++ ABI compatibility layer; it does **not**
+supply full `libc++` STL headers (`<thread>`, `<vector>`, `<string>`), target
+ICU >= 70.1 archives, or a compiled `JavaScriptCore` library, and the sysroot
+builder itself does not run QEMU.
+
 ## Full WPE milestone
 
 WPE 2.54 bundles WPEPlatform. New integrations do not require legacy libwpe,

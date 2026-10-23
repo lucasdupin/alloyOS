@@ -1,0 +1,20 @@
+#ifndef _ALLOYOS_CXX_CSTDLIB
+#define _ALLOYOS_CXX_CSTDLIB
+
+#include <stdlib.h>
+
+namespace std {
+    using ::size_t;
+    using ::malloc;
+    using ::calloc;
+    using ::realloc;
+    using ::free;
+    using ::abort;
+    using ::exit;
+    using ::_Exit;
+    using ::strtod;
+    using ::strtol;
+    using ::strtoul;
+} // namespace std
+
+#endif /* _ALLOYOS_CXX_CSTDLIB */

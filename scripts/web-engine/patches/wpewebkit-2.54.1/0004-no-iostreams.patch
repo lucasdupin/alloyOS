@@ -1,0 +1,67 @@
+--- a/Source/WTF/wtf/Int128.cpp	2026-07-27 08:40:36
++++ b/Source/WTF/wtf/Int128.cpp	2026-10-22 21:19:59
+@@ -17,9 +17,11 @@
+ 
+ #include <stddef.h>
+ #include <cassert>
++#if !defined(_LIBCPP_HAS_NO_LOCALIZATION)
+ #include <iomanip>
+ #include <ostream>  // NOLINT(readability/streams)
+ #include <sstream>
++#endif
+ #include <string>
+ #include <type_traits>
+ #include <wtf/MathExtras.h>
+@@ -127,6 +129,7 @@
+   return remainder;
+ }
+ 
++#if !defined(_LIBCPP_HAS_NO_LOCALIZATION)
+ namespace {
+ 
+ static std::string UInt128ToFormattedString(UInt128Impl v, std::ios_base::fmtflags flags) {
+@@ -195,7 +198,12 @@
+   }
+ 
+   return os << rep;
++}
++#else
++std::ostream& operator<<(std::ostream& os, UInt128Impl) {
++  return os;
+ }
++#endif
+ 
+ namespace {
+ 
+@@ -255,6 +263,7 @@
+                     UInt128Low64(remainder));
+ }
+ 
++#if !defined(_LIBCPP_HAS_NO_LOCALIZATION)
+ std::ostream& operator<<(std::ostream& os, Int128Impl v) {
+   std::ios_base::fmtflags flags = os.flags();
+   std::string rep;
+@@ -299,6 +308,11 @@
+ 
+   return os << rep;
+ }
++#else
++std::ostream& operator<<(std::ostream& os, Int128Impl) {
++  return os;
++}
++#endif
+ 
+ void printInternal(PrintStream& out, UInt128 value)
+ {
+--- a/Source/WTF/wtf/simdutf/simdutf_impl.h	2026-07-27 08:40:36
++++ b/Source/WTF/wtf/simdutf/simdutf_impl.h	2026-10-22 21:20:26
+@@ -9946,7 +9946,9 @@
+ #include <cstddef>
+ #include <cstdint>
+ #include <cstring>
++#if !defined(_LIBCPP_HAS_NO_LOCALIZATION)
+ #include <iostream>
++#endif
+ 
+ namespace simdutf {
+ namespace scalar {

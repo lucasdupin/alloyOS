@@ -1,0 +1,11 @@
+--- a/Source/WTF/wtf/ThreadingPrimitives.h	2026-07-27 08:40:36
++++ b/Source/WTF/wtf/ThreadingPrimitives.h	2026-10-22 21:08:34
+@@ -57,7 +57,7 @@
+ using PlatformMutex = pthread_mutex_t;
+ using PlatformCondition = pthread_cond_t;
+ using ThreadSpecificKey = pthread_key_t;
+-#if OS(LINUX)
++#if OS(LINUX) || OS(ALLOYOS)
+ using ThreadIdentifier = pid_t;
+ #endif
+ #elif OS(WINDOWS)

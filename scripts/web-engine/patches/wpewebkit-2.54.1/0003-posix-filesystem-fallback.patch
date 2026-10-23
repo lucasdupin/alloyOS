@@ -1,0 +1,275 @@
+--- a/Source/WTF/wtf/FileSystem.cpp	2026-07-27 08:40:36
++++ b/Source/WTF/wtf/FileSystem.cpp	2026-10-22 21:18:12
+@@ -41,10 +41,12 @@
+ #include <wtf/text/StringBuilder.h>
+ 
+ #if !OS(WINDOWS)
++#include <dirent.h>
+ #include <fcntl.h>
+ #include <sys/mman.h>
+ #include <sys/param.h>
+ #include <sys/stat.h>
++#include <sys/statvfs.h>
+ #include <unistd.h>
+ #endif
+ 
+@@ -852,6 +854,259 @@
+ 
+ #endif // !OS(WINDOWS) && !PLATFORM(COCOA)
+ 
++#else // !(HAVE(STD_FILESYSTEM) || HAVE(STD_EXPERIMENTAL_FILESYSTEM))
++
++bool deleteEmptyDirectory(const String& path)
++{
++    return rmdir(fileSystemRepresentation(path).data()) == 0;
++}
++
++bool moveFile(const String& oldPath, const String& newPath)
++{
++    return rename(fileSystemRepresentation(oldPath).data(), fileSystemRepresentation(newPath).data()) == 0;
++}
++
++std::optional<uint64_t> fileSize(const String& path)
++{
++    struct stat st;
++    if (!stat(fileSystemRepresentation(path).data(), &st))
++        return st.st_size;
++    return std::nullopt;
++}
++
++std::optional<uint64_t> directorySize(const String&)
++{
++    return 0;
++}
++
++std::optional<uint64_t> volumeFreeSpace(const String& path)
++{
++    struct statvfs st;
++    if (!statvfs(fileSystemRepresentation(path).data(), &st))
++        return static_cast<uint64_t>(st.f_bavail) * st.f_frsize;
++    return 1024 * 1024 * 1024;
++}
++
++std::optional<uint64_t> volumeCapacity(const String& path)
++{
++    struct statvfs st;
++    if (!statvfs(fileSystemRepresentation(path).data(), &st))
++        return static_cast<uint64_t>(st.f_blocks) * st.f_frsize;
++    return 1024 * 1024 * 1024;
++}
++
++bool createSymbolicLink(const String&, const String&)
++{
++    return false;
++}
++
++bool hardLink(const String&, const String&)
++{
++    return false;
++}
++
++bool hardLinkOrCopyFile(const String& targetPath, const String& linkPath)
++{
++    return copyFile(targetPath, linkPath);
++}
++
++bool copyFile(const String& targetPath, const String& sourcePath)
++{
++    auto srcRep = fileSystemRepresentation(sourcePath);
++    auto dstRep = fileSystemRepresentation(targetPath);
++    int srcFd = open(srcRep.data(), O_RDONLY);
++    if (srcFd < 0)
++        return false;
++    int dstFd = open(dstRep.data(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
++    if (dstFd < 0) {
++        close(srcFd);
++        return false;
++    }
++    char buf[4096];
++    ssize_t n;
++    bool ok = true;
++    while ((n = read(srcFd, buf, sizeof(buf))) > 0) {
++        if (write(dstFd, buf, n) != n) {
++            ok = false;
++            break;
++        }
++    }
++    if (n < 0)
++        ok = false;
++    close(srcFd);
++    close(dstFd);
++    return ok;
++}
++
++std::optional<uint64_t> hardLinkCount(const String& path)
++{
++    struct stat st;
++    if (!stat(fileSystemRepresentation(path).data(), &st))
++        return st.st_nlink;
++    return std::nullopt;
++}
++
++bool deleteNonEmptyDirectory(const String& path)
++{
++    for (auto& entry : listDirectory(path)) {
++        auto full = pathByAppendingComponent(path, entry);
++        if (fileType(full) == FileType::Directory)
++            deleteNonEmptyDirectory(full);
++        else
++            deleteFile(full);
++    }
++    return deleteEmptyDirectory(path);
++}
++
++std::optional<WallTime> fileModificationTime(const String& path)
++{
++    struct stat st;
++    if (!stat(fileSystemRepresentation(path).data(), &st))
++        return WallTime::fromRawSeconds(st.st_mtime);
++    return std::nullopt;
++}
++
++bool updateFileModificationTime(const String&)
++{
++    return true;
++}
++
++bool isHiddenFile(const String& path)
++{
++    return pathFileName(path).startsWith('.');
++}
++
++enum class ShouldFollowSymbolicLinks : bool { No, Yes };
++static std::optional<FileType> fileTypePotentiallyFollowingSymLinks(const String& path, ShouldFollowSymbolicLinks)
++{
++    struct stat st;
++    if (!stat(fileSystemRepresentation(path).data(), &st)) {
++        if (S_ISDIR(st.st_mode))
++            return FileType::Directory;
++        if (S_ISREG(st.st_mode))
++            return FileType::Regular;
++    }
++    return std::nullopt;
++}
++
++std::optional<FileType> fileType(const String& path)
++{
++    return fileTypePotentiallyFollowingSymLinks(path, ShouldFollowSymbolicLinks::Yes);
++}
++
++std::optional<FileType> fileTypeFollowingSymlinks(const String& path)
++{
++    return fileTypePotentiallyFollowingSymLinks(path, ShouldFollowSymbolicLinks::Yes);
++}
++
++String pathFileName(const String& path)
++{
++    auto idx = path.reverseFind('/');
++    if (idx == notFound)
++        return path;
++    return path.substring(idx + 1);
++}
++
++String parentPath(const String& path)
++{
++    auto idx = path.reverseFind('/');
++    if (idx == notFound)
++        return emptyString();
++    return path.substring(0, idx);
++}
++
++String lexicallyNormal(const String& path)
++{
++    return path;
++}
++
++bool isAncestor(const String& possibleAncestor, const String& possibleChild)
++{
++    return possibleChild.startsWith(possibleAncestor);
++}
++
++String createTemporaryFile(StringView prefix, StringView suffix)
++{
++    auto [path, handle] = openTemporaryFile(prefix, suffix);
++    return path;
++}
++
++FileHandle createDumpFile(StringView filename, StringView extension, StringView path)
++{
++    return openFile(pathByAppendingComponent(path, makeString(filename, '.', extension)), FileOpenMode::Truncate, FileAccessPermission::User);
++}
++
++String realPath(const String& path)
++{
++    return path;
++}
++
++Vector<String> listDirectory(const String& path)
++{
++    Vector<String> entries;
++    DIR* dir = opendir(fileSystemRepresentation(path).data());
++    if (dir) {
++        while (auto* entry = readdir(dir)) {
++            if (strcmp(entry->d_name, ".") && strcmp(entry->d_name, ".."))
++                entries.append(String::fromUTF8(entry->d_name));
++        }
++        closedir(dir);
++    }
++    return entries;
++}
++
++void traverseDirectory(const String& path, NOESCAPE const Function<void(const String&, FileType)>& function)
++{
++    for (auto& entry : listDirectory(path)) {
++        auto full = pathByAppendingComponent(path, entry);
++        function(entry, fileType(full).value_or(FileType::Regular));
++    }
++}
++
++bool fileExists(const String& path)
++{
++    return access(fileSystemRepresentation(path).data(), F_OK) == 0;
++}
++
++bool deleteFile(const String& path)
++{
++    return unlink(fileSystemRepresentation(path).data()) == 0;
++}
++
++bool makeAllDirectories(const String& path)
++{
++    auto rep = fileSystemRepresentation(path);
++    if (rep.isNull() || !rep.length())
++        return false;
++    if (!access(rep.data(), F_OK))
++        return true;
++    return mkdir(rep.data(), 0755) == 0 || errno == EEXIST;
++}
++
++String pathByAppendingComponent(StringView path, StringView component)
++{
++    if (path.endsWith('/'))
++        return makeString(path, component);
++    return makeString(path, '/', component);
++}
++
++String pathByAppendingComponents(StringView path, std::span<const StringView> components)
++{
++    StringBuilder builder;
++    builder.append(path);
++    for (auto& c : components) {
++        if (!builder.isEmpty() && !builder.toString().endsWith('/'))
++            builder.append('/');
++        builder.append(c);
++    }
++    return builder.toString();
++}
++
++String createTemporaryDirectory()
++{
++    return "/tmp"_s;
++}
++
+ #endif // HAVE(STD_FILESYSTEM) || HAVE(STD_EXPERIMENTAL_FILESYSTEM)
+ 
+ } // namespace WTF::FileSystemImpl

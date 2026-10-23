@@ -1,0 +1,17 @@
+--- a/Source/WTF/wtf/generic/MemoryFootprintGeneric.cpp	2026-10-22 21:26:54
++++ b/Source/WTF/wtf/generic/MemoryFootprintGeneric.cpp	2026-10-22 21:26:55
+@@ -33,8 +33,14 @@
+ 
+ size_t memoryFootprint()
+ {
++#if OS(ALLOYOS)
++    // alloyOS exposes no per-process memory accounting yet; reporting 0 keeps
++    // memory-pressure heuristics inactive instead of acting on bogus data.
++    return 0;
++#else
+     auto memoryUse = memoryStatus();
+     return memoryUse.memoryFootprint;
++#endif
+ }
+ 
+ } // namespace WTF

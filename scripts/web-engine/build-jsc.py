@@ -107,7 +107,7 @@ def main():
     parser.add_argument(
         "--sysroot",
         type=Path,
-        default=Path("/private/tmp/alloyos-sysroot"),
+        default=Path(__file__).resolve().parents[2] / "build/sysroot",
         help="alloyOS target sysroot directory",
     )
     parser.add_argument(
@@ -118,7 +118,7 @@ def main():
     parser.add_argument(
         "--webkit-source",
         type=Path,
-        default=Path("/tmp/wpewebkit-2.54.1"),
+        default=Path(__file__).resolve().parents[2] / "build/wpewebkit",
         help="extracted pinned WPE WebKit 2.54.1 source tree",
     )
     parser.add_argument("--cxx", default="clang++")
@@ -159,7 +159,7 @@ def main():
 
     cxx_flags = [
         cxx,
-        "--target=aarch64-unknown-none",
+        "--target=aarch64-none-elf",
         f"--sysroot={sysroot}",
         "-std=c++23",
         "-O2",
@@ -257,13 +257,15 @@ def main():
         "-DENABLE_WEBASSEMBLY=OFF",
         "-DENABLE_SAMPLING_PROFILER=OFF",
         "-DENABLE_API_TESTS=OFF",
+        "-DUSE_SYSTEM_MALLOC=ON",
+        "-DUSE_HEADER_MAPS=OFF",
     ]
     cmake_build_command = [
         "cmake",
         "--build",
         str(output / "jsc-build"),
         "--target",
-        "JavaScriptCore",
+        "jsc",
     ]
 
     remaining_blockers = []
@@ -289,10 +291,18 @@ def main():
             )
         run(cmake_configure_command, cwd=repo_root)
         run(cmake_build_command, cwd=repo_root)
+        jsc_elf = output / "jsc-build/bin/jsc"
+        if jsc_elf.is_file():
+            bin_dir = repo_root / "build/bin"
+            bin_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(jsc_elf, bin_dir / "jsc")
+            strip_tool = resolve_rust_lld().parent / "llvm-strip"
+            if strip_tool.is_file():
+                run([strip_tool, str(bin_dir / "jsc")])
         jsc_build_status = "built"
 
     report = dict(
-        target="aarch64-unknown-none",
+        target="aarch64-none-elf",
         toolchain_file=str(toolchain_file),
         sysroot=str(sysroot),
         webkit_source=str(webkit_source),

@@ -1,17 +1,11 @@
 //! Shared JavaScript engine boundary (`JsEngine` / `AlloyJsEngine`) separating
 //! capability-scoped headless app / automation execution from isolated web script execution.
 
-use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-
-use crate::app::{
-    validate_app_handlers as validate_app_handler_decls, AppHandler, AppHandlerResult,
-    MAX_APP_RESULT_BYTES, MAX_APP_SOURCE_BYTES,
-};
-use crate::host::{AlloyOsHost, VirtualHostEnv};
-use crate::parser::parse_program;
-use crate::runtime::{JsIsolate, DEFAULT_MAX_STEPS};
+use crate::app::{AppHandler, AppHandlerResult, MAX_APP_RESULT_BYTES, MAX_APP_SOURCE_BYTES};
+use crate::host::AlloyOsHost;
+use crate::runtime::DEFAULT_MAX_STEPS;
 use crate::value::{JsError, JsValue};
 
 /// Execution domain separating host-bound alloyOS scripts from untrusted web scripts.
@@ -122,13 +116,8 @@ impl AlloyJsEngine {
     }
 
     /// Validates JavaScript source syntax and byte limits for `domain`.
-    pub fn validate_source(&self, _domain: JsExecutionDomain, source: &str) -> Result<(), JsError> {
-        if source.len() > self.limits.max_source_bytes {
-            return Err(JsError::SyntaxError(
-                "Source exceeds engine byte limit".into(),
-            ));
-        }
-        parse_program(source).map(|_| ())
+    pub fn validate_source(&self, domain: JsExecutionDomain, source: &str) -> Result<(), JsError> {
+        crate::jsc::JavaScriptCoreEngine::with_limits(self.limits).validate_source(domain, source)
     }
 
     /// Validates top-level headless app handler declarations against engine byte limits.
@@ -137,12 +126,7 @@ impl AlloyJsEngine {
         source: &str,
         required: &[AppHandler],
     ) -> Result<(), JsError> {
-        if source.len() > self.limits.max_source_bytes {
-            return Err(JsError::SyntaxError(
-                "App source exceeds engine byte limit".into(),
-            ));
-        }
-        validate_app_handler_decls(source, required)
+        crate::jsc::JavaScriptCoreEngine::with_limits(self.limits).validate_app_handlers(source, required)
     }
 
     /// Evaluates a script in the specified `domain`. In `IsolatedWebScript` domain, `AlloyOS.*`
@@ -153,21 +137,12 @@ impl AlloyJsEngine {
         source: &str,
         host: &mut dyn AlloyOsHost,
     ) -> Result<WebScriptOutput, JsError> {
-        self.validate_source(domain, source)?;
-        let mut isolate = JsIsolate::with_max_steps(self.limits.max_steps);
-        isolate.set_allow_alloyos_bindings(domain.allows_alloyos_bindings());
-        let value = isolate.eval_with_host(source, host)?;
-        Ok(WebScriptOutput {
-            value,
-            printed: isolate.drain_printed_output(),
-            steps_executed: isolate.steps_executed(),
-        })
+        crate::jsc::JavaScriptCoreEngine::with_limits(self.limits).eval_in_domain(domain, source, host)
     }
 
     /// Evaluates an isolated web script with no `AlloyOS.*` host bindings.
     pub fn eval_isolated_web_script(&self, source: &str) -> Result<WebScriptOutput, JsError> {
-        let mut empty_host = VirtualHostEnv::new();
-        self.eval_in_domain(JsExecutionDomain::IsolatedWebScript, source, &mut empty_host)
+        crate::jsc::JavaScriptCoreEngine::with_limits(self.limits).eval_isolated_web_script(source)
     }
 
     /// Invokes a declared headless MCP app handler under this engine's configured limits.
@@ -178,21 +153,7 @@ impl AlloyJsEngine {
         args: &[JsValue],
         host: &mut dyn AlloyOsHost,
     ) -> Result<AppHandlerResult, JsError> {
-        self.validate_app_handlers(source, &[handler])?;
-        let res = crate::app::invoke_app_handler(
-            source,
-            handler,
-            args,
-            self.limits.max_steps,
-            host,
-        )?;
-        if res.text.len() > self.limits.max_result_bytes {
-            return Err(JsError::TypeError(format!(
-                "App handler result exceeds {} bytes",
-                self.limits.max_result_bytes
-            )));
-        }
-        Ok(res)
+        crate::jsc::JavaScriptCoreEngine::with_limits(self.limits).invoke_app_handler(source, handler, args, host)
     }
 }
 

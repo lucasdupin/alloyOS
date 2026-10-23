@@ -2234,7 +2234,7 @@ impl NativeToolRegistry {
                         Ok(ToolExecutionOutput {
                             tool_name: call.name.clone(),
                             output_json: format!(
-                                "{{\"ok\":true,\"script_path\":\"{}\",\"engine\":\"alloyos-js\",\"result\":\"executed_ok\",\"value\":{},\"output\":\"{}\",\"steps\":{}}}",
+                                "{{\"ok\":true,\"script_path\":\"{}\",\"engine\":\"javascriptcore\",\"result\":\"executed_ok\",\"value\":{},\"output\":\"{}\",\"steps\":{}}}",
                                 json_escape(&path),
                                 val_json,
                                 json_escape(&val_str),
@@ -2253,7 +2253,7 @@ impl NativeToolRegistry {
                     Err(err) => Ok(ToolExecutionOutput {
                         tool_name: call.name.clone(),
                         output_json: format!(
-                            "{{\"ok\":false,\"script_path\":\"{}\",\"engine\":\"alloyos-js\",\"result\":\"error\",\"error\":\"{}\"}}",
+                            "{{\"ok\":false,\"script_path\":\"{}\",\"engine\":\"javascriptcore\",\"result\":\"error\",\"error\":\"{}\"}}",
                             json_escape(&path),
                             json_escape(&err.to_string())
                         ),

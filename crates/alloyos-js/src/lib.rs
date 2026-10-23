@@ -1,17 +1,19 @@
 #![cfg_attr(not(test), no_std)]
 
-#[cfg(test)]
+#[cfg(any(test, not(target_os = "none")))]
 extern crate std;
 
 extern crate alloc;
 
 pub mod app;
 pub mod engine;
+pub mod jsc;
 pub mod process;
 pub use app::{invoke_app_handler, validate_app_handlers, AppHandler, AppHandlerResult};
 pub use engine::{
     AlloyJsEngine, EngineLimits, JsEngine, JsExecutionDomain, WebScriptOutput,
 };
+pub use jsc::JavaScriptCoreEngine;
 pub mod ast;
 pub mod host;
 pub mod lexer;

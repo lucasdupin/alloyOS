@@ -50,6 +50,7 @@ dependencies = [
  "alloyos-mcp",
  "alloyos-proto",
  "alloyos-user",
+ "cc",
  "libm",
  "png",
  "serde_json",

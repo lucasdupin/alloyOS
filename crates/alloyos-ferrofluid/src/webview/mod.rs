@@ -4,15 +4,9 @@
 //! Welder may request high-level navigation through Ferrofluid, while apps never
 //! receive a WebView handle, navigation capability, or pixel-buffer access.
 
-pub mod dom;
-pub mod js_runtime;
 pub mod page;
-pub mod renderer;
 
-pub use dom::{parse_color, parse_svg, Color, CssRule, CssStyle, DomElement, DomNode, HtmlDocument, SvgGraphic};
-pub use js_runtime::PageJsRuntime;
 pub use page::{PageInteraction, WebPage};
-pub use renderer::{glyph_5x7, to_ascii_folding, Canvas, HitTarget, PageRenderer};
 
 use alloc::string::String;
 use alloc::vec;

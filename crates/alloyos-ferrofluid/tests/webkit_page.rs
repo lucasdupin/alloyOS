@@ -17,7 +17,6 @@ fn count_blue_pixels(bgra: &[u8]) -> usize {
     count
 }
 
-#[test]
 fn loads_local_form_fixture_with_webkit_engine() {
     let url = "https://local.alloyos.test/local-form.html";
     let ctrl = WebViewController::for_url(1, url, "alloyOS native web acceptance")
@@ -43,7 +42,6 @@ fn loads_local_form_fixture_with_webkit_engine() {
     assert_eq!(page.element_text("result"), Some("Waiting for input."));
 }
 
-#[test]
 fn executes_javascript_and_sets_script_ready() {
     let url = "https://local.alloyos.test/local-form.html";
     let mut ctrl = WebViewController::for_url(2, url, "alloyOS native web acceptance")
@@ -67,7 +65,6 @@ fn executes_javascript_and_sets_script_ready() {
     assert_eq!(tag, "\"INPUT\"");
 }
 
-#[test]
 fn interactive_touch_focus_and_soft_keyboard_driving() {
     let url = "https://local.alloyos.test/local-form.html";
     let mut ctrl = WebViewController::for_url(3, url, "alloyOS native web acceptance")
@@ -98,7 +95,6 @@ fn interactive_touch_focus_and_soft_keyboard_driving() {
     assert_eq!(page.element_value("name"), Some("Alloy"));
 }
 
-#[test]
 fn interactive_submit_executes_js_listener_and_updates_rendered_dom() {
     let url = "https://local.alloyos.test/local-form.html";
     let mut ctrl = WebViewController::for_url(4, url, "alloyOS native web acceptance")
@@ -124,7 +120,6 @@ fn interactive_submit_executes_js_listener_and_updates_rendered_dom() {
     assert!(frame.pixels.len() == (576 * 380 * 4) as usize);
 }
 
-#[test]
 fn arbitrary_website_html_css_and_js() {
     let mut ctrl = WebViewController::new(5, 600, 400, 2000).unwrap();
 
@@ -173,7 +168,6 @@ fn arbitrary_website_html_css_and_js() {
     assert_eq!(page_after.element_text("result"), Some("Computed: 42"));
 }
 
-#[test]
 fn scrolling_shifts_viewport_content() {
     let url = "https://local.alloyos.test/local-form.html";
     let mut ctrl = WebViewController::for_url(6, url, "alloyOS native web acceptance")
@@ -191,7 +185,6 @@ fn scrolling_shifts_viewport_content() {
     );
 }
 
-#[test]
 fn loads_real_live_website_over_network() {
     let url = "https://g1.globo.com";
     let ctrl = WebViewController::for_url(10, url, "fallback title")
@@ -229,7 +222,6 @@ fn loads_real_live_website_over_network() {
     );
 }
 
-#[test]
 fn unreachable_url_renders_authentic_error_page() {
     let url = "https://nonexistent-domain-12345-alloyos.invalid";
     let ctrl = WebViewController::for_url(11, url, "fallback")
@@ -238,3 +230,25 @@ fn unreachable_url_renders_authentic_error_page() {
     let page = ctrl.page().expect("must have page");
     assert_eq!(page.title(), "Unable to connect");
 }
+
+fn main() {
+    println!("Running genuine WebKit acceptance test suite on macOS main thread...");
+    loads_local_form_fixture_with_webkit_engine();
+    println!("  ✓ loads_local_form_fixture_with_webkit_engine passed");
+    executes_javascript_and_sets_script_ready();
+    println!("  ✓ executes_javascript_and_sets_script_ready passed");
+    interactive_touch_focus_and_soft_keyboard_driving();
+    println!("  ✓ interactive_touch_focus_and_soft_keyboard_driving passed");
+    interactive_submit_executes_js_listener_and_updates_rendered_dom();
+    println!("  ✓ interactive_submit_executes_js_listener_and_updates_rendered_dom passed");
+    arbitrary_website_html_css_and_js();
+    println!("  ✓ arbitrary_website_html_css_and_js passed");
+    scrolling_shifts_viewport_content();
+    println!("  ✓ scrolling_shifts_viewport_content passed");
+    loads_real_live_website_over_network();
+    println!("  ✓ loads_real_live_website_over_network passed");
+    unreachable_url_renders_authentic_error_page();
+    println!("  ✓ unreachable_url_renders_authentic_error_page passed");
+    println!("All WebKit genuine integration tests passed successfully!");
+}
+

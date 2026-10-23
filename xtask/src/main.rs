@@ -413,6 +413,10 @@ fn package_processes_inner(root:&Path, _release:bool, disk:&Path)->Result<()> {
     for (binary,dir) in [("ferrofluid","system"),("welder","system"),("app-runner","bin")] {
       std::fs::copy(root.join("target/aarch64-unknown-none").join(profile).join(binary),staging.join(dir).join(binary))?;
     }
+    let jsc_bin = root.join("build/bin/jsc");
+    if jsc_bin.is_file() {
+        std::fs::copy(&jsc_bin, staging.join("bin").join("jsc"))?;
+    }
     image::copy_tree(disk,&staging,"/")
 }
 

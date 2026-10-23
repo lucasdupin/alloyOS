@@ -655,7 +655,8 @@ impl Canvas {
 
     pub fn draw_text(&mut self, x: i32, y: i32, text: &str, scale: i32, rgb: (u8, u8, u8)) {
         let mut cur_x = x;
-        for ch in text.chars() {
+        for raw_ch in text.chars() {
+            let ch = to_ascii_folding(raw_ch);
             if ch == ' ' {
                 cur_x += 4 * scale;
                 continue;
@@ -678,6 +679,19 @@ impl Canvas {
             }
             cur_x += 6 * scale;
         }
+    }
+}
+
+pub fn to_ascii_folding(ch: char) -> char {
+    match ch {
+        'á' | 'à' | 'ã' | 'â' | 'ä' | 'Á' | 'À' | 'Ã' | 'Â' | 'Ä' => 'A',
+        'é' | 'è' | 'ê' | 'ë' | 'É' | 'È' | 'Ê' | 'Ë' => 'E',
+        'í' | 'ì' | 'î' | 'ï' | 'Í' | 'Ì' | 'Î' | 'Ï' => 'I',
+        'ó' | 'ò' | 'õ' | 'ô' | 'ö' | 'Ó' | 'Ò' | 'Õ' | 'Ô' | 'Ö' => 'O',
+        'ú' | 'ù' | 'û' | 'ü' | 'Ú' | 'Ù' | 'Û' | 'Ü' => 'U',
+        'ç' | 'Ç' => 'C',
+        'ñ' | 'Ñ' => 'N',
+        other => other,
     }
 }
 
@@ -732,6 +746,16 @@ pub fn glyph_5x7(ch: char) -> [u8; 7] {
         '[' | '(' => [0b00110, 0b01000, 0b01000, 0b01000, 0b01000, 0b01000, 0b00110],
         ']' | ')' => [0b01100, 0b00010, 0b00010, 0b00010, 0b00010, 0b00010, 0b01100],
         '\'' => [0b00100, 0b00100, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000],
+        '?' => [0b01110, 0b10001, 0b00010, 0b00100, 0b00100, 0b00000, 0b00100],
+        '_' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b11111],
+        ';' => [0b00000, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b01000],
+        '%' => [0b11001, 0b11010, 0b00100, 0b01000, 0b01011, 0b10011, 0b00000],
+        '"' => [0b01010, 0b01010, 0b01010, 0b00000, 0b00000, 0b00000, 0b00000],
+        '@' => [0b01110, 0b10001, 0b10101, 0b10111, 0b10000, 0b01110, 0b00000],
+        '*' => [0b00000, 0b10101, 0b01110, 0b11111, 0b01110, 0b10101, 0b00000],
+        '<' => [0b00010, 0b00100, 0b01000, 0b10000, 0b01000, 0b00100, 0b00010],
+        '>' => [0b01000, 0b00100, 0b00010, 0b00001, 0b00010, 0b00100, 0b01000],
+        '|' => [0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
         _ => [0; 7],
     }
 }
@@ -742,60 +766,74 @@ pub fn render_placeholder_surface(
     url: &str,
     title: &str,
 ) -> Vec<u8> {
-    let mut c = Canvas::new(width, height, (18, 22, 27));
+    render_generic_web_surface(width, height, url, title)
+}
+
+fn render_generic_web_surface(width: u32, height: u32, url: &str, title: &str) -> Vec<u8> {
+    let mut c = Canvas::new(width, height, (16, 20, 25));
     let pad = 24;
 
     // Address Bar
-    let bar_y = 16;
-    let bar_h = 44;
+    let bar_y = 14;
+    let bar_h = 38;
     let bar_w = width as i32 - pad * 2;
-    c.fill_rounded_rect(pad, bar_y, bar_w, bar_h, 8, (28, 34, 42));
-    c.stroke_rounded_rect(pad, bar_y, bar_w, bar_h, 8, 1, (48, 56, 68));
+    c.fill_rounded_rect(pad, bar_y, bar_w, bar_h, 8, (26, 32, 40));
+    c.stroke_rounded_rect(pad, bar_y, bar_w, bar_h, 8, 1, (44, 54, 66));
 
     // Padlock / Secure badge
-    c.fill_rounded_rect(pad + 12, bar_y + 12, 20, 20, 4, (46, 125, 74));
-    c.draw_text(pad + 17, bar_y + 15, "S", 2, (255, 255, 255));
+    c.fill_rounded_rect(pad + 10, bar_y + 9, 20, 20, 4, (46, 125, 74));
+    c.draw_text(pad + 15, bar_y + 12, "S", 2, (255, 255, 255));
 
-    // URL
-    let display_url = if url.len() > 42 {
-        &url[..42]
-    } else {
-        url
-    };
-    c.draw_text(pad + 40, bar_y + 15, display_url, 2, (180, 210, 240));
+    let display_url = if url.len() > 42 { &url[..42] } else { url };
+    c.draw_text(pad + 38, bar_y + 12, display_url, 2, (180, 210, 240));
 
-    // Content Card
-    let content_y = bar_y + bar_h + 20;
-    let content_w = width as i32 - pad * 2;
-    let content_h = height as i32 - content_y - 20;
-    c.fill_rounded_rect(pad, content_y, content_w, content_h, 10, (24, 29, 36));
-    c.stroke_rounded_rect(pad, content_y, content_w, content_h, 10, 1, (42, 50, 60));
+    // Extract clean domain label
+    let host = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url)
+        .split('/')
+        .next()
+        .unwrap_or(url);
+
+    let content_y = bar_y + bar_h + 14;
+    let content_w = bar_w;
+    let content_h = height as i32 - content_y - 18;
+    c.fill_rounded_rect(pad, content_y, content_w, content_h, 10, (22, 27, 34));
+    c.stroke_rounded_rect(pad, content_y, content_w, content_h, 10, 1, (38, 46, 56));
+
+    // Top site brand row inside content card
+    c.fill_rounded_rect(pad + 16, content_y + 14, 30, 30, 6, (50, 110, 200));
+    let initial_char = host.chars().find(|ch| ch.is_alphabetic()).unwrap_or('W').to_ascii_uppercase();
+    let initial = [initial_char as u8];
+    let initial_str = core::str::from_utf8(&initial).unwrap_or("W");
+    c.draw_text(pad + 24, content_y + 18, initial_str, 2, (255, 255, 255));
+
+    let domain_upper = host.to_ascii_uppercase();
+    c.draw_text(pad + 54, content_y + 20, &domain_upper, 2, (220, 230, 240));
 
     // Heading
-    let display_title = if title.is_empty() { "WEB PAGE" } else { title };
-    let heading = if display_title.len() > 30 {
-        &display_title[..30]
-    } else {
-        display_title
-    };
-    c.draw_text(pad + 20, content_y + 22, heading, 3, (240, 244, 248));
+    let display_title = if title.is_empty() || title == url { &domain_upper } else { title };
+    let heading = if display_title.len() > 34 { &display_title[..34] } else { display_title };
+    c.draw_text(pad + 16, content_y + 54, heading, 2, (240, 244, 248));
 
-    // Content layout blocks
-    let card1_y = content_y + 60;
-    let card1_w = content_w - 40;
-    c.fill_rounded_rect(pad + 20, card1_y, card1_w, 64, 6, (32, 38, 48));
-    c.fill_rounded_rect(pad + 32, card1_y + 14, card1_w - 24, 12, 3, (60, 70, 85));
-    c.fill_rounded_rect(pad + 32, card1_y + 34, card1_w / 2, 10, 2, (80, 95, 115));
+    // Content body section
+    let card1_y = content_y + 82;
+    let card1_w = content_w - 32;
+    c.fill_rounded_rect(pad + 16, card1_y, card1_w, 60, 6, (28, 35, 44));
+    c.fill_rounded_rect(pad + 28, card1_y + 12, card1_w - 24, 10, 2, (65, 78, 92));
+    c.fill_rounded_rect(pad + 28, card1_y + 28, card1_w * 3 / 4, 10, 2, (65, 78, 92));
+    c.fill_rounded_rect(pad + 28, card1_y + 44, card1_w / 2, 8, 2, (85, 100, 120));
 
-    let card2_y = card1_y + 76;
-    if card2_y + 60 < content_y + content_h - 20 {
-        c.fill_rounded_rect(pad + 20, card2_y, card1_w, 64, 6, (32, 38, 48));
-        c.fill_rounded_rect(pad + 32, card2_y + 14, card1_w - 48, 12, 3, (60, 70, 85));
-        c.fill_rounded_rect(pad + 32, card2_y + 34, card1_w * 2 / 3, 10, 2, (80, 95, 115));
+    let card2_y = card1_y + 70;
+    if card2_y + 56 < content_y + content_h - 22 {
+        c.fill_rounded_rect(pad + 16, card2_y, card1_w, 56, 6, (28, 35, 44));
+        c.fill_rounded_rect(pad + 28, card2_y + 12, card1_w - 48, 10, 2, (65, 78, 92));
+        c.fill_rounded_rect(pad + 28, card2_y + 28, card1_w * 2 / 3, 10, 2, (65, 78, 92));
     }
 
     // Footer badge
-    c.draw_text(pad + 20, content_y + content_h - 24, "ALLOYOS BROWSER SANDBOX - HTTPS VERIFIED", 1, (120, 135, 150));
+    c.draw_text(pad + 16, content_y + content_h - 18, "ALLOYOS BROWSER SANDBOX - HTTPS VERIFIED", 1, (120, 135, 150));
 
     c.bgra
 }
@@ -1089,5 +1127,15 @@ mod tests {
             ctrl.trusted_origin().unwrap().as_str(),
             "https://actual-host.example.net:8443"
         );
+    }
+
+    #[test]
+    fn for_url_renders_initial_web_surface() {
+        let ctrl = WebViewController::for_url(1, "https://example.org", "Example").unwrap();
+        assert_eq!(ctrl.committed_url(), Some("https://example.org"));
+        assert_eq!(ctrl.trusted_origin().unwrap().as_str(), "https://example.org");
+        let frame = ctrl.committed_frame().expect("must have committed frame");
+        assert_eq!(frame.width, 576);
+        assert_eq!(frame.height, 380);
     }
 }

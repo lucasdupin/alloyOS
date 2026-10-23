@@ -610,6 +610,34 @@ impl AddressSpace {
         Ok(())
     }
 
+    /// Acquire-load a naturally aligned shared word through owned page backing.
+    pub fn load_atomic_u32(&self, address: u64) -> Result<u32, Error> {
+        if address & 3 != 0 { return Err(Error::InvalidRange); }
+        self.validate_range(address, 4, false)?;
+        let offset = (address - USER_BASE) as usize;
+        let page = self.page(offset / PAGE_SIZE, false)?;
+        let pointer = unsafe { page.0.as_ptr().add(offset % PAGE_SIZE) }
+            as *const core::sync::atomic::AtomicU32;
+        // Alignment was validated and no page boundary can split a u32.
+        Ok(unsafe { &*pointer }.load(core::sync::atomic::Ordering::Acquire))
+    }
+
+    /// Validate an instruction range in existing read-only EL0 executable pages.
+    /// Private anonymous reservations are never executable.
+    pub fn validate_executable(&self, address: u64, length: usize) -> Result<(), Error> {
+        if length == 0 || address & 3 != 0 { return Err(Error::InvalidRange); }
+        self.validate_range(address, length, false)?;
+        let first = ((address - USER_BASE) / PAGE_SIZE as u64) as usize;
+        let last = ((address - USER_BASE + length as u64 - 1) / PAGE_SIZE as u64) as usize;
+        for index in first..=last {
+            if index >= self.pages.len() || self.writable[index]
+                || self._leaf[index / 512].0[index % 512] & (1 << 54) != 0 {
+                return Err(Error::InvalidRange);
+            }
+        }
+        Ok(())
+    }
+
     /// Copy through kernel-owned backing, never dereference a caller's pointer.
     pub fn copy_out(&mut self, address: u64, bytes: &[u8]) -> Result<(), Error> {
         self.validate_range(address, bytes.len(), true)?;
@@ -839,6 +867,48 @@ mod tests {
         let mut bytes = [0; 3];
         second.copy_in(address, &mut bytes).unwrap();
         assert_eq!(&bytes, b"two");
+    }
+
+    #[test]
+    fn atomic_word_reads_require_aligned_owned_backing() {
+        let mut space = space();
+        let address = USER_BASE + PAGE_SIZE as u64;
+        space.copy_out(address, &0x12345678u32.to_le_bytes()).unwrap();
+        assert_eq!(space.load_atomic_u32(address).unwrap(), 0x12345678);
+        assert!(space.load_atomic_u32(USER_BASE).is_ok());
+        for bad in [address + 1, USER_BASE - 4, space.stack_top(), u64::MAX - 3] {
+            assert!(space.load_atomic_u32(bad).is_err());
+        }
+        space.max_pages += 1;
+        let private = space.reserve_private(PAGE_SIZE).unwrap();
+        assert!(space.load_atomic_u32(private).is_err());
+        space.commit_private(private, PAGE_SIZE, true).unwrap();
+        space.copy_out(private, &17u32.to_le_bytes()).unwrap();
+        assert_eq!(space.load_atomic_u32(private).unwrap(), 17);
+        space.commit_private(private, PAGE_SIZE, false).unwrap();
+        assert_eq!(space.load_atomic_u32(private).unwrap(), 17);
+        space.decommit_private(private, PAGE_SIZE).unwrap();
+        assert!(space.load_atomic_u32(private).is_err());
+    }
+
+    #[test]
+    fn thread_entry_requires_actual_read_only_executable_mapping() {
+        let mut space = space();
+        assert!(space.validate_executable(USER_BASE, 4).is_ok());
+        for (address, length) in [(USER_BASE + 1, 4), (USER_BASE, 0),
+            (USER_BASE + PAGE_SIZE as u64, 4), (USER_BASE + PAGE_SIZE as u64 - 4, 8),
+            (USER_BASE - 4, 4), (u64::MAX - 3, 8)] {
+            assert!(space.validate_executable(address, length).is_err());
+        }
+        // Anonymous committed read-only data must remain NX.
+        space.max_pages += 1;
+        let data = space.reserve_private(PAGE_SIZE).unwrap();
+        space.commit_private(data, PAGE_SIZE, false).unwrap();
+        assert!(space.validate_executable(data, 4).is_err());
+        let (elf_space, _) = AddressSpace::load_elf(&elf(), 65, 100).unwrap();
+        assert!(elf_space.validate_executable(USER_BASE, 4).is_ok());
+        assert!(elf_space.validate_executable(USER_BASE + PAGE_SIZE as u64, 4).is_err());
+        assert!(elf_space.validate_executable(USER_BASE + 2 * PAGE_SIZE as u64, 4).is_err());
     }
 
     fn space() -> AddressSpace {

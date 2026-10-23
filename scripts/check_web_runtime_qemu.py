@@ -16,8 +16,11 @@ import time
 
 from process_acceptance import acceptance_errors, has_fatal_failure
 
+THREAD_MARKER = b'[web-runtime] PASS: native shared-address-space threads, distinct TLS, atomic wait/wake race, timeout, join, group fault containment and teardown'
 TLS_MARKER = b'[web-runtime] PASS: native C++ constructors and timer-preempted two-process initialized/zero TLS separation'
 CXX_MARKER = b'[web-runtime] PASS: native C++ static ELF virtual dispatch and protected diagnostic report'
+CXX_THREAD_PASS_MARKER = b'[web-runtime] PASS: native C++ threads, per-thread static TLS template, guard initialization and bounded heap new/delete'
+CXX_THREAD_MARKER = b' message=CXX_THREAD_PASS tid!=pid tls=isolated guard=1 new_delete=2'
 
 MEMORY_MARKER = b'[web-runtime] PASS: native EL0 reserve, zero commit, preserved commit, decommit zeroing, release, quota denial, executable denial, guard fault and teardown'
 
@@ -49,11 +52,11 @@ def main():
             env['ALLOYOS_CXX_PROBE_ELF'] = str(cxx_output / 'cxx-probe.elf')
             env['ALLOYOS_CXX_PEER_PROBE_ELF'] = str(cxx_output / 'cxx-peer-probe.elf')
             env['RUSTFLAGS'] = env.get('RUSTFLAGS', '-C force-frame-pointers=yes') + ' --cfg alloyos_cxx_probe --check-cfg=cfg(alloyos_cxx_probe)'
-        subprocess.run(['cargo', 'build', '-p', 'alloyos-kernel', '--target',
+        subprocess.run(['cargo', 'build', '--offline', '-p', 'alloyos-kernel', '--target',
                         'aarch64-unknown-none', '--release', '--features', 'process-selftest'],
                        cwd=root, env=env, check=True)
     kernel = args.kernel.resolve() if args.kernel else target / 'aarch64-unknown-none/release/alloyos-kernel'
-    required = [MEMORY_MARKER] + ([CXX_MARKER, TLS_MARKER] if args.require_cxx else [])
+    required = [MEMORY_MARKER, THREAD_MARKER] + ([CXX_MARKER, TLS_MARKER, CXX_THREAD_PASS_MARKER] if args.require_cxx else [])
     command = ['qemu-system-aarch64', '-M', 'virt,gic-version=' + ('3' if args.accel == 'hvf' else '2'),
                '-accel', args.accel, '-cpu', 'host' if args.accel == 'hvf' else 'cortex-a72',
                '-kernel', str(kernel), '-m', '512M', '-display', 'none',
@@ -85,6 +88,10 @@ def main():
             if child.poll() is not None:
                 break
         errors = acceptance_errors(data, isolation=True)
+        if args.require_cxx:
+            thread_matches = [line for line in data.split(b'\n')[:-1] if line.rstrip(b'\r').endswith(CXX_THREAD_MARKER)]
+            if len(thread_matches) != 2:
+                errors.append('missing two native C++ thread acceptance reports')
         if args.newlib_sysroot:
             libc_marker = b' message=LIBC_NATIVE_PASS memcpy memmove strtod sin'
             matches = [line for line in data.split(b'\n')[:-1] if line.rstrip(b'\r').endswith(libc_marker)]

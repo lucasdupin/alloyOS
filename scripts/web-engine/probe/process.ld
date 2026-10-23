@@ -19,7 +19,7 @@ SECTIONS {
   __init_array_end = .;
  } :data
  .bss : { *(.bss .bss.*) *(COMMON) . += PROBE_TLS_SHIFT; } :data
- .tdata : ALIGN(64) { *(.tdata .tdata.*) } :data :tls
- .tbss : { *(.tbss .tbss.*) } :data :tls
+ .tdata : ALIGN(64) { __tdata_start = .; *(.tdata .tdata.*) __tdata_end = .; } :data :tls
+ .tbss : { __tbss_start = .; *(.tbss .tbss.*) __tbss_end = .; } :data :tls
  /DISCARD/ : { *(.eh_frame*) *(.comment*) }
 }

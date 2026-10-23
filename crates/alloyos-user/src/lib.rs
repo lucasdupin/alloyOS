@@ -17,3 +17,5 @@ pub mod tls;
 pub mod runtime;
 
 pub mod memory;
+
+pub mod thread;

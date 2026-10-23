@@ -67,6 +67,11 @@ impl Scheduler {
             .chain(self.ready_queue.iter())
             .chain(self.blocked_queue.iter())
         {
+            if let Some(code) = task.process_exit_code() {
+                task.set_exit_code(code);
+                *task.wake_deadline.lock() = None;
+                *task.wait_word.lock() = None;
+            }
             if task.state() != TaskState::Zombie
                 && task
                     .execution_deadline
@@ -74,8 +79,15 @@ impl Scheduler {
                     .is_some_and(|deadline| now >= deadline)
                 && task.address_space.lock().is_some()
             {
-                task.set_exit_code(-110);
+                task.exit_process(-110);
                 *task.wake_deadline.lock() = None;
+            }
+        }
+        for task in self.current.iter().chain(self.ready_queue.iter()).chain(self.blocked_queue.iter()) {
+            if let Some(code) = task.process_exit_code() {
+                task.set_exit_code(code);
+                *task.wake_deadline.lock() = None;
+                *task.wait_word.lock() = None;
             }
         }
         // Queued contexts never own the current exception stack or TTBR0, so
@@ -84,8 +96,7 @@ impl Scheduler {
             if task.state() != TaskState::Zombie {
                 return true;
             }
-            task.address_space.lock().take();
-            task.ports.lock().clear();
+            task.retire_context();
             false
         };
         self.ready_queue.retain(release_zombie);
@@ -101,6 +112,7 @@ impl Scheduler {
                     .is_some_and(|deadline| deadline <= now)
             {
                 *current.wake_deadline.lock() = None;
+                complete_word_wait(current, -110);
                 current.set_state(TaskState::Running);
             }
         }
@@ -111,6 +123,7 @@ impl Scheduler {
         }) {
             let task = self.blocked_queue.remove(index).unwrap();
             *task.wake_deadline.lock() = None;
+            complete_word_wait(&task, -110);
             self.add_task(task);
         }
     }
@@ -123,6 +136,50 @@ impl Scheduler {
         // Time slice expired: switch to next task
         self.next_task();
     }
+}
+
+// A blocked word wait owns a saved exception frame until completion. Never
+// expose or dereference the user address here; the process address-space object
+// validates and copies its four-byte value under the same IRQ-disabled lock.
+fn complete_word_wait(task: &Task, result: i64) {
+    if task.wait_word.lock().take().is_some() {
+        let frame = *task.stack_pointer.lock() as *mut crate::arch::idt::TrapFrame;
+        unsafe { (*frame).regs[0] = result as u64; }
+    }
+}
+
+pub fn wait_word(task: &Task, space: &super::app_process::AddressSpace,
+    address: u64, expected: u32, deadline: u64,
+) -> i64 {
+    if address % 4 != 0 { return -22; }
+    let scheduler = SCHEDULER.lock();
+    if scheduler.current.as_ref().is_none_or(|current| current.pid != task.pid) { return -1; }
+    let Ok(actual) = space.load_atomic_u32(address) else { return -14; };
+    if actual != expected { return -11; }
+    if deadline != 0 && deadline <= crate::drivers::rng::monotonic_time_ns() { return -110; }
+    *task.wait_word.lock() = Some(address);
+    *task.wake_deadline.lock() = (deadline != 0).then_some(deadline);
+    task.set_state(TaskState::Blocked);
+    0
+}
+
+pub fn wake_word(task: &Task, address: u64, count: usize) -> i64 {
+    if address % 4 != 0 { return -22; }
+    if count == 0 { return 0; }
+    let mut scheduler = SCHEDULER.lock();
+    let process_id = task.process_id();
+    let mut woken = 0;
+    while woken < count {
+        let Some(index) = scheduler.blocked_queue.iter().position(|candidate| {
+            candidate.process_id() == process_id && *candidate.wait_word.lock() == Some(address)
+        }) else { break; };
+        let waiting = scheduler.blocked_queue.remove(index).unwrap();
+        *waiting.wake_deadline.lock() = None;
+        complete_word_wait(&waiting, 0);
+        scheduler.add_task(waiting);
+        woken += 1;
+    }
+    woken as i64
 }
 
 pub static SCHEDULER: Mutex<Scheduler> = Mutex::new(Scheduler::new());
@@ -218,8 +275,7 @@ fn preempt_with_reason(
     if let Some(retired) = retired {
         // TTBR0 no longer references these tables. Keep the current exception
         // stack alive until another context has entered an exception.
-        retired.address_space.lock().take();
-        retired.ports.lock().clear();
+        retired.retire_context();
         scheduler.retired_contexts.push_back(retired);
     }
     let address = *next.stack_pointer.lock();

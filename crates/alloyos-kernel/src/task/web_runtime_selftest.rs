@@ -21,6 +21,7 @@ fn run_cxx() {
                "TLS pointer restoration needs distinct virtual addresses in this acceptance probe");
     assert_ne!(first.pid, second.pid);
     for task in [&first, &second] {
+        task.enable_native_threads();
         assert_ne!(task.address_space.lock().as_ref().unwrap().initial_thread_pointer(), 0);
         scheduler::add_task(task.clone());
     }
@@ -36,6 +37,7 @@ fn run_cxx() {
             }
             crate::serial_println!("[web-runtime] PASS: native C++ static ELF virtual dispatch and protected diagnostic report");
             crate::serial_println!("[web-runtime] PASS: native C++ constructors and timer-preempted two-process initialized/zero TLS separation");
+            crate::serial_println!("[web-runtime] PASS: native C++ threads, per-thread static TLS template, guard initialization and bounded heap new/delete");
             return;
         }
         crate::arch::wfi();
@@ -46,6 +48,7 @@ fn run_cxx() {
 pub fn run() {
     #[cfg(alloyos_cxx_probe)]
     run_cxx();
+    super::native_threads_selftest::run();
     let image = unsafe {
         let start = core::ptr::addr_of!(web_runtime_probe_start);
         let length = core::ptr::addr_of!(web_runtime_probe_end) as usize - start as usize;

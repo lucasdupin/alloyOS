@@ -104,7 +104,10 @@ pub extern "C" fn rust_sync_exception_handler(tf: &mut TrapFrame) -> *mut TrapFr
             let ret = crate::syscall::protected::dispatch(tf.regs[8], tf.regs[0], tf.regs[1], tf.regs[2]);
             tf.regs[0] = ret as u64;
             if tf.regs[8] == alloyos_proto::SyscallNo::Yield as u64
-                || tf.regs[8] == alloyos_proto::SyscallNo::Exit as u64 {
+                || tf.regs[8] == alloyos_proto::SyscallNo::Exit as u64
+                || tf.regs[8] == alloyos_proto::process::THREAD_EXIT
+                || (tf.regs[8] == alloyos_proto::process::WORD_WAIT && ret == 0)
+            {
                 return crate::task::scheduler::preempt(tf);
             }
             return tf;

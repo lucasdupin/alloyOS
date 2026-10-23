@@ -239,6 +239,8 @@ def main():
         "-fno-builtin",
         "-ftls-model=local-exec",
         "-D__alloyos__=1",
+        "-D_DEFAULT_SOURCE=1",
+        "-D_POSIX_C_SOURCE=200809L",
         "-Wall",
         "-Wextra",
         "-Werror",

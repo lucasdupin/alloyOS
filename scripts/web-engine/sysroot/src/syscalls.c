@@ -133,11 +133,15 @@ int fstat(int fd, struct stat* st) { return _fstat(fd, st); }
 off_t _lseek(int fd, off_t offset, int whence) { (void)fd; (void)offset; (void)whence; errno = EBADF; return (off_t)-1; }
 off_t lseek(int fd, off_t offset, int whence) { return _lseek(fd, offset, whence); }
 
-ssize_t _read(int fd, void* buf, size_t count) { (void)fd; (void)buf; (void)count; errno = EBADF; return -1; }
-ssize_t read(int fd, void* buf, size_t count) { return _read(fd, buf, count); }
+#ifndef _READ_WRITE_RETURN_TYPE
+#define _READ_WRITE_RETURN_TYPE ssize_t
+#endif
 
-ssize_t _write(int fd, const void* buf, size_t count) { (void)fd; (void)buf; (void)count; errno = EBADF; return -1; }
-ssize_t write(int fd, const void* buf, size_t count) { return _write(fd, buf, count); }
+_READ_WRITE_RETURN_TYPE _read(int fd, void* buf, size_t count) { (void)fd; (void)buf; (void)count; errno = EBADF; return -1; }
+_READ_WRITE_RETURN_TYPE read(int fd, void* buf, size_t count) { return _read(fd, buf, count); }
+
+_READ_WRITE_RETURN_TYPE _write(int fd, const void* buf, size_t count) { (void)fd; (void)buf; (void)count; errno = EBADF; return -1; }
+_READ_WRITE_RETURN_TYPE write(int fd, const void* buf, size_t count) { return _write(fd, buf, count); }
 
 int _isatty(int fd) { (void)fd; errno = EBADF; return 0; }
 int isatty(int fd) { return _isatty(fd); }
@@ -269,9 +273,12 @@ struct alloc_header {
 
 __attribute__((weak)) int posix_memalign(void** memptr, size_t alignment, size_t size)
 {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wpointer-bool-conversion"
     if (!memptr || alignment < sizeof(void*) || (alignment & (alignment - 1U)) != 0U) {
         return EINVAL;
     }
+#pragma clang diagnostic pop
     if (size == 0U) {
         size = 1U;
     }

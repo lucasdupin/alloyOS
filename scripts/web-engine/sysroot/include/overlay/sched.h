@@ -1,6 +1,10 @@
 #ifndef _SCHED_H
 #define _SCHED_H
 
+#ifndef _SYS_SCHED_H_
+#define _SYS_SCHED_H_
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif

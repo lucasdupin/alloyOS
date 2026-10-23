@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <sched.h>
 #include <time.h>
+#include <sys/_pthreadtypes.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -26,6 +27,7 @@ extern "C" {
 #define PTHREAD_DESTRUCTOR_ITERATIONS 4
 #define PTHREAD_STACK_MIN             16384UL
 
+#ifndef _SYS__PTHREADTYPES_H_
 typedef uintptr_t pthread_t;
 typedef uint32_t pthread_key_t;
 
@@ -60,6 +62,7 @@ typedef struct {
 typedef struct {
     uint32_t state;
 } pthread_once_t;
+#endif
 
 /* Thread lifecycle */
 int pthread_create(pthread_t* thread, const pthread_attr_t* attr,

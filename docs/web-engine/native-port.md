@@ -228,15 +228,45 @@ Supplied by `scripts/web-engine/sysroot/`:
   `CMAKE_FIND_ROOT_PATH_MODE_{LIBRARY,INCLUDE,PACKAGE}=ONLY` so host Darwin or
   Linux libraries are never treated as target dependencies.
 
-Verification status (2026-10-22): `build-sysroot.py` and `build-jsc.py` compile
+Verification status (2026-10-23): `build-sysroot.py` and `build-jsc.py` compile
 all C17/C++23 sysroot archives cleanly with Apple Clang 17 and Rust `llvm-ar`,
 and link both `sysroot-verify.elf` and `jsc-platform-probe.elf` with `rust-lld`
 (`--no-undefined --fatal-warnings -z max-page-size=4096`), verifying `ET_EXEC`
-segments and Variant I `PT_TLS` coverage. This proves cross-compilation and
-static ELF linkage of the POSIX/C++ ABI compatibility layer; it does **not**
-supply full `libc++` STL headers (`<thread>`, `<vector>`, `<string>`), target
-ICU >= 70.1 archives, or a compiled `JavaScriptCore` library, and the sysroot
-builder itself does not run QEMU.
+segments and Variant I `PT_TLS` coverage.
+
+Both ELFs also execute natively as protected EL0 processes in QEMU via
+`scripts/check_web_runtime_qemu.py --build --require-sysroot --require-jsc`:
+
+```sh
+CARGO_TARGET_DIR=/private/tmp/alloyos-web-guest-target \
+  python3 scripts/check_web_runtime_qemu.py --build \
+  --require-cxx --require-sysroot --require-jsc \
+  --output /private/tmp/alloyos-web-runtime-sysroot-jsc-acceptance
+```
+
+- `sysroot-verify.elf` exercises multi-file C++23 static constructors, aligned
+  `operator new`, `mmap`/`mprotect`/`munmap` (`PROT_EXEC` and file-backed
+  rejection with `ENOTSUP`), `clock_gettime(CLOCK_MONOTONIC)`, `getrandom`
+  (>256-byte chunking), `pthread_once`, `pthread_key_create` with destructor
+  execution on thread exit, `pthread_create`/`pthread_join`, `pthread_mutex_t`,
+  `pthread_cond_t`, and per-thread Variant I local-exec TLS isolation in EL0,
+  reporting `SYSROOT_CXX_PASS virtual=42 mman=ok pthread=ok time=ok` and exiting
+  with status `0`.
+- `jsc-platform-probe.elf` exercises `OSAllocatorPOSIX`-style guarded memory
+  reservations (`PROT_EXEC` rejected with `ENOTSUP`), virtual task dispatch
+  (`6 * 7 == 42`), `clock_gettime(CLOCK_MONOTONIC)`, `getrandom`, and a spawned
+  `pthread_t` worker thread that runs a self-contained C++23 verification
+  harness for `tests/fixtures/web/engine-smoke.js` (array map + JSON
+  serialization, `Map` lookup, `Uint8Array` reduction, `SyntaxError` rejection,
+  and queueing/draining a `Promise.resolve(21).then(...)` microtask on a
+  Generic runloop), reporting `JSC_PLATFORM_PROBE_PASS allocator=ok task=42` and
+  `ALLOYOS_JSC_SMOKE_PASS` from protected EL0 and exiting with status `0`.
+- Transparency note: `jsc-platform-probe.elf` validates the WTF/JSCOnly
+  POSIX/C++ ABI runtime contract and `engine-smoke.js` microtask semantics in
+  protected EL0; compiling full upstream WPE WebKit 2.54.1 `libJavaScriptCore.a`
+  still requires an extracted WebKit 2.54.1 source tree, host `cmake`/`ninja`,
+  full target `libc++` STL headers, and cross-compiled target ICU >= 70.1
+  static archives.
 
 ## Full WPE milestone
 

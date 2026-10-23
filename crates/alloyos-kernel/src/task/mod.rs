@@ -10,6 +10,8 @@ pub mod selftest;
 mod web_runtime_selftest;
 #[cfg(feature = "process-selftest")]
 mod native_threads_selftest;
+#[cfg(feature = "process-selftest")]
+mod web_service_selftest;
 
 #[cfg(test)]
 pub mod tests;

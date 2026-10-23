@@ -304,6 +304,7 @@ def main():
         wtf_platform_probe=dict(
             elf=str(probe_elf),
             sha256=sha256_file(probe_elf),
+            engine_smoke_fixture=str(repo_root / "tests/fixtures/web/engine-smoke.js"),
             **probe_info,
         ),
         remaining_blockers=remaining_blockers,

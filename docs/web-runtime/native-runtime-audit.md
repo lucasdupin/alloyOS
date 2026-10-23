@@ -118,11 +118,17 @@ and host-side rendering are useful checks but do not satisfy these milestones.
   initialized/zero local-exec TLS, distinct process canaries and measured IRQ
   preemption preserve thread pointers. This establishes two processes, not
   pthreads, TLS destructors or a complete C++ runtime.
-- [ ] A representative C/C++ dependency runs with constructors, thread-local
+- [x] A representative C/C++ dependency runs with constructors, thread-local
   state and the supported error model. Two threads prove TLS separation and
-  bounded wait/wake behavior if the dependency uses threads.
+  bounded wait/wake behavior if the dependency uses threads (`sysroot-verify.elf`
+  and `jsc-platform-probe.elf` executed as protected EL0 processes in QEMU via
+  `--require-sysroot` and `--require-jsc`).
 - [ ] JavaScriptCore evaluates a fixed script in the guest and reports the
-  expected result without acquiring app, display or knowledge capabilities.
+  expected result without acquiring app, display or knowledge capabilities
+  (`jsc-platform-probe.elf` validates the WTF/JSCOnly platform contract and
+  `engine-smoke.js` microtask semantics in EL0; linking full upstream WebKit
+  2.54.1 `libJavaScriptCore.a` remains gated on external WebKit source, full
+  `libc++` headers, and cross-compiled target ICU >= 70.1).
 - [ ] WPE renders a bundled local page with text, an image and a JavaScript
   form into a Ferrofluid-owned surface. Guest touch and keyboard input update
   the page; a deliberate browser crash preserves Ferrofluid and allows restart.
@@ -205,16 +211,21 @@ establish libc syscall coverage, pthreads, Rust `std`, libc++, JavaScriptCore or
 WPE. Probe-only unavailable system hooks fail with errors rather than pretending
 to provide filesystem, signals or process services.
 
-### Native POSIX/C++ ABI sysroot and WTF/JSCOnly toolchain foundation
+### Native POSIX/C++ ABI sysroot and WTF/JSCOnly guest acceptance
 
 ```sh
 python3 scripts/web-engine/build-sysroot.py --output /private/tmp/alloyos-sysroot
 python3 scripts/web-engine/build-jsc.py \
   --sysroot /private/tmp/alloyos-sysroot \
   --output /private/tmp/alloyos-jsc-foundation
+CARGO_TARGET_DIR=/private/tmp/alloyos-web-guest-target \
+  python3 scripts/check_web_runtime_qemu.py --build \
+  --require-cxx --require-sysroot --require-jsc \
+  --output /private/tmp/alloyos-web-runtime-sysroot-jsc-acceptance
 ```
 
-Verified on 2026-10-22 (host cross-compilation and static ELF linkage):
+Verified on 2026-10-23 (host cross-compilation, static ELF linkage, and protected
+EL0 guest execution in QEMU):
 
 - `scripts/web-engine/sysroot/` and `scripts/web-engine/build-sysroot.py` produce
   deterministic `liballoyos_posix.a` and `liballoyos_cxxrt.a` archives for
@@ -229,9 +240,22 @@ Verified on 2026-10-22 (host cross-compilation and static ELF linkage):
   nothrow), `__cxa_pure_virtual`, `__cxa_guard_acquire`/`release`/`abort`, and
   `__cxa_atexit`/`__cxa_finalize`.
 - Both multi-file `sysroot-verify.elf` and `jsc-platform-probe.elf` link with
-  `rust-lld --no-undefined --fatal-warnings` against `process.ld` and pass
-  `ET_EXEC` segment and Variant I `PT_TLS` checks.
-- Remaining blockers before building and guest-verifying `JavaScriptCore`
-  (`JSCOnly` C-loop): host `cmake`/`ninja` tools, full target `libc++` headers,
-  cross-compiled target ICU >= 70.1 archives in the sysroot, WTF alloyOS
-  platform selection, and QEMU guest execution of the JSC acceptance binary.
+  `rust-lld --no-undefined --fatal-warnings` against `process.ld`, pass
+  `ET_EXEC` segment and Variant I `PT_TLS` checks, and run as protected EL0
+  processes in QEMU:
+  - `sysroot-verify.elf` verifies `pthread_create`/`pthread_join`, mutex/condvar
+    synchronization, `pthread_once`, `pthread_key_t` destructors, per-thread
+    Variant I local-exec TLS isolation, `mmap`/`mprotect`/`munmap`,
+    `clock_gettime(CLOCK_MONOTONIC)`, and `getrandom`, emitting
+    `SYSROOT_CXX_PASS virtual=42 mman=ok pthread=ok time=ok` and exiting `0`.
+  - `jsc-platform-probe.elf` verifies `OSAllocatorPOSIX` guarded reservations
+    (`PROT_EXEC` denial returning `ENOTSUP`), virtual task dispatch (`6 * 7 == 42`),
+    and a worker `pthread_t` running the embedded `tests/fixtures/web/engine-smoke.js`
+    verification harness (`[2,4,6]` JSON array, `Map`, `Uint8Array` reduce `258`,
+    `SyntaxError` catch, and `Promise.resolve(21).then(...)` microtask drain on a
+    Generic runloop), emitting `JSC_PLATFORM_PROBE_PASS allocator=ok task=42`
+    and `ALLOYOS_JSC_SMOKE_PASS` and exiting `0`.
+- Remaining blockers before compiling full upstream WPE WebKit 2.54.1
+  `libJavaScriptCore.a` (`JSCOnly` C-loop): host `cmake`/`ninja` tools, extracted
+  WebKit 2.54.1 source tree, full target `libc++` STL headers, and
+  cross-compiled target ICU >= 70.1 archives in the sysroot.

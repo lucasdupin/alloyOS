@@ -343,7 +343,7 @@ Forge only through an explicitly granted `AlloyOS.forge(...)` capability.
   - Restore and verify automations across reboot
 - [ ] **Standards-based JavaScript engine migration (planned; depends on userland runtime)**
   - Keep the current `alloyos-js` subset interpreter until a replacement passes protected-process acceptance; evaluate Boa against the browser engine's JavaScript runtime before selecting the app engine. A browser engine and a standalone app interpreter need not use the same implementation
-  - Introduce a shared engine boundary for source validation and execution, preserving `AlloyOS.*` capability policies, Welder-only app orchestration, and manifest-declared scheduler access
+  - Implemented shared engine boundary (`alloyos_js::engine::{JsEngine, AlloyJsEngine, JsExecutionDomain}`): separates `HeadlessApp` and `AutomationScript` (which receive capability-scoped `AlloyOS.*` bindings and no browser globals) from `IsolatedWebScript` (which receives zero `AlloyOS.*` bindings even when a host exists), and supports `try/catch/finally`, `throw`, `instanceof`, `SyntaxError`/`Error`, `Map`, `Uint8Array`, `Array.prototype.reduce`, `Promise` microtask draining, and `print` (passing `tests/fixtures/web/engine-smoke.js`)
   - Use the planned userland `std` runtime rather than requiring a `no_std` engine port; audit native dependencies and measure binary size, startup cost, and memory use on the guest
   - Validate module loading, promises/async host I/O, and execution/memory limits within protected app processes before enabling Boa for developer apps
   - Define supported language and host APIs explicitly; Boa support does not imply Node.js or unrestricted npm package compatibility
@@ -454,8 +454,8 @@ capability-gated syscalls. Existing userland code remains unchanged until those
 services are available. This phase does not displace the hosted MCP priority above.
 
 - [ ] **Establish the userland runtime**
-  - Implemented foundation: protected-process private page reservations with quota-limited zero-filled RO/RW commitment, decommit/release and non-executable mappings; this does not provide libc, threads or Rust `std`
-  - Implemented native startup foundation: one static local-exec AArch64 TLS module per process, preserved thread pointers across exceptions, and explicit C++ constructor startup in the native probe. QEMU acceptance uses two executables with different TLS addresses and verifies timer-driven peer switches; shared-address-space threads and dynamic TLS remain pending
+  - Implemented foundation: protected-process private page reservations with quota-limited zero-filled RO/RW commitment, decommit/release and non-executable mappings (`MEMORY_RESERVE`..=`MEMORY_RELEASE`), plus fail-closed `GETRANDOM` and `CLOCK_MONOTONIC`
+  - Implemented native startup and threading foundation: static local-exec AArch64 TLS (`PT_TLS`), preserved `tpidr_el0` across exceptions, shared-address-space threads (`THREAD_CREATE`, `THREAD_EXIT`, `THREAD_JOIN`, `GETTID`), process-scoped atomic wait/wake (`WORD_WAIT`, `WORD_WAKE`), thread-group fault containment, and native POSIX/C++ static archives (`liballoyos_posix.a`, `liballoyos_cxxrt.a`) verified in QEMU EL0 (`sysroot-verify.elf`); dynamic TLS and full Rust `std` remain pending
   - Audit candidate engines' requirements before expanding the syscall ABI; implement the required allocation/memory mapping, threads, synchronization, clocks, file I/O, networking and C/C++ runtime support
   - Bring up one protected Rust `std` executable and one representative native dependency on ARM64; verify denied capabilities, resource limits and fault recovery
   - Provide familiar library interfaces over authorized resources without granting unrestricted filesystem or network access
@@ -465,13 +465,13 @@ services are available. This phase does not displace the hosted MCP priority abo
   - Keep a host-backed browser helper optional for integration experiments; it does not satisfy native-engine acceptance
 - [ ] **Bring up JavaScriptCore before full WebKit**
   - Use the pinned WebKit source's JSCOnly port with its Generic event loop as the first native C++ engine target; this avoids the full WPE GLib/network/rendering dependency stack for the initial proof
-  - Audit required threads, TLS, memory mapping, ICU and C/C++ library support; begin without JIT if supported by the pinned ARM64 configuration, then measure before enabling executable-memory features
+  - Implemented CMake cross-toolchain (`scripts/web-engine/alloyos-toolchain.cmake`, `scripts/web-engine/build-jsc.py`) and verified the WTF/JSCOnly platform and `engine-smoke.js` worker probe (`jsc-platform-probe.elf`) in QEMU EL0 (`ALLOYOS_JSC_SMOKE_PASS`); compiling full upstream WPE WebKit 2.54.1 `libJavaScriptCore.a` remains gated on external WebKit source, full target `libc++` headers, and cross-compiled ICU >= 70.1 archives
   - Run `tests/fixtures/web/engine-smoke.js` in a protected guest process and require its promise-completion marker; host execution is not native acceptance
-- [ ] **Define the Ferrofluid/browser service boundary**
+- [x] **Define the Ferrofluid/browser service boundary**
   - Run untrusted web execution in a protected browser service, outside both Ferrofluid and the kernel; retain the engine's required internal process boundaries
-  - Add bounded, versioned IPC for view lifecycle, navigation, viewport/scale, touch/pointer/keyboard input, text editing and focus, damaged pixel regions, URL/title/loading state and crashes
-  - Ferrofluid owns surface placement, trusted origin display, navigation controls, permissions and soft-keyboard integration; Welder requests navigation through typed capabilities
-  - Begin with bounded frame copies and software rendering; add shared buffers or acceleration after measuring the guest's memory, bandwidth and latency
+  - Added bounded, versioned IPC (`alloyos_proto::web`) for view lifecycle, navigation, viewport/scale, touch/pointer/keyboard input, text editing and focus, damaged pixel regions, canonical trusted origin derivation (`TrustedOrigin`), URL/title/loading state and crashes
+  - Ferrofluid (`alloyos_ferrofluid::webview::WebViewController`) owns surface placement, trusted origin display, navigation controls, permissions and soft-keyboard integration; Welder (`alloyos_welder::webview::WebViewBroker`) requests navigation through typed capabilities while unconditionally rejecting app callers (`WebViewCaller::App` -> `AppAccessForbidden`)
+  - Verified in QEMU EL0 (`web_service_selftest.rs`) with bounded frame copies, local form input roundtrip, app denial, EL0 browser service fault containment, and generation-bumped restart recovery
 - [ ] **Preserve web and app capability boundaries**
   - Apps continue exposing structured data, tools and declarative tiles; no app HTML, page scripts or arbitrary pixel surfaces
   - Web content receives no implicit MCP tools, knowledge access, OS bindings or agent credentials; enforce browser origin rules and mediate device, clipboard, download and file access

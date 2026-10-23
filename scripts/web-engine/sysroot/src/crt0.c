@@ -11,6 +11,8 @@ extern void __cxa_finalize(void* dso_handle) __attribute__((weak));
 extern void __alloyos_heap_init(uintptr_t heap_start, size_t heap_length);
 extern void __alloyos_pthread_init_main(void);
 extern int main(int argc, char** argv) __attribute__((weak));
+extern int _Z4mainiPPc(int argc, char** argv) __attribute__((weak));
+extern int _Z4mainv(void) __attribute__((weak));
 
 static uint32_t g_runtime_initialized = 0;
 
@@ -43,11 +45,15 @@ void _start(uint64_t heap_start, uint64_t heap_length)
         }
     }
     __alloyos_runtime_init((uintptr_t)heap_start, (size_t)heap_length);
-    int status = 0;
+    int status = 73;
+    static char prog_name[] = "alloyos-elf";
+    char* argv[2] = { prog_name, NULL };
     if (main) {
-        static char prog_name[] = "alloyos-elf";
-        char* argv[2] = { prog_name, NULL };
         status = main(1, argv);
+    } else if (_Z4mainiPPc) {
+        status = _Z4mainiPPc(1, argv);
+    } else if (_Z4mainv) {
+        status = _Z4mainv();
     }
     if (__cxa_finalize) {
         __cxa_finalize(NULL);

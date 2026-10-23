@@ -45,10 +45,45 @@ fn run_cxx() {
     panic!("native C++ runtime probe timed out");
 }
 
+#[cfg(alloyos_sysroot_probe)]
+fn run_sysroot_and_jsc() {
+    let sysroot_image = include_bytes!(env!("ALLOYOS_SYSROOT_VERIFY_ELF"));
+    let sysroot_task =
+        Arc::new(Task::user_executable(sysroot_image, 80, 128).expect("load sysroot verify ELF"));
+    let jsc_image = include_bytes!(env!("ALLOYOS_JSC_PROBE_ELF"));
+    let jsc_task =
+        Arc::new(Task::user_executable(jsc_image, 80, 128).expect("load JSC platform probe ELF"));
+    for task in [&sysroot_task, &jsc_task] {
+        task.enable_native_threads();
+        scheduler::add_task(task.clone());
+    }
+    scheduler::start_preemption();
+    let deadline = crate::drivers::rng::monotonic_time_ns() + 5_000_000_000;
+    while crate::drivers::rng::monotonic_time_ns() < deadline {
+        if sysroot_task.exit_code().is_some()
+            && jsc_task.exit_code().is_some()
+            && sysroot_task.address_space.lock().is_none()
+            && jsc_task.address_space.lock().is_none()
+        {
+            assert_eq!(sysroot_task.exit_code(), Some(0), "sysroot POSIX/C++ probe failed");
+            assert_eq!(jsc_task.exit_code(), Some(0), "JSC platform/smoke probe failed");
+            crate::serial_println!(
+                "[web-runtime] PASS: native POSIX/C++ sysroot ELF (mmap, pthreads, condvar, TLS key destructor) and JSCOnly platform/smoke probe"
+            );
+            return;
+        }
+        crate::arch::wfi();
+    }
+    panic!("native sysroot/JSC probe timed out");
+}
+
 pub fn run() {
     #[cfg(alloyos_cxx_probe)]
     run_cxx();
+    #[cfg(alloyos_sysroot_probe)]
+    run_sysroot_and_jsc();
     super::native_threads_selftest::run();
+    super::web_service_selftest::run();
     let image = unsafe {
         let start = core::ptr::addr_of!(web_runtime_probe_start);
         let length = core::ptr::addr_of!(web_runtime_probe_end) as usize - start as usize;

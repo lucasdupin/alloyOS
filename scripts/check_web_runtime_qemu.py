@@ -17,10 +17,15 @@ import time
 from process_acceptance import acceptance_errors, has_fatal_failure
 
 THREAD_MARKER = b'[web-runtime] PASS: native shared-address-space threads, distinct TLS, atomic wait/wake race, timeout, join, group fault containment and teardown'
+WEB_SERVICE_MARKER = b'[web-runtime] PASS: protected EL0 browser service IPC, local form input roundtrip, app denial, crash containment and restart recovery'
 TLS_MARKER = b'[web-runtime] PASS: native C++ constructors and timer-preempted two-process initialized/zero TLS separation'
 CXX_MARKER = b'[web-runtime] PASS: native C++ static ELF virtual dispatch and protected diagnostic report'
 CXX_THREAD_PASS_MARKER = b'[web-runtime] PASS: native C++ threads, per-thread static TLS template, guard initialization and bounded heap new/delete'
 CXX_THREAD_MARKER = b' message=CXX_THREAD_PASS tid!=pid tls=isolated guard=1 new_delete=2'
+SYSROOT_PASS_MARKER = b'[web-runtime] PASS: native POSIX/C++ sysroot ELF (mmap, pthreads, condvar, TLS key destructor) and JSCOnly platform/smoke probe'
+SYSROOT_REPORT_MARKER = b' message=SYSROOT_CXX_PASS virtual=42 mman=ok pthread=ok time=ok'
+JSC_PLATFORM_MARKER = b' message=JSC_PLATFORM_PROBE_PASS allocator=ok task=42'
+JSC_SMOKE_MARKER = b' message=ALLOYOS_JSC_SMOKE_PASS'
 
 MEMORY_MARKER = b'[web-runtime] PASS: native EL0 reserve, zero commit, preserved commit, decommit zeroing, release, quota denial, executable denial, guard fault and teardown'
 
@@ -30,6 +35,7 @@ def main():
     parser.add_argument('--kernel', type=Path)
     parser.add_argument('--build', action='store_true')
     parser.add_argument('--require-cxx', action='store_true')
+    parser.add_argument('--require-sysroot', action='store_true')
     parser.add_argument('--newlib-sysroot', type=Path)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--accel', choices=('hvf', 'tcg'), default='hvf')
@@ -42,6 +48,7 @@ def main():
     target = Path(os.environ.get('CARGO_TARGET_DIR', str(root / 'target'))).resolve()
     if args.build:
         env = os.environ.copy()
+        rustflags = env.get('RUSTFLAGS', '-C force-frame-pointers=yes')
         if args.require_cxx:
             cxx_output = args.output.resolve() / 'cxx'
             probe_command = ['python3', str(root / 'scripts/web-engine/build-native-probe.py'),
@@ -51,12 +58,31 @@ def main():
             subprocess.run(probe_command, cwd=root, check=True)
             env['ALLOYOS_CXX_PROBE_ELF'] = str(cxx_output / 'cxx-probe.elf')
             env['ALLOYOS_CXX_PEER_PROBE_ELF'] = str(cxx_output / 'cxx-peer-probe.elf')
-            env['RUSTFLAGS'] = env.get('RUSTFLAGS', '-C force-frame-pointers=yes') + ' --cfg alloyos_cxx_probe --check-cfg=cfg(alloyos_cxx_probe)'
+            rustflags += ' --cfg alloyos_cxx_probe --check-cfg=cfg(alloyos_cxx_probe)'
+        if args.require_sysroot:
+            sysroot_output = args.output.resolve() / 'sysroot'
+            jsc_output = args.output.resolve() / 'jsc'
+            sysroot_cmd = ['python3', str(root / 'scripts/web-engine/build-sysroot.py'),
+                           '--output', str(sysroot_output)]
+            if args.newlib_sysroot:
+                sysroot_cmd += ['--newlib', str(args.newlib_sysroot.resolve())]
+            subprocess.run(sysroot_cmd, cwd=root, check=True)
+            subprocess.run(['python3', str(root / 'scripts/web-engine/build-jsc.py'),
+                            '--sysroot', str(sysroot_output),
+                            '--output', str(jsc_output)], cwd=root, check=True)
+            env['ALLOYOS_SYSROOT_VERIFY_ELF'] = str(sysroot_output / 'verify/sysroot-verify.elf')
+            env['ALLOYOS_JSC_PROBE_ELF'] = str(jsc_output / 'probe/jsc-platform-probe.elf')
+            rustflags += ' --cfg alloyos_sysroot_probe --check-cfg=cfg(alloyos_sysroot_probe)'
+        env['RUSTFLAGS'] = rustflags
         subprocess.run(['cargo', 'build', '--offline', '-p', 'alloyos-kernel', '--target',
                         'aarch64-unknown-none', '--release', '--features', 'process-selftest'],
                        cwd=root, env=env, check=True)
     kernel = args.kernel.resolve() if args.kernel else target / 'aarch64-unknown-none/release/alloyos-kernel'
-    required = [MEMORY_MARKER, THREAD_MARKER] + ([CXX_MARKER, TLS_MARKER, CXX_THREAD_PASS_MARKER] if args.require_cxx else [])
+    required = [MEMORY_MARKER, THREAD_MARKER, WEB_SERVICE_MARKER]
+    if args.require_cxx:
+        required += [CXX_MARKER, TLS_MARKER, CXX_THREAD_PASS_MARKER]
+    if args.require_sysroot:
+        required += [SYSROOT_PASS_MARKER]
     command = ['qemu-system-aarch64', '-M', 'virt,gic-version=' + ('3' if args.accel == 'hvf' else '2'),
                '-accel', args.accel, '-cpu', 'host' if args.accel == 'hvf' else 'cortex-a72',
                '-kernel', str(kernel), '-m', '512M', '-display', 'none',
@@ -92,6 +118,13 @@ def main():
             thread_matches = [line for line in data.split(b'\n')[:-1] if line.rstrip(b'\r').endswith(CXX_THREAD_MARKER)]
             if len(thread_matches) != 2:
                 errors.append('missing two native C++ thread acceptance reports')
+        if args.require_sysroot:
+            for label, suffix in (('sysroot POSIX/C++', SYSROOT_REPORT_MARKER),
+                                  ('JSC platform', JSC_PLATFORM_MARKER),
+                                  ('JSC engine-smoke', JSC_SMOKE_MARKER)):
+                matches = [line for line in data.split(b'\n')[:-1] if line.rstrip(b'\r').endswith(suffix)]
+                if len(matches) != 1:
+                    errors.append(f'missing {label} acceptance report')
         if args.newlib_sysroot:
             libc_marker = b' message=LIBC_NATIVE_PASS memcpy memmove strtod sin'
             matches = [line for line in data.split(b'\n')[:-1] if line.rstrip(b'\r').endswith(libc_marker)]

@@ -1207,7 +1207,7 @@ mod tests {
             }
             fn generate(&mut self, request: &GenerationRequest) -> Result<Generation, ForgeError> {
                 let text = match self.step {
-                    0 => serde_json::json!({"kind":"tools","calls":[{"name":"script_create","arguments":{"path":"/tmp/get_time.js","source":"console.log(new Date());"}}]}).to_string(),
+                    0 => serde_json::json!({"kind":"tools","calls":[{"name":"script_create","arguments":{"path":"/tmp/get_time.js","source":"console.log(new Date("}}]}).to_string(),
                     1 => {
                         assert!(request.prompt.contains("JavaScript syntax error"));
                         assert!(request.prompt.contains("tool: {\"error\":"));

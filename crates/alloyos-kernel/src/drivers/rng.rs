@@ -215,6 +215,7 @@ pub fn next_u64() -> u64 {
 pub struct SecureEntropyUnavailable;
 static SECURE_RNG: Mutex<Option<ChaCha20Rng>> = Mutex::new(None);
 /// Called only by trusted platform entropy drivers after acquiring a full seed.
+#[allow(dead_code)]
 pub(super) fn install_secure_seed(mut seed: [u8; 32]) {
     let mut rng=ChaCha20Rng::new();
     for (slot,bytes) in rng.key.iter_mut().zip(seed.chunks_exact(4)) {

@@ -1,4 +1,6 @@
 #include <errno.h>
+#include <pthread.h>
+#include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -129,6 +131,56 @@ int close(int fd) { return _close(fd); }
 
 int _fstat(int fd, struct stat* st) { (void)fd; (void)st; errno = EBADF; return -1; }
 int fstat(int fd, struct stat* st) { return _fstat(fd, st); }
+
+int _stat(const char* file, struct stat* st) { (void)file; (void)st; errno = ENOENT; return -1; }
+int stat(const char* file, struct stat* st) { return _stat(file, st); }
+
+int _open(const char* file, int flags, ...) { (void)file; (void)flags; errno = ENOENT; return -1; }
+int open(const char* file, int flags, ...) { return _open(file, flags); }
+
+int ftruncate(int fd, off_t length) { (void)fd; (void)length; errno = EBADF; return -1; }
+int fsync(int fd) { (void)fd; return 0; }
+
+char* getcwd(char* buf, size_t size)
+{
+    if (!buf) {
+        buf = (char*)malloc(size ? size : 2);
+    }
+    if (size < 2 && size != 0) {
+        errno = ERANGE;
+        return NULL;
+    }
+    if (buf) {
+        buf[0] = '/';
+        buf[1] = '\0';
+    }
+    return buf;
+}
+
+int sigaction(int signum, const struct sigaction* act, struct sigaction* oldact)
+{
+    (void)signum; (void)act; (void)oldact;
+    return 0;
+}
+
+int sigsuspend(const sigset_t* mask)
+{
+    (void)mask;
+    errno = EINTR;
+    return -1;
+}
+
+int pthread_sigmask(int how, const sigset_t* set, sigset_t* oldset)
+{
+    (void)how; (void)set; (void)oldset;
+    return 0;
+}
+
+int pthread_kill(pthread_t thread, int sig)
+{
+    (void)thread; (void)sig;
+    return 0;
+}
 
 off_t _lseek(int fd, off_t offset, int whence) { (void)fd; (void)offset; (void)whence; errno = EBADF; return (off_t)-1; }
 off_t lseek(int fd, off_t offset, int whence) { return _lseek(fd, offset, whence); }

@@ -84,6 +84,9 @@ int pthread_attr_setdetachstate(pthread_attr_t* attr, int detachstate);
 int pthread_attr_getdetachstate(const pthread_attr_t* attr, int* detachstate);
 int pthread_attr_getstack(const pthread_attr_t* attr, void** stackaddr, size_t* stacksize);
 int pthread_getattr_np(pthread_t thread, pthread_attr_t* attr);
+int pthread_attr_setstack(pthread_attr_t* attr, void* stackaddr, size_t stacksize);
+int pthread_getschedparam(pthread_t thread, int* policy, struct sched_param* param);
+int pthread_setschedparam(pthread_t thread, int policy, const struct sched_param* param);
 
 /* Mutexes */
 int pthread_mutexattr_init(pthread_mutexattr_t* attr);

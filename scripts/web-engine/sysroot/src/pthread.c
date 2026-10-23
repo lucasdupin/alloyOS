@@ -897,3 +897,27 @@ int pthread_setspecific(pthread_key_t key, const void* value)
     g_tls_state.key_generations[key] = gen;
     return 0;
 }
+
+int pthread_attr_setstack(pthread_attr_t* attr, void* stackaddr, size_t stacksize)
+{
+    /* pthread_create always allocates and guards its own stacks. */
+    (void)stackaddr; (void)stacksize;
+    return attr ? ENOTSUP : EINVAL;
+}
+
+int pthread_getschedparam(pthread_t thread, int* policy, struct sched_param* param)
+{
+    if (!thread || !policy || !param) {
+        return EINVAL;
+    }
+    /* The scheduler has a single priority class. */
+    *policy = SCHED_OTHER;
+    param->sched_priority = 0;
+    return 0;
+}
+
+int pthread_setschedparam(pthread_t thread, int policy, const struct sched_param* param)
+{
+    (void)policy; (void)param;
+    return thread ? ENOTSUP : EINVAL;
+}

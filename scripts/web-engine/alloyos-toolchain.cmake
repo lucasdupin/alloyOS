@@ -11,7 +11,13 @@
 #     -DENABLE_C_LOOP=ON -DENABLE_WEBASSEMBLY=OFF \
 #     -DENABLE_SAMPLING_PROFILER=OFF -DENABLE_API_TESTS=OFF
 
-set(CMAKE_SYSTEM_NAME Generic)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
+set(CMAKE_SYSTEM_NAME AlloyOS)
+# pthreads are part of liballoyos_posix.a; stop FindThreads from adding -lpthreads.
+set(CMAKE_THREAD_LIBS_INIT "" CACHE STRING "")
+set(CMAKE_HAVE_THREADS_LIBRARY 1 CACHE INTERNAL "")
+set(CMAKE_USE_PTHREADS_INIT 1 CACHE INTERNAL "")
+set(Threads_FOUND TRUE CACHE INTERNAL "")
 set(CMAKE_SYSTEM_PROCESSOR aarch64)
 set(CMAKE_CROSSCOMPILING TRUE)
 
@@ -43,7 +49,8 @@ foreach(_required_file
 endforeach()
 
 set(CMAKE_SYSROOT "${ALLOYOS_SYSROOT}")
-set(ALLOYOS_TARGET_TRIPLE "aarch64-unknown-none")
+set(CMAKE_RANLIB "${CMAKE_CURRENT_LIST_DIR}/bin/ranlib" CACHE FILEPATH "alloyOS ranlib shim")
+set(ALLOYOS_TARGET_TRIPLE "aarch64-none-elf")
 
 set(CMAKE_C_COMPILER_TARGET "${ALLOYOS_TARGET_TRIPLE}")
 set(CMAKE_CXX_COMPILER_TARGET "${ALLOYOS_TARGET_TRIPLE}")
@@ -79,7 +86,7 @@ if(NOT CMAKE_AR OR NOTALLOYOS_RUST_LLD)
 endif()
 
 set(_ALLOYOS_COMMON_FLAGS
-    "--target=${ALLOYOS_TARGET_TRIPLE} --sysroot=${ALLOYOS_SYSROOT} -ffreestanding -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-pic -fno-builtin -ftls-model=local-exec -D__alloyos__=1")
+    "--target=${ALLOYOS_TARGET_TRIPLE} --sysroot=${ALLOYOS_SYSROOT} -ffreestanding -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-pic -fno-builtin -ftls-model=local-exec -D__alloyos__=1 -D_POSIX_C_SOURCE=200809L -D_XOPEN_SOURCE=700 -D_POSIX_TIMERS=1 -D__unix__=1 -D_GNU_SOURCE=1 -D_POSIX_CPUTIME=1 -D_POSIX_THREAD_CPUTIME=1 -D_POSIX_MONOTONIC_CLOCK=200809L")
 
 set(CMAKE_C_FLAGS_INIT
     "${_ALLOYOS_COMMON_FLAGS} -isystem ${ALLOYOS_SYSROOT}/include")
@@ -87,15 +94,28 @@ set(CMAKE_CXX_FLAGS_INIT
     "${_ALLOYOS_COMMON_FLAGS} -fno-exceptions -fno-rtti -nostdinc++ -isystem ${ALLOYOS_SYSROOT}/include/c++/v1 -isystem ${ALLOYOS_SYSROOT}/include")
 
 set(_ALLOYOS_LINK_LIBS "-L${ALLOYOS_SYSROOT}/lib -lalloyos_cxxrt -lalloyos_posix")
+foreach(_lib c++ c++abi icui18n icuuc icudata)
+    if(EXISTS "${ALLOYOS_SYSROOT}/lib/lib${_lib}.a")
+        set(_ALLOYOS_LINK_LIBS "${_ALLOYOS_LINK_LIBS} -l${_lib}")
+    endif()
+endforeach()
 if(EXISTS "${ALLOYOS_SYSROOT}/lib/libc.a")
     set(_ALLOYOS_LINK_LIBS "${_ALLOYOS_LINK_LIBS} -lc")
 endif()
 if(EXISTS "${ALLOYOS_SYSROOT}/lib/libm.a")
     set(_ALLOYOS_LINK_LIBS "${_ALLOYOS_LINK_LIBS} -lm")
 endif()
+# compiler-rt builtins (soft-float long double, 128-bit math) from rustup's compiler_builtins.
+if(_RUST_SYSROOT)
+    file(GLOB _ALLOYOS_BUILTINS "${_RUST_SYSROOT}/lib/rustlib/aarch64-unknown-none/lib/libcompiler_builtins-*.rlib")
+    list(GET _ALLOYOS_BUILTINS 0 _ALLOYOS_BUILTINS_LIB)
+    if(_ALLOYOS_BUILTINS_LIB)
+        set(_ALLOYOS_LINK_LIBS "${_ALLOYOS_LINK_LIBS} ${_ALLOYOS_BUILTINS_LIB}")
+    endif()
+endif()
 
 set(CMAKE_EXE_LINKER_FLAGS_INIT
-    "-nostdlib -Wl,--no-undefined -Wl,--fatal-warnings -Wl,--build-id=none -Wl,-z,max-page-size=4096 -Wl,-T,${ALLOYOS_SYSROOT}/lib/process.ld -Wl,--start-group ${_ALLOYOS_LINK_LIBS} -Wl,--end-group")
+    "-fuse-ld=lld --ld-path=${CMAKE_CURRENT_LIST_DIR}/bin/ld.lld -nostdlib -Wl,--no-undefined -Wl,--fatal-warnings -Wl,--build-id=none -Wl,-z,max-page-size=4096 -Wl,-T,${ALLOYOS_SYSROOT}/lib/process.ld -Wl,--start-group ${_ALLOYOS_LINK_LIBS} -Wl,--end-group")
 
 # Strictly isolate package/header/library discovery to the alloyOS sysroot.
 # Never treat host Darwin/Linux headers or libraries (e.g. host ICU/GLib/pthread) as target ones.
@@ -107,3 +127,14 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 set(ENV{PKG_CONFIG_DIR} "")
 set(ENV{PKG_CONFIG_LIBDIR} "${ALLOYOS_SYSROOT}/lib/pkgconfig:${ALLOYOS_SYSROOT}/share/pkgconfig")
 set(ENV{PKG_CONFIG_SYSROOT_DIR} "${ALLOYOS_SYSROOT}")
+
+# Hint ICU directly to the sysroot paths for CMake's FindICU module.
+if(EXISTS "${ALLOYOS_SYSROOT}/include/unicode/utypes.h")
+    set(ICU_ROOT "/" CACHE PATH "ICU root within sysroot")
+    set(ICU_INCLUDE_DIR "${ALLOYOS_SYSROOT}/include" CACHE PATH "ICU include directory")
+    if(EXISTS "${ALLOYOS_SYSROOT}/lib/libicuuc.a")
+        set(ICU_UC_LIBRARY "${ALLOYOS_SYSROOT}/lib/libicuuc.a" CACHE FILEPATH "ICU uc library")
+        set(ICU_I18N_LIBRARY "${ALLOYOS_SYSROOT}/lib/libicui18n.a" CACHE FILEPATH "ICU i18n library")
+        set(ICU_DATA_LIBRARY "${ALLOYOS_SYSROOT}/lib/libicudata.a" CACHE FILEPATH "ICU data library")
+    endif()
+endif()

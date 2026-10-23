@@ -18,6 +18,7 @@ extern "C" {
 #define MAP_FIXED       0x10
 #define MAP_ANONYMOUS   0x20
 #define MAP_ANON        MAP_ANONYMOUS
+#define MAP_FILE        0x0
 #define MAP_NORESERVE   0x4000
 
 #define MAP_FAILED      ((void*)-1)
@@ -35,9 +36,14 @@ extern "C" {
 #define POSIX_MADV_WILLNEED   3
 #define POSIX_MADV_DONTNEED   4
 
+#define MS_ASYNC        1
+#define MS_INVALIDATE   2
+#define MS_SYNC         4
+
 void* mmap(void* addr, size_t len, int prot, int flags, int fd, off_t offset);
 int munmap(void* addr, size_t len);
 int mprotect(void* addr, size_t len, int prot);
+int msync(void* addr, size_t len, int flags);
 int madvise(void* addr, size_t len, int advice);
 int posix_madvise(void* addr, size_t len, int advice);
 

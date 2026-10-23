@@ -1,0 +1,12 @@
+#!/bin/sh
+# ELF linker shim: runs rustup's bundled rust-lld in GNU-ld mode so clang
+# (--target=aarch64-none-elf) can link alloyOS binaries without a system LLVM.
+set -e
+if [ -n "$ALLOYOS_RUST_LLD" ]; then
+    LLD="$ALLOYOS_RUST_LLD"
+else
+    SYSROOT="$(rustc --print sysroot)"
+    HOST="$(rustc -vV | sed -n 's/^host: //p')"
+    LLD="$SYSROOT/lib/rustlib/$HOST/bin/rust-lld"
+fi
+exec "$LLD" -flavor gnu "$@"

@@ -265,7 +265,7 @@ def main():
         str(include_dir),
     ]
 
-    posix_sources = ["crt0.c", "syscalls.c", "mman.c", "pthread.c", "time_random.c"]
+    posix_sources = ["crt0.c", "syscalls.c", "mman.c", "pthread.c", "time_random.c", "semaphore.c"]
     posix_objects = []
     for src_name in posix_sources:
         src_path = sysroot_src / "src" / src_name
@@ -280,6 +280,15 @@ def main():
     run([*cxx_flags, "-c", sysroot_src / "src/cxxrt.cpp", "-o", cxxrt_obj])
     lib_cxxrt = lib_dir / "liballoyos_cxxrt.a"
     run([ar, "rcsD", lib_cxxrt, cxxrt_obj])
+
+    # Standard POSIX compatibility stubs (symbols are provided by liballoyos_posix.a)
+    empty_c = obj_dir / "empty.c"
+    empty_c.write_text("/* empty stub */\n")
+    empty_o = obj_dir / "empty.o"
+    run([*c_flags, "-c", empty_c, "-o", empty_o])
+    for stub_lib_name in ("libpthread.a", "libpthreads.a", "libdl.a", "librt.a"):
+        stub_path = lib_dir / stub_lib_name
+        run([ar, "rcsD", stub_path, empty_o])
 
     # Multi-file C++23 verification compile & link with --no-undefined
     verify_objs = []

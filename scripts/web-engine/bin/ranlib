@@ -1,0 +1,10 @@
+#!/bin/sh
+# ranlib shim: Apple's ranlib cannot index the thin ELF archives WebKit builds.
+set -e
+SYSROOT="$(rustc --print sysroot)"
+HOST="$(rustc -vV | sed -n 's/^host: //p')"
+AR="${ALLOYOS_LLVM_AR:-$SYSROOT/lib/rustlib/$HOST/bin/llvm-ar}"
+for f in "$@"; do
+    case "$f" in -*) continue ;; esac
+    "$AR" s "$f"
+done

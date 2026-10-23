@@ -190,3 +190,14 @@ int posix_madvise(void* addr, size_t len, int advice)
     }
     return 0;
 }
+
+int msync(void* addr, size_t len, int flags)
+{
+    /* Mappings are anonymous/private in alloyOS; there is no backing store to flush. */
+    (void)addr; (void)len;
+    if (flags & ~(MS_ASYNC | MS_SYNC | MS_INVALIDATE)) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
+}

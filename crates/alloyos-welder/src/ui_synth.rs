@@ -15,6 +15,7 @@ pub enum ViewKind {
     Table,
     ScriptScheduleList,
     McpAppView,
+    WebView,
 }
 
 impl ViewKind {
@@ -25,6 +26,7 @@ impl ViewKind {
             ViewKind::Table => "table",
             ViewKind::ScriptScheduleList => "script_schedule_list",
             ViewKind::McpAppView => "mcp_app_view",
+            ViewKind::WebView => "webview",
         }
     }
 
@@ -37,6 +39,7 @@ impl ViewKind {
                 Some(ViewKind::ScriptScheduleList)
             }
             "mcp_app_view" | "mcp" | "app_view" => Some(ViewKind::McpAppView),
+            "webview" | "web" | "browser" => Some(ViewKind::WebView),
             _ => None,
         }
     }
@@ -412,6 +415,37 @@ impl AgentUiSynthesizer {
             tile,
             damage_rect: DirtyRect::new(60, 60, 1160, 680),
             raw_payload_json: mcp_output_json.to_string(),
+        };
+        self.active_views.push(view.clone());
+        Ok(view)
+    }
+
+    /// Synthesizes an agent-managed WebView surface in Ferrofluid.
+    pub fn synthesize_webview(
+        &mut self,
+        origin: &UiCallerOrigin,
+        url: &str,
+        trusted_origin: &str,
+        title: &str,
+    ) -> Result<SynthesizedUiView, AiError> {
+        Self::verify_caller_origin(origin)?;
+        let view = SynthesizedUiView {
+            view_id: self.alloc_id(),
+            kind: ViewKind::WebView,
+            title: title.to_string(),
+            source_app: None,
+            summary: format!("WebView: {}", trusted_origin),
+            metrics: Vec::new(),
+            table: None,
+            schedules: Vec::new(),
+            tile: None,
+            damage_rect: DirtyRect::new(20, 100, 1040, 600),
+            raw_payload_json: format!(
+                "{{\"url\":\"{}\",\"trusted_origin\":\"{}\",\"title\":\"{}\"}}",
+                json_escape(url),
+                json_escape(trusted_origin),
+                json_escape(title)
+            ),
         };
         self.active_views.push(view.clone());
         Ok(view)

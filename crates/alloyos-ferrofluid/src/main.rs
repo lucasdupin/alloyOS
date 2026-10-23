@@ -60,6 +60,7 @@ pub extern "C" fn _start(heap_start: usize, heap_length: usize) -> ! {
     let mut bytes = vec![0; display::MAX_STATE];
     let mut revision = u64::MAX;
     let mut pins = alloc::vec::Vec::new();
+    let mut active_webview: Option<alloyos_ferrofluid::webview::WebViewController> = None;
     let start = time();
     send(Event::Ready);
     loop {
@@ -95,6 +96,28 @@ pub extern "C" fn _start(heap_start: usize, heap_length: usize) -> ! {
                     ui.set_client_profile_setup(s.pending_client_profile_setup.as_ref(), &s.client_profile_error);
                     ui.set_tiles(&s.tiles);
                     ui.set_chat_items(&s.items);
+                    if let Some(wv) = &s.webview {
+                        let same = active_webview.as_ref().is_some_and(|w| {
+                            w.requested_url() == Some(wv.url.as_str()) && w.untrusted_title() == wv.title.as_str()
+                        });
+                        if !same {
+                            if let Ok(ctrl) = alloyos_ferrofluid::webview::WebViewController::for_url(1, &wv.url, &wv.title) {
+                                ui.set_webview(Some(&ctrl));
+                                if wv.expanded {
+                                    ui.set_webview_expanded(true);
+                                }
+                                active_webview = Some(ctrl);
+                            }
+                        } else if let Some(ctrl) = &active_webview {
+                            ui.set_webview(Some(ctrl));
+                            if wv.expanded != ui.webview_expanded() {
+                                ui.set_webview_expanded(wv.expanded);
+                            }
+                        }
+                    } else if active_webview.is_some() {
+                        active_webview = None;
+                        ui.set_webview(None);
+                    }
                     if s.pinned != pins {
                         ui.restore_dashboard(&s.pinned);
                         pins = s.pinned;
@@ -139,6 +162,7 @@ pub extern "C" fn _start(heap_start: usize, heap_length: usize) -> ! {
         while ui.take_output_mute_toggle() { send(Event::OutputMuteToggle); }
         while ui.take_voice_toggle() { send(Event::VoiceToggle); }
         while ui.take_voice_mute() { send(Event::VoiceMute); }
+        while ui.take_webview_reload() { send(Event::WebviewReload); }
         while ui.take_model_cycle() {
             send(Event::CycleModel)
         }

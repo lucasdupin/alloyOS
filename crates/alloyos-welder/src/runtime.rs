@@ -748,6 +748,27 @@ impl AgentRuntime {
             }
         }
 
+        if let Some(rest) = trimmed.strip_prefix("/open") {
+            let target = rest.trim();
+            if !target.is_empty() {
+                let call = alloyos_forge::provider::ToolCall::new(
+                    "direct_open",
+                    "web_browser_open",
+                    &serde_json::json!({ "url": target }).to_string(),
+                );
+                let output = self.tool_registry.execute_tool(&call, &mut self.ui_synthesizer)?;
+                let msg = format!("Opened {} in Ferrofluid WebView.", target);
+                on_token(&msg);
+                return Ok(ConsoleTurnOutput {
+                    active_provider: self.active_provider_name(),
+                    active_model: self.active_model_id().to_string(),
+                    response_text: msg,
+                    tool_outputs: vec![output],
+                    config_persisted: false,
+                });
+            }
+        }
+
         if !self.setup_active() {
             let report = self.tool_registry.learn_from_conversation_turn(trimmed);
             if report.has_changes() { self.refresh_knowledge_tile_if_present(); }
@@ -788,6 +809,8 @@ impl AgentRuntime {
             || trimmed.starts_with("/apps ")
             || trimmed == "/packages"
             || trimmed.starts_with("/packages ")
+            || trimmed.starts_with("/open ")
+            || trimmed == "/open"
         {
             return self.handle_console_input(input, &mut |_| {}).map(Some);
         }

@@ -431,6 +431,13 @@ impl DisplayProxy {
         s.items = v.to_vec();
         s.partial.clear();
     }
+    pub fn set_webview(&self, webview: Option<&alloyos_mcp::display::WebViewState>) {
+        self.state.borrow_mut().webview = webview.cloned();
+        self.flush();
+    }
+    pub fn take_webview_reload(&self) -> bool {
+        self.take(|e| matches!(e, Event::WebviewReload)).is_some()
+    }
     pub fn set_available_tiles(&self, v: &[AppTile]) {
         self.state.borrow_mut().available = v.to_vec();
     }

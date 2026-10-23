@@ -886,6 +886,24 @@ impl NativeToolRegistry {
                     true,
                 )],
             ),
+            ToolSpec::new(
+                "web_browser_open",
+                "Open an HTTPS web page in a Ferrofluid WebView. Preferred practice is to use structured headless MCP apps whenever possible; opening a web browser should be done sparsely only when the user explicitly requests to open a specific website or webpage, as web pages are not built for agentic context.",
+                vec![
+                    ToolParameter::new(
+                        "url",
+                        "string",
+                        "Target HTTPS web page URL (e.g. 'https://g1.globo.com' or domain). Must use HTTPS.",
+                        true,
+                    ),
+                    ToolParameter::new(
+                        "title",
+                        "string",
+                        "Optional display title for the browser card",
+                        false,
+                    ),
+                ],
+            ),
         ]
     }
 
@@ -2579,6 +2597,46 @@ impl NativeToolRegistry {
                 Ok(ToolExecutionOutput {
                     tool_name: call.name.clone(),
                     output_json: payload,
+                    synthesized_view: Some(view),
+                })
+            }
+            "web_browser_open" => {
+                let raw_url = extract_json_string_field(&call.arguments_json, "url")
+                    .ok_or_else(|| AiError::InvalidToolArguments("missing 'url'".to_string()))?;
+                let mut url = raw_url.trim().to_string();
+                if !url.starts_with("https://") && !url.starts_with("http://") && !url.starts_with("about:") {
+                    url = format!("https://{}", url);
+                }
+                let mut broker = crate::webview::WebViewBroker::new();
+                let mut session = broker
+                    .open_session(&crate::webview::WebViewCaller::Welder, 1080, 2400, 2000)
+                    .map_err(|e| AiError::InvalidToolArguments(format!("WebView error: {:?}", e)))?;
+                broker
+                    .navigate(&crate::webview::WebViewCaller::Welder, &mut session, &url)
+                    .map_err(|e| AiError::InvalidToolArguments(format!("WebView navigation error: {:?}", e)))?;
+                let gen = session.generation();
+                let _ = broker.commit_browser_url(&mut session, gen, &url);
+                let title = extract_json_string_field(&call.arguments_json, "title")
+                    .unwrap_or_else(|| {
+                        session.trusted_origin().map(|o| o.to_string()).unwrap_or_else(|| url.clone())
+                    });
+                let _ = broker.receive_untrusted_title(&mut session, gen, &title);
+                let origin = session.trusted_origin().unwrap_or(&url);
+                let view = ui_synth.synthesize_webview(
+                    &UiCallerOrigin::AiAgent,
+                    &url,
+                    origin,
+                    &title,
+                )?;
+                Ok(ToolExecutionOutput {
+                    tool_name: call.name.clone(),
+                    output_json: format!(
+                        "{{\"ok\":true,\"url\":\"{}\",\"trusted_origin\":\"{}\",\"title\":\"{}\",\"view_id\":{}}}",
+                        json_escape(&url),
+                        json_escape(origin),
+                        json_escape(&title),
+                        view.view_id
+                    ),
                     synthesized_view: Some(view),
                 })
             }

@@ -1,0 +1,111 @@
+import { AlloyPalette } from "@alloyos-keyboard/keyboard.slint";
+import { HorizontalBox } from "std-widgets.slint";
+import { AlloyButton } from "alloy-button.slint";
+
+export component WebViewCard inherits Rectangle {
+    in property <string> origin;
+    in property <string> title;
+    in property <string> status;
+    in property <bool> crashed: false;
+    in property <image> frame;
+    in property <bool> pending: false;
+    callback expand();
+    callback reload();
+    min-width: 0px;
+    clip: true;
+    background: AlloyPalette.charcoal;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: AlloyPalette.border;
+    preferred-height: max(card-content.preferred-height, card-end.y + 6px);
+    min-height: self.preferred-height;
+    vertical-stretch: 0;
+    card-content := VerticalLayout {
+        width: parent.width;
+        height: self.preferred-height;
+        padding: 16px;
+        padding-bottom: 6px;
+        spacing: 10px;
+        HorizontalBox {
+            VerticalLayout {
+                horizontal-stretch: 1;
+                min-width: 0px;
+                spacing: 4px;
+                Text {
+                    text: root.title;
+                    color: AlloyPalette.text;
+                    font-size: 20px;
+                    font-weight: 700;
+                    font-family: "Quicksand Bold";
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: root.origin;
+                    color: root.crashed ? AlloyPalette.rust : AlloyPalette.muted;
+                    font-size: 13px;
+                    overflow: elide;
+                }
+            }
+            AlloyButton {
+                flat: true;
+                icon-only: true;
+                icon: @image-url("../icons/reload.svg");
+                enabled: !root.pending;
+                button-label: "Reload webview";
+                min-width: 32px;
+                max-width: 32px;
+                height: 32px;
+                horizontal-stretch: 0;
+                clicked => { root.reload(); }
+            }
+            AlloyButton {
+                flat: true;
+                icon-only: true;
+                icon: @image-url("../icons/expand.svg");
+                enabled: !root.pending;
+                button-label: "Expand webview";
+                min-width: 32px;
+                max-width: 32px;
+                height: 32px;
+                horizontal-stretch: 0;
+                clicked => { root.expand(); }
+            }
+        }
+        viewport := Rectangle {
+            height: root.frame.width > 0 ? min(260px, self.width * root.frame.height / max(1, root.frame.width)) : 180px;
+            vertical-stretch: 0;
+            background: #101418;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: AlloyPalette.border;
+            clip: true;
+            if root.frame.width > 0 && !root.crashed: Image {
+                source: root.frame;
+                width: parent.width;
+                height: parent.height;
+                image-fit: contain;
+            }
+            if root.crashed: Text {
+                x: 16px;
+                width: parent.width - 32px;
+                height: parent.height;
+                text: "Web content process terminated unexpectedly.";
+                color: AlloyPalette.rust;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            if root.frame.width == 0 && !root.crashed: Text {
+                x: 16px;
+                width: parent.width - 32px;
+                height: parent.height;
+                text: "Waiting for browser frame…";
+                color: AlloyPalette.muted;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+        card-end := Rectangle { height: 0px; }
+    }
+}

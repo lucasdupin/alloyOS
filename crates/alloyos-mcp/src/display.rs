@@ -62,8 +62,19 @@ impl SetupRow {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SetupAnswer { pub revision: u64, pub value: String }
+#[derive(Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebViewState {
+    pub url: String,
+    pub title: String,
+    pub origin: String,
+    #[serde(default)]
+    pub expanded: bool,
+}
+
 #[derive(Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct State {
+    #[serde(default)]
+    pub webview: Option<WebViewState>,
     #[serde(default)]
     pub pending_client_profile_setup: Option<crate::account::PendingClientProfileSetup>,
     #[serde(default)]
@@ -115,6 +126,8 @@ pub enum Event {
     CycleModel,
     Dashboard(Vec<String>),
     Tile(TileEvent),
+    WebviewReload,
+    WebviewSetExpanded(bool),
     Ready,
     Applied { revision: u64, digest: u64 },
 }

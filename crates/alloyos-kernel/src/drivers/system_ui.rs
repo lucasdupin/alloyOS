@@ -34,12 +34,50 @@ fn save_output_muted(muted: bool) -> Result<(), crate::fs::vfs::FsError> {
 
 pub fn create() -> FerrofluidSystemUi { FerrofluidSystemUi::new() }
 
+fn update_webview_from_tools(
+    tools: &[alloyos_welder::ToolExecutionOutput],
+    ui: &FerrofluidSystemUi,
+    current_webview: &mut Option<alloyos_mcp::display::WebViewState>,
+) {
+    for tool_out in tools {
+        if let Some(view) = &tool_out.synthesized_view {
+            if view.kind == alloyos_welder::ViewKind::WebView {
+                let url = if let Ok(val) = serde_json::from_str::<serde_json::Value>(&tool_out.output_json) {
+                    val["url"].as_str().unwrap_or("").to_string()
+                } else {
+                    alloc::string::String::new()
+                };
+                let title = if let Ok(val) = serde_json::from_str::<serde_json::Value>(&tool_out.output_json) {
+                    val["title"].as_str().unwrap_or(&view.title).to_string()
+                } else {
+                    view.title.clone()
+                };
+                let origin = if let Ok(val) = serde_json::from_str::<serde_json::Value>(&tool_out.output_json) {
+                    val["trusted_origin"].as_str().unwrap_or(&url).to_string()
+                } else {
+                    url.clone()
+                };
+                let target_url = if !url.is_empty() { url } else { view.title.clone() };
+                let state = alloyos_mcp::display::WebViewState {
+                    url: target_url,
+                    title,
+                    origin,
+                    expanded: false,
+                };
+                ui.set_webview(Some(&state));
+                *current_webview = Some(state);
+            }
+        }
+    }
+}
+
 pub fn run(
     mut ui: FerrofluidSystemUi,
     mut forge: super::forge::ForgeService,
     mut agent: alloyos_welder::AgentRuntime,
 ) -> ! {
     let mut console_rpc_id = None;
+    let mut current_webview: Option<alloyos_mcp::display::WebViewState> = None;
     let start = rng::monotonic_time_ns();
     let mut transcript = String::new();
     let mut chat_items: alloc::vec::Vec<ChatItem> = alloc::vec::Vec::new();
@@ -171,6 +209,11 @@ pub fn run(
         }
         while ui.take_voice_toggle() { voice.toggle(&mut forge, &mut agent, pending, frame_start); }
         while ui.take_voice_mute() { voice.mute(&mut forge); }
+        while ui.take_webview_reload() {
+            if let Some(wv) = current_webview.as_ref() {
+                ui.set_webview(Some(wv));
+            }
+        }
         voice.poll(&mut forge, &mut agent, frame_start);
         while let Some((user, assistant)) = voice.take_completed() {
             if !user.is_empty() {
@@ -186,6 +229,7 @@ pub fn run(
             ui.set_available_tiles(&agent.available_dashboard_tiles());
         }
         while let Some(output) = voice.take_tool_output() {
+            update_webview_from_tools(core::slice::from_ref(&output), &ui, &mut current_webview);
             if let Some(tile) = output.synthesized_view.and_then(|view|view.tile) {
                 if let Some(existing) = chat_tiles.iter_mut().find(|t|t.tile_id == tile.tile_id) {
                     *existing = tile.clone();
@@ -336,6 +380,7 @@ pub fn run(
                                 }
                             }
                         }
+                        update_webview_from_tools(&output.tool_outputs, &ui, &mut current_webview);
                     }
                     Err(error) => {
                         if let Some(id) = console_rpc_id.take() {
@@ -409,6 +454,7 @@ pub fn run(
                             }
                         }
                     }
+                    update_webview_from_tools(&output.tool_outputs, &ui, &mut current_webview);
                 }
                 Ok(None) => {
                     pending = true;

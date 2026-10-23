@@ -387,6 +387,35 @@ impl WebViewController {
         Ok(encoded)
     }
 
+    /// Convenience constructor to instantiate and frame a WebView for a verified URL.
+    pub fn for_url(
+        view_id: u64,
+        url: &str,
+        title: &str,
+    ) -> Result<Self, Error> {
+        let width = 576;
+        let height = 380;
+        let mut ctrl = Self::new(view_id, width, height, 2000)?;
+        ctrl.created = true;
+        let origin = trusted_origin(url)?;
+        ctrl.requested_url = Some(String::from(url));
+        ctrl.committed_url = Some(String::from(url));
+        ctrl.trusted_origin = Some(origin);
+        ctrl.untrusted_title = String::from(title);
+        ctrl.loading = LoadingState::Idle;
+        let pixels = render_placeholder_surface(width, height, url, title);
+        ctrl.committed_frame = Some(CommittedFrame {
+            view: ctrl.view,
+            sequence: 1,
+            width,
+            height,
+            stride: width * 4,
+            damage: DirtyRect::new(0, 0, width, height),
+            pixels,
+        });
+        Ok(ctrl)
+    }
+
     /// Bumps the view generation after a browser service restart so late packets
     /// from the old service process are rejected.
     pub fn restart_service(&mut self) -> View {
@@ -502,6 +531,273 @@ impl WebViewController {
             _ => Err(Error::Opcode),
         }
     }
+}
+
+pub struct Canvas {
+    pub width: u32,
+    pub height: u32,
+    pub bgra: Vec<u8>,
+}
+
+impl Canvas {
+    pub fn new(width: u32, height: u32, bg: (u8, u8, u8)) -> Self {
+        let count = (width * height * 4) as usize;
+        let mut bgra = Vec::with_capacity(count);
+        for _ in 0..(width * height) {
+            bgra.push(bg.2);
+            bgra.push(bg.1);
+            bgra.push(bg.0);
+            bgra.push(255);
+        }
+        Self { width, height, bgra }
+    }
+
+    pub fn set_pixel(&mut self, x: i32, y: i32, rgb: (u8, u8, u8)) {
+        if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+            return;
+        }
+        let idx = ((y as u32 * self.width + x as u32) * 4) as usize;
+        self.bgra[idx] = rgb.2;
+        self.bgra[idx + 1] = rgb.1;
+        self.bgra[idx + 2] = rgb.0;
+        self.bgra[idx + 3] = 255;
+    }
+
+    pub fn fill_rect(&mut self, x: i32, y: i32, w: i32, h: i32, rgb: (u8, u8, u8)) {
+        for py in y.max(0)..(y + h).min(self.height as i32) {
+            for px in x.max(0)..(x + w).min(self.width as i32) {
+                self.set_pixel(px, py, rgb);
+            }
+        }
+    }
+
+    pub fn fill_rounded_rect(&mut self, x: i32, y: i32, w: i32, h: i32, r: i32, rgb: (u8, u8, u8)) {
+        for py in y..(y + h) {
+            for px in x..(x + w) {
+                let dx = if px < x + r {
+                    x + r - 1 - px
+                } else if px >= x + w - r {
+                    px - (x + w - r)
+                } else {
+                    0
+                };
+                let dy = if py < y + r {
+                    y + r - 1 - py
+                } else if py >= y + h - r {
+                    py - (y + h - r)
+                } else {
+                    0
+                };
+                if dx * dx + dy * dy <= r * r {
+                    self.set_pixel(px, py, rgb);
+                }
+            }
+        }
+    }
+
+    pub fn stroke_rounded_rect(
+        &mut self,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        r: i32,
+        thickness: i32,
+        rgb: (u8, u8, u8),
+    ) {
+        let inner_r = (r - thickness).max(0);
+        for py in y..(y + h) {
+            for px in x..(x + w) {
+                let odx = if px < x + r {
+                    x + r - 1 - px
+                } else if px >= x + w - r {
+                    px - (x + w - r)
+                } else {
+                    0
+                };
+                let ody = if py < y + r {
+                    y + r - 1 - py
+                } else if py >= y + h - r {
+                    py - (y + h - r)
+                } else {
+                    0
+                };
+                if odx * odx + ody * ody > r * r {
+                    continue;
+                }
+                let ix = x + thickness;
+                let iy = y + thickness;
+                let iw = w - thickness * 2;
+                let ih = h - thickness * 2;
+                if px >= ix && px < ix + iw && py >= iy && py < iy + ih {
+                    let idx = if px < ix + inner_r {
+                        ix + inner_r - 1 - px
+                    } else if px >= ix + iw - inner_r {
+                        px - (ix + iw - inner_r)
+                    } else {
+                        0
+                    };
+                    let idy = if py < iy + inner_r {
+                        iy + inner_r - 1 - py
+                    } else if py >= iy + ih - inner_r {
+                        py - (iy + ih - inner_r)
+                    } else {
+                        0
+                    };
+                    if idx * idx + idy * idy <= inner_r * inner_r {
+                        continue;
+                    }
+                }
+                self.set_pixel(px, py, rgb);
+            }
+        }
+    }
+
+    pub fn draw_text(&mut self, x: i32, y: i32, text: &str, scale: i32, rgb: (u8, u8, u8)) {
+        let mut cur_x = x;
+        for ch in text.chars() {
+            if ch == ' ' {
+                cur_x += 4 * scale;
+                continue;
+            }
+            let rows = glyph_5x7(ch);
+            for (row_idx, &row_bits) in rows.iter().enumerate() {
+                for col in 0..5 {
+                    if (row_bits & (1 << (4 - col))) != 0 {
+                        for sy in 0..scale {
+                            for sx in 0..scale {
+                                self.set_pixel(
+                                    cur_x + col * scale + sx,
+                                    y + row_idx as i32 * scale + sy,
+                                    rgb,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            cur_x += 6 * scale;
+        }
+    }
+}
+
+pub fn glyph_5x7(ch: char) -> [u8; 7] {
+    match ch.to_ascii_uppercase() {
+        'A' => [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+        'B' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110],
+        'C' => [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
+        'D' => [0b11100, 0b10010, 0b10001, 0b10001, 0b10001, 0b10010, 0b11100],
+        'E' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
+        'F' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
+        'G' => [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110],
+        'H' => [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+        'I' => [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+        'J' => [0b00111, 0b00010, 0b00010, 0b00010, 0b10010, 0b10010, 0b01100],
+        'K' => [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001],
+        'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
+        'M' => [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
+        'N' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
+        'O' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+        'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
+        'Q' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101],
+        'R' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
+        'S' => [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110],
+        'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
+        'U' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+        'V' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
+        'W' => [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b10101, 0b01010],
+        'X' => [0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001],
+        'Y' => [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
+        'Z' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
+        '0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
+        '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+        '2' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
+        '3' => [0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110],
+        '4' => [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
+        '5' => [0b11111, 0b10000, 0b10000, 0b11110, 0b00001, 0b00001, 0b11110],
+        '6' => [0b01110, 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
+        '7' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
+        '8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
+        '9' => [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110],
+        ':' => [0b00000, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b00000],
+        '.' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00100, 0b00100],
+        ',' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00100, 0b00100, 0b01000],
+        '!' => [0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000, 0b00100],
+        '/' => [0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b10000],
+        '-' => [0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000],
+        '+' => [0b00000, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00000],
+        '=' => [0b00000, 0b00000, 0b11111, 0b00000, 0b11111, 0b00000, 0b00000],
+        '&' => [0b01100, 0b10010, 0b10100, 0b01000, 0b10101, 0b10010, 0b01101],
+        '#' => [0b01010, 0b11111, 0b01010, 0b01010, 0b11111, 0b01010, 0b00000],
+        '[' | '(' => [0b00110, 0b01000, 0b01000, 0b01000, 0b01000, 0b01000, 0b00110],
+        ']' | ')' => [0b01100, 0b00010, 0b00010, 0b00010, 0b00010, 0b00010, 0b01100],
+        '\'' => [0b00100, 0b00100, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000],
+        _ => [0; 7],
+    }
+}
+
+pub fn render_placeholder_surface(
+    width: u32,
+    height: u32,
+    url: &str,
+    title: &str,
+) -> Vec<u8> {
+    let mut c = Canvas::new(width, height, (18, 22, 27));
+    let pad = 24;
+
+    // Address Bar
+    let bar_y = 16;
+    let bar_h = 44;
+    let bar_w = width as i32 - pad * 2;
+    c.fill_rounded_rect(pad, bar_y, bar_w, bar_h, 8, (28, 34, 42));
+    c.stroke_rounded_rect(pad, bar_y, bar_w, bar_h, 8, 1, (48, 56, 68));
+
+    // Padlock / Secure badge
+    c.fill_rounded_rect(pad + 12, bar_y + 12, 20, 20, 4, (46, 125, 74));
+    c.draw_text(pad + 17, bar_y + 15, "S", 2, (255, 255, 255));
+
+    // URL
+    let display_url = if url.len() > 42 {
+        &url[..42]
+    } else {
+        url
+    };
+    c.draw_text(pad + 40, bar_y + 15, display_url, 2, (180, 210, 240));
+
+    // Content Card
+    let content_y = bar_y + bar_h + 20;
+    let content_w = width as i32 - pad * 2;
+    let content_h = height as i32 - content_y - 20;
+    c.fill_rounded_rect(pad, content_y, content_w, content_h, 10, (24, 29, 36));
+    c.stroke_rounded_rect(pad, content_y, content_w, content_h, 10, 1, (42, 50, 60));
+
+    // Heading
+    let display_title = if title.is_empty() { "WEB PAGE" } else { title };
+    let heading = if display_title.len() > 30 {
+        &display_title[..30]
+    } else {
+        display_title
+    };
+    c.draw_text(pad + 20, content_y + 22, heading, 3, (240, 244, 248));
+
+    // Content layout blocks
+    let card1_y = content_y + 60;
+    let card1_w = content_w - 40;
+    c.fill_rounded_rect(pad + 20, card1_y, card1_w, 64, 6, (32, 38, 48));
+    c.fill_rounded_rect(pad + 32, card1_y + 14, card1_w - 24, 12, 3, (60, 70, 85));
+    c.fill_rounded_rect(pad + 32, card1_y + 34, card1_w / 2, 10, 2, (80, 95, 115));
+
+    let card2_y = card1_y + 76;
+    if card2_y + 60 < content_y + content_h - 20 {
+        c.fill_rounded_rect(pad + 20, card2_y, card1_w, 64, 6, (32, 38, 48));
+        c.fill_rounded_rect(pad + 32, card2_y + 14, card1_w - 48, 12, 3, (60, 70, 85));
+        c.fill_rounded_rect(pad + 32, card2_y + 34, card1_w * 2 / 3, 10, 2, (80, 95, 115));
+    }
+
+    // Footer badge
+    c.draw_text(pad + 20, content_y + content_h - 24, "ALLOYOS BROWSER SANDBOX - HTTPS VERIFIED", 1, (120, 135, 150));
+
+    c.bgra
 }
 
 fn validate_viewport(width: u32, height: u32, scale_thousandths: u32) -> Result<(), Error> {

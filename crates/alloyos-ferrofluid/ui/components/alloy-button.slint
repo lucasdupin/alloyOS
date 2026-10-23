@@ -1,0 +1,51 @@
+import { AlloyPalette } from "@alloyos-keyboard/keyboard.slint";
+
+export component AlloyButton inherits FocusScope {
+    in property <string> text;
+    in property <string> button-label: root.text;
+    in property <bool> flat: false;
+    in property <image> icon;
+    in property <bool> icon-only: false;
+    callback clicked();
+    height: 36px;
+    vertical-stretch: 0;
+    min-width: root.icon-only ? 32px : min(label.preferred-width + 24px, 100px);
+    key-pressed(event) => {
+        if (root.enabled && (event.text == " " || event.text == Key.Return)) {
+            root.clicked();
+            return accept;
+        }
+        return reject;
+    }
+    Rectangle {
+        background: root.flat ? transparent : touch.pressed ? AlloyPalette.silver : touch.has-hover ? AlloyPalette.surface : AlloyPalette.charcoal;
+        border-radius: 6px;
+        border-width: root.flat ? 0px : 1px;
+        border-color: root.has-focus ? AlloyPalette.silver : AlloyPalette.border;
+        opacity: root.enabled ? 1 : 0.45;
+        label := Text {
+            visible: !root.icon-only;
+            text: root.text;
+            overflow: elide;
+            color: root.flat ? (touch.pressed ? AlloyPalette.silver : AlloyPalette.text) : touch.pressed ? AlloyPalette.obsidian : AlloyPalette.text;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        if root.icon-only: Image {
+            source: root.icon;
+            width: 18px;
+            height: 18px;
+            image-fit: contain;
+            opacity: touch.pressed ? 0.7 : 1.0;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+        }
+        touch := TouchArea {
+            enabled: root.enabled;
+            mouse-cursor: pointer;
+            accessible-role: button;
+            accessible-label: root.button-label;
+            clicked => { root.focus(); root.clicked(); }
+        }
+    }
+}

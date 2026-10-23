@@ -1,0 +1,85 @@
+import { AlloyPalette } from "@alloyos-keyboard/keyboard.slint";
+import { AlloyButton } from "alloy-button.slint";
+
+export component ExpandedWebView inherits Rectangle {
+    in property <string> origin;
+    in property <string> title;
+    in property <string> status;
+    in property <bool> crashed: false;
+    in property <image> frame;
+    callback collapse();
+    callback reload();
+    background: AlloyPalette.obsidian;
+    TouchArea { width: parent.width; height: parent.height; }
+    VerticalLayout {
+        padding: 20px;
+        spacing: 12px;
+        HorizontalLayout {
+            spacing: 4px;
+            vertical-stretch: 0;
+            VerticalLayout {
+                horizontal-stretch: 1;
+                min-width: 0px;
+                spacing: 2px;
+                Text {
+                    text: root.title;
+                    color: AlloyPalette.text;
+                    font-size: 20px;
+                    font-weight: 700;
+                    font-family: "Quicksand Bold";
+                    overflow: elide;
+                }
+                Text {
+                    text: root.origin;
+                    color: root.crashed ? AlloyPalette.rust : AlloyPalette.muted;
+                    font-size: 13px;
+                    overflow: elide;
+                }
+            }
+            AlloyButton {
+                flat: true;
+                icon-only: true;
+                icon: @image-url("../icons/reload.svg");
+                button-label: "Reload webview";
+                min-width: 32px;
+                max-width: 32px;
+                height: 32px;
+                horizontal-stretch: 0;
+                clicked => { root.reload(); }
+            }
+            AlloyButton {
+                flat: true;
+                icon-only: true;
+                icon: @image-url("../icons/collapse.svg");
+                button-label: "Collapse webview";
+                min-width: 32px;
+                max-width: 32px;
+                height: 32px;
+                horizontal-stretch: 0;
+                clicked => { root.collapse(); }
+            }
+        }
+        Rectangle {
+            vertical-stretch: 1;
+            background: #101418;
+            border-radius: 12px;
+            clip: true;
+            if root.frame.width > 0 && !root.crashed: Image {
+                source: root.frame;
+                width: parent.width;
+                height: parent.height;
+                image-fit: contain;
+            }
+            if root.crashed: Text {
+                x: 24px;
+                width: parent.width - 48px;
+                height: parent.height;
+                text: "Web content process terminated unexpectedly.";
+                color: AlloyPalette.rust;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+    }
+}

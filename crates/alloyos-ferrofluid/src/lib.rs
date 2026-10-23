@@ -1,6 +1,6 @@
-#![cfg_attr(not(test), no_std)]
+#![cfg_attr(target_os = "none", no_std)]
 
-#[cfg(test)]
+#[cfg(not(target_os = "none"))]
 extern crate std;
 
 extern crate alloc;

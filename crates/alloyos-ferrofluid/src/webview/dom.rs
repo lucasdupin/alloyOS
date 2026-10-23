@@ -134,6 +134,41 @@ pub struct HtmlDocument {
     pub dataset: Vec<(String, String)>,
 }
 
+fn consume_raw_until_closing_tag<I: Iterator<Item = char>>(
+    chars: &mut core::iter::Peekable<I>,
+    target_tag: &str,
+) -> String {
+    let mut buf = String::new();
+    while let Some(c) = chars.next() {
+        if c == '<' && chars.peek() == Some(&'/') {
+            chars.next(); // consume '/'
+            let mut close_tag = String::new();
+            while let Some(&tc) = chars.peek() {
+                if tc == '>' || tc.is_whitespace() {
+                    break;
+                }
+                close_tag.push(tc);
+                chars.next();
+            }
+            if close_tag.eq_ignore_ascii_case(target_tag) {
+                while let Some(end_c) = chars.next() {
+                    if end_c == '>' {
+                        break;
+                    }
+                }
+                break;
+            } else {
+                buf.push('<');
+                buf.push('/');
+                buf.push_str(&close_tag);
+            }
+        } else {
+            buf.push(c);
+        }
+    }
+    buf
+}
+
 impl HtmlDocument {
     pub fn parse(html: &str) -> Self {
         let mut doc = HtmlDocument::default();
@@ -269,53 +304,19 @@ impl HtmlDocument {
                 let tag_lower = tag_name.to_ascii_lowercase();
 
                 if tag_lower == "title" {
-                    let mut title_buf = String::new();
-                    while let Some(c) = chars.next() {
-                        if c == '<' && chars.peek() == Some(&'/') {
-                            // Skip </title>
-                            for end_c in chars.by_ref() {
-                                if end_c == '>' {
-                                    break;
-                                }
-                            }
-                            break;
-                        }
-                        title_buf.push(c);
-                    }
+                    let title_buf = consume_raw_until_closing_tag(&mut chars, "title");
                     self.title = decode_entities(title_buf.trim());
                     continue;
                 }
 
                 if tag_lower == "style" {
-                    let mut style_buf = String::new();
-                    while let Some(c) = chars.next() {
-                        if c == '<' && chars.peek() == Some(&'/') {
-                            for end_c in chars.by_ref() {
-                                if end_c == '>' {
-                                    break;
-                                }
-                            }
-                            break;
-                        }
-                        style_buf.push(c);
-                    }
+                    let style_buf = consume_raw_until_closing_tag(&mut chars, "style");
                     self.parse_css(&style_buf);
                     continue;
                 }
 
                 if tag_lower == "script" {
-                    let mut script_buf = String::new();
-                    while let Some(c) = chars.next() {
-                        if c == '<' && chars.peek() == Some(&'/') {
-                            for end_c in chars.by_ref() {
-                                if end_c == '>' {
-                                    break;
-                                }
-                            }
-                            break;
-                        }
-                        script_buf.push(c);
-                    }
+                    let script_buf = consume_raw_until_closing_tag(&mut chars, "script");
                     let trimmed = script_buf.trim();
                     if !trimmed.is_empty() {
                         self.inline_scripts.push(String::from(trimmed));
@@ -337,7 +338,20 @@ impl HtmlDocument {
 
                 let is_void_tag = matches!(
                     tag_lower.as_str(),
-                    "meta" | "link" | "img" | "input" | "br" | "hr"
+                    "area"
+                        | "base"
+                        | "br"
+                        | "col"
+                        | "embed"
+                        | "hr"
+                        | "img"
+                        | "input"
+                        | "link"
+                        | "meta"
+                        | "param"
+                        | "source"
+                        | "track"
+                        | "wbr"
                 );
 
                 if is_self_closing || is_void_tag {
@@ -636,6 +650,7 @@ pub fn decode_entities(s: &str) -> String {
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&apos;", "'")
+        .replace("&nbsp;", " ")
 }
 
 /// Parses SVG XML into an `SvgGraphic` vector description.

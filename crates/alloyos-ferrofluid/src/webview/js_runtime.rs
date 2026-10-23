@@ -223,6 +223,18 @@ impl PageJsRuntime {
 
             globalThis.document = document;
             globalThis.window = globalThis;
+            globalThis.self = globalThis;
+            globalThis.location = {{ href: "", hostname: "", pathname: "/", search: "", hash: "" }};
+            globalThis.navigator = {{ userAgent: "Mozilla/5.0 alloyOS-WebKit/1.0" }};
+            globalThis.localStorage = {{ getItem: () => null, setItem: () => {{}}, removeItem: () => {{}} }};
+            globalThis.sessionStorage = {{ getItem: () => null, setItem: () => {{}}, removeItem: () => {{}} }};
+            globalThis.console = {{ log: () => {{}}, warn: () => {{}}, error: () => {{}}, info: () => {{}} }};
+            globalThis.setTimeout = (fn) => {{ try {{ fn(); }} catch(e) {{}} return 1; }};
+            globalThis.clearTimeout = () => {{}};
+            globalThis.setInterval = () => 1;
+            globalThis.clearInterval = () => {{}};
+            window.addEventListener = (type, listener) => {{}};
+            document.addEventListener = (type, listener) => {{}};
             "#,
             elements_json, dataset_json
         )
@@ -238,9 +250,9 @@ impl PageJsRuntime {
 
         // Append page scripts
         for s in &self.scripts {
-            bundle.push_str("\n(function() {\n");
+            bundle.push_str("\ntry {\n(function() {\n");
             bundle.push_str(s);
-            bundle.push_str("\n})();\n");
+            bundle.push_str("\n})();\n} catch (e) {}\n");
         }
 
         // If dispatch requested

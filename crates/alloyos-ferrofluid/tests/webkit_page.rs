@@ -190,3 +190,51 @@ fn scrolling_shifts_viewport_content() {
         "scrolling must update pixel buffer to reflect new scroll position"
     );
 }
+
+#[test]
+fn loads_real_live_website_over_network() {
+    let url = "https://g1.globo.com";
+    let ctrl = WebViewController::for_url(10, url, "fallback title")
+        .expect("should load real website over network");
+
+    assert_eq!(ctrl.committed_url(), Some(url));
+    assert_eq!(ctrl.trusted_origin().unwrap().as_str(), "https://g1.globo.com");
+
+    // The real site title must be extracted from the downloaded HTML, not the fallback title
+    let title = ctrl.untrusted_title();
+    assert!(
+        title.contains("g1") || title.contains("Globo"),
+        "Title should be parsed from real HTML <title> tag, got: {title}"
+    );
+
+    // Frame must be rendered with real page content
+    let frame = ctrl.committed_frame().expect("must have committed frame");
+    assert_eq!(frame.width, 576);
+    assert_eq!(frame.height, 380);
+
+    // Non-background pixels must be rendered from the real page
+    let non_bg = frame
+        .pixels
+        .chunks_exact(4)
+        .filter(|px| {
+            let b = px[0];
+            let g = px[1];
+            let r = px[2];
+            !((r == 16 && g == 20 && b == 24) || (r == 255 && g == 255 && b == 255))
+        })
+        .count();
+    assert!(
+        non_bg > 500,
+        "Frame must render real page elements (found {non_bg} non-bg pixels)"
+    );
+}
+
+#[test]
+fn unreachable_url_renders_authentic_error_page() {
+    let url = "https://nonexistent-domain-12345-alloyos.invalid";
+    let ctrl = WebViewController::for_url(11, url, "fallback")
+        .expect("should produce controller with error page");
+
+    let page = ctrl.page().expect("must have page");
+    assert_eq!(page.title(), "Unable to connect");
+}

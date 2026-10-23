@@ -184,6 +184,44 @@ impl Canvas {
         }
     }
 
+    pub fn draw_wrapped_text(
+        &mut self,
+        x: i32,
+        mut y: i32,
+        text: &str,
+        scale: i32,
+        rgb: Color,
+        max_w: i32,
+    ) -> i32 {
+        let char_w = 6 * scale;
+        let line_h = 7 * scale + 5;
+        let max_chars_per_line = ((max_w / char_w).max(1)) as usize;
+
+        let words = text.split_whitespace();
+        let mut cur_line = String::new();
+
+        for word in words {
+            if cur_line.is_empty() {
+                cur_line.push_str(word);
+            } else if cur_line.len() + 1 + word.len() <= max_chars_per_line {
+                cur_line.push(' ');
+                cur_line.push_str(word);
+            } else {
+                self.draw_text(x, y, &cur_line, scale, rgb);
+                y += line_h;
+                cur_line.clear();
+                cur_line.push_str(word);
+            }
+        }
+
+        if !cur_line.is_empty() {
+            self.draw_text(x, y, &cur_line, scale, rgb);
+            y += line_h;
+        }
+
+        y
+    }
+
     pub fn draw_svg_graphic(&mut self, x: i32, y: i32, graphic: &SvgGraphic, scale: f32) {
         for rect in &graphic.rects {
             let rx = (rect.x * scale) as i32 + x;
@@ -380,14 +418,19 @@ impl PageRenderer {
         doc: &HtmlDocument,
     ) {
         for node in nodes {
+            if *y > canvas.height as i32 + 800 {
+                return;
+            }
             match node {
                 DomNode::Element(el) => {
                     self.render_element(el, canvas, x, y, max_w, focused_id, svg_assets, doc);
                 }
                 DomNode::Text(text) => {
-                    let col = (238, 240, 242);
-                    canvas.draw_text(x, *y, text, 2, col);
-                    *y += 20;
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        let col = (238, 240, 242);
+                        *y = canvas.draw_wrapped_text(x, *y, trimmed, 2, col, max_w) + 4;
+                    }
                 }
             }
         }
@@ -404,18 +447,56 @@ impl PageRenderer {
         svg_assets: &[(String, SvgGraphic)],
         doc: &HtmlDocument,
     ) {
+        if *y > canvas.height as i32 + 800 {
+            return;
+        }
         let tag = el.tag.as_str();
 
         match tag {
             "h1" => {
                 let text = el.text_content.to_ascii_uppercase();
-                canvas.draw_text(x, *y, &text, 3, (238, 240, 242));
-                *y += 42;
+                *y = canvas.draw_wrapped_text(x, *y, &text, 3, (238, 240, 242), max_w) + 16;
             }
             "h2" => {
                 let text = el.text_content.to_ascii_uppercase();
-                canvas.draw_text(x, *y, &text, 2, (238, 240, 242));
-                *y += 28;
+                *y = canvas.draw_wrapped_text(x, *y, &text, 2, (238, 240, 242), max_w) + 12;
+            }
+            "h3" | "h4" | "h5" | "h6" => {
+                let text = el.text_content.to_ascii_uppercase();
+                *y = canvas.draw_wrapped_text(x, *y, &text, 2, (180, 200, 220), max_w) + 8;
+            }
+            "a" => {
+                let text = el.text_content.to_ascii_uppercase();
+                if !text.is_empty() {
+                    *y = canvas.draw_wrapped_text(x, *y, &text, 2, (137, 207, 255), max_w) + 6;
+                }
+                self.render_nodes(
+                    &el.children,
+                    canvas,
+                    x,
+                    y,
+                    max_w,
+                    focused_id,
+                    svg_assets,
+                    doc,
+                );
+            }
+            "li" => {
+                let text = el.text_content.to_ascii_uppercase();
+                if !text.is_empty() {
+                    canvas.fill_rect(x, *y + 6, 4, 4, (137, 207, 255));
+                    *y = canvas.draw_wrapped_text(x + 10, *y, &text, 2, (165, 173, 183), max_w - 10) + 6;
+                }
+                self.render_nodes(
+                    &el.children,
+                    canvas,
+                    x,
+                    y,
+                    max_w,
+                    focused_id,
+                    svg_assets,
+                    doc,
+                );
             }
             "img" => {
                 let src = el.get_attribute("src").unwrap_or("");
@@ -462,8 +543,7 @@ impl PageRenderer {
                 }
 
                 if !label_text.is_empty() {
-                    canvas.draw_text(x, form_y, &label_text, 2, (165, 173, 183));
-                    form_y += 28;
+                    form_y = canvas.draw_wrapped_text(x, form_y, &label_text, 2, (165, 173, 183), max_w) + 6;
                 }
 
                 let btn_w = 124;
@@ -523,8 +603,7 @@ impl PageRenderer {
                     canvas.fill_rect(x, *y, max_w, 2, (137, 207, 255));
                     *y += 24;
                     let text = el.text_content.to_ascii_uppercase();
-                    canvas.draw_text(x, *y, &text, 2, (165, 173, 183));
-                    *y += 32;
+                    *y = canvas.draw_wrapped_text(x, *y, &text, 2, (165, 173, 183), max_w) + 12;
                 } else {
                     let text = el.text_content.to_ascii_uppercase();
                     let col = if text.starts_with("HELLO") {
@@ -532,11 +611,11 @@ impl PageRenderer {
                     } else {
                         (165, 173, 183)
                     };
-                    canvas.draw_text(x, *y, &text, if text.starts_with("HELLO") { 3 } else { 2 }, col);
-                    *y += 32;
+                    let scale = if text.starts_with("HELLO") { 3 } else { 2 };
+                    *y = canvas.draw_wrapped_text(x, *y, &text, scale, col, max_w) + 10;
                 }
             }
-            "div" | "section" | "article" | "body" => {
+            "div" | "section" | "article" | "body" | "main" | "header" | "footer" | "nav" | "aside" | "ul" | "ol" | "figure" | "figcaption" => {
                 self.render_nodes(
                     &el.children,
                     canvas,
@@ -551,8 +630,7 @@ impl PageRenderer {
             _ => {
                 if !el.text_content.is_empty() {
                     let text = el.text_content.to_ascii_uppercase();
-                    canvas.draw_text(x, *y, &text, 2, (238, 240, 242));
-                    *y += 24;
+                    *y = canvas.draw_wrapped_text(x, *y, &text, 2, (238, 240, 242), max_w) + 6;
                 }
                 self.render_nodes(
                     &el.children,

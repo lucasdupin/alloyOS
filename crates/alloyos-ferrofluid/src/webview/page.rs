@@ -32,6 +32,106 @@ pub struct WebPage {
     pub scroll_y: i32,
 }
 
+/// Fetches the raw HTML markup of a remote web page over the network.
+#[cfg(any(test, not(target_os = "none")))]
+pub fn fetch_page_html(url: &str) -> Result<String, String> {
+    use std::process::Command;
+
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err(format!("Unsupported URL scheme in '{}'", url));
+    }
+
+    let output = Command::new("curl")
+        .args([
+            "-s",
+            "-L",
+            "--compressed",
+            "--max-time",
+            "10",
+            "-A",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko)",
+            url,
+        ])
+        .output()
+        .map_err(|e| format!("Failed to execute network fetch: {}", e))?;
+
+    if !output.status.success() {
+        return Err(format!("Network fetch exited with status {}", output.status));
+    }
+
+    let html = String::from_utf8(output.stdout)
+        .or_else(|e| String::from_utf8(e.into_bytes()))
+        .map_err(|e| format!("Response contains invalid UTF-8: {}", e))?;
+
+    if html.trim().is_empty() {
+        return Err(String::from("Server returned empty response"));
+    }
+
+    Ok(html)
+}
+
+#[cfg(target_os = "none")]
+pub fn fetch_page_html(url: &str) -> Result<String, String> {
+    #[cfg(feature = "executable")]
+    {
+        use alloc::format;
+        let rest = url
+            .strip_prefix("https://")
+            .or_else(|| url.strip_prefix("http://"))
+            .ok_or_else(|| String::from("Unsupported scheme"))?;
+        let (host_port, path) = match rest.find('/') {
+            Some(idx) => (&rest[..idx], &rest[idx..]),
+            None => (rest, "/"),
+        };
+        let host = host_port.split(':').next().unwrap_or(host_port);
+
+        let addr = alloyos_proto::SocketAddrV4::new([10, 0, 2, 2], 80);
+        let fd = liballoy::net::tcp_socket()
+            .map_err(|e| format!("Failed to create socket: {e}"))?;
+
+        if liballoy::net::tcp_connect(fd, &addr).is_err() {
+            let _ = unsafe { liballoy::syscall::syscall1(alloyos_proto::SyscallNo::Close as u64, fd as u64) };
+            return Err(format!("Network connection to {} failed", host));
+        }
+
+        let req = format!(
+            "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: Mozilla/5.0 alloyOS-WebKit/1.0\r\nConnection: close\r\n\r\n",
+            path, host
+        );
+        let _ = liballoy::net::tcp_send(fd, req.as_bytes());
+
+        let mut buf = alloc::vec![0u8; 4096];
+        let mut response = alloc::vec::Vec::new();
+        while let Ok(n) = liballoy::net::tcp_recv(fd, &mut buf) {
+            if n == 0 {
+                break;
+            }
+            response.extend_from_slice(&buf[..n]);
+            if response.len() > 1024 * 1024 {
+                break;
+            }
+        }
+        let _ = unsafe { liballoy::syscall::syscall1(alloyos_proto::SyscallNo::Close as u64, fd as u64) };
+
+        if response.is_empty() {
+            return Err(format!("No data received from {}", host));
+        }
+
+        let body = if let Some(pos) = response.windows(4).position(|w| w == b"\r\n\r\n") {
+            &response[pos + 4..]
+        } else {
+            &response[..]
+        };
+
+        String::from_utf8(body.to_vec())
+            .map_err(|_| String::from("Invalid UTF-8 in response"))
+    }
+    #[cfg(not(feature = "executable"))]
+    {
+        Err(String::from("Network stack unavailable in this build"))
+    }
+}
+
 impl WebPage {
     /// Loads a page by URL.
     pub fn load_url(url: &str) -> Self {
@@ -40,46 +140,44 @@ impl WebPage {
             || url.is_empty();
 
         let html = if is_fixture {
-            DEFAULT_LOCAL_FORM_HTML
+            String::from(DEFAULT_LOCAL_FORM_HTML)
         } else {
-            // General HTML skeleton for requested arbitrary URL
-            ""
+            match fetch_page_html(url) {
+                Ok(content) => content,
+                Err(err) => {
+                    let host = url
+                        .strip_prefix("https://")
+                        .or_else(|| url.strip_prefix("http://"))
+                        .unwrap_or(url)
+                        .split('/')
+                        .next()
+                        .unwrap_or(url);
+
+                    format!(
+                        r#"<!doctype html>
+<html>
+<head>
+<title>Unable to connect</title>
+<style>
+  body {{ font-family: sans-serif; margin: 24px; background: #101418; color: #fff; }}
+  h1 {{ color: #ff6b6b; }}
+  p {{ color: #a5adb7; }}
+</style>
+</head>
+<body>
+  <h1>Unable to connect</h1>
+  <p>alloyOS WebKit can't establish a network connection to {host}.</p>
+  <p role="status">Error: {err}</p>
+</body>
+</html>"#,
+                        host = host,
+                        err = err
+                    )
+                }
+            }
         };
 
-        if !html.is_empty() {
-            Self::load_html(html, url)
-        } else {
-            // Synthesize dynamic HTML for arbitrary URL
-            let host = url
-                .strip_prefix("https://")
-                .or_else(|| url.strip_prefix("http://"))
-                .unwrap_or(url)
-                .split('/')
-                .next()
-                .unwrap_or(url);
-
-            let page_markup = format!(
-                r#"<!doctype html>
-                <html>
-                <head>
-                <title>{title}</title>
-                <style>
-                  body {{ font-family: sans-serif; margin: 24px; background: #101418; color: #fff; }}
-                  h1 {{ color: #eef0f2; }}
-                  p {{ color: #a5adb7; }}
-                </style>
-                </head>
-                <body>
-                  <h1>{host}</h1>
-                  <p role="status">Loaded {url}</p>
-                </body>
-                </html>"#,
-                title = host,
-                host = host,
-                url = url
-            );
-            Self::load_html(&page_markup, url)
-        }
+        Self::load_html(&html, url)
     }
 
     /// Loads and initializes a page from HTML source.

@@ -23,6 +23,14 @@ and Clock app.
 | <img src="assets/demos/liquid-keyboard-detail.gif" alt="Keyboard revealing, responding to key presses, and dismissing" width="320" /> | <img src="assets/demos/mic-detail.gif" alt="Mic activation, animated voice levels, and listening, responding, and muted states with simulated input" width="320" /> | <img src="assets/demos/liquid-boot.gif" alt="Ferrofluid loading logo and droplets transitioning to the workspace" width="220" /> |
 | Reveal, key feedback, and dismissal. | Activation, voice levels, and mute. | Loading animation and workspace transition. |
 
+### Browser (WebView)
+
+Open web pages inline in conversation or expand into full-screen navigation.
+
+| In Conversation | Expanded |
+| :---: | :---: |
+| <img src="crates/alloyos-ferrofluid/tests/screenshots/webview-in-conversation.png" alt="WebView rendered inline in the conversation stream" width="220" /> | <img src="crates/alloyos-ferrofluid/tests/screenshots/webview-expanded.png" alt="WebView expanded into full-screen navigation" width="220" /> |
+
 ### Setup Wizard
 
 Choose your name, name your assistant, set your region and clock format, and

@@ -152,15 +152,15 @@ pub extern "C" fn aarch64_kernel_entry() -> ! {
     alloyos_kernel::net::with_net_stack(|_| {});
     serial_println!("[net] VirtIO-Net + TCP/IP + DNS + TLS 1.3 stack online.");
 
-    let system_ui = if drivers::virtio_gpu::has_hardware_display() && !cfg!(feature="debug-shell") {
-        Some(drivers::system_ui::create())
+    let display_proxy = if drivers::virtio_gpu::has_hardware_display() && !cfg!(feature="debug-shell") {
+        Some(drivers::session_manager::create())
     } else { None };
     #[cfg(any(not(feature = "forge"), feature = "debug-shell"))]
-    let mut system_ui = system_ui;
+    let mut display_proxy = display_proxy;
     #[cfg(feature = "debug-shell")]
-    { drop(system_ui.take()); serial_println!("[ferrofluidd] System UI disabled (serial debug shell)."); }
+    { drop(display_proxy.take()); serial_println!("[ferrofluidd] System UI disabled (serial debug shell)."); }
     #[cfg(all(not(feature = "debug-shell"), not(feature = "forge")))]
-    if let Some(ui) = system_ui.as_mut() { ui.set_booting(false); ui.flush(); }
+    if let Some(ui) = display_proxy.as_mut() { ui.set_booting(false); ui.flush(); }
     // 10. Init Embedded JS Engine (V8 / JS Isolate) & Event/Time Scheduler (`scriptd`) (Phase 6)
     #[cfg(feature = "forge")]
     let forge_service = drivers::forge::ForgeService::from_boot();
@@ -221,9 +221,9 @@ pub extern "C" fn aarch64_kernel_entry() -> ! {
 
     // 14. Ferrofluid owns the Slint System UI and its execution context.
     #[cfg(not(feature = "debug-shell"))]
-    if let Some(ui) = system_ui {
-        serial_println!("[systemui] Slint window online; Ferrofluid owns platform and input.");
-        drivers::system_ui::run(ui, forge_service, ai_runtime);
+    if let Some(ui) = display_proxy {
+        serial_println!("[session] User session starting; Ferrofluid owns presentation and input.");
+        drivers::session_manager::run(ui, forge_service, ai_runtime);
     }
     #[cfg(feature = "forge")]
     forge_service.run();

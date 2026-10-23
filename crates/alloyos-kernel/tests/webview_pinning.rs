@@ -112,7 +112,7 @@ fn test_webview_card_pinning_and_url_persistence() {
     );
 
     // 3. Kernel / Ferrofluid sync cycle must NOT unpin the webview
-    // Simulate what kernel system_ui driver does on tick:
+    // Simulate what kernel session manager driver does on tick:
     ui.restore_dashboard(agent.pinned_tile_ids());
     ui.render(Duration::from_millis(50));
 

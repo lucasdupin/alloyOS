@@ -1,11 +1,12 @@
-//! Driver bridge for the Ferrofluid-owned Slint System UI.
-//! Slint lives on the boot/UI context, never in a shared driver static or IRQ.
+//! Session manager coordinating user interactions, agent runtime,
+//! voice audio, and the Ferrofluid display proxy.
+//! Presentation rendering lives in userland (Ferrofluid), not in the kernel.
 
 use super::rng;
 use alloc::{collections::VecDeque, string::{String, ToString}};
 use core::{task::Poll, time::Duration};
 use alloyos_mcp::display::{ChatItem, TileEvent};
-use super::display_server::DisplayProxy as FerrofluidSystemUi;
+use super::display_server::DisplayProxy;
 
 const OUTPUT_MUTE_PATH: &str = "/etc/output-muted";
 
@@ -32,11 +33,11 @@ fn save_output_muted(muted: bool) -> Result<(), crate::fs::vfs::FsError> {
     Ok(())
 }
 
-pub fn create() -> FerrofluidSystemUi { FerrofluidSystemUi::new() }
+pub fn create() -> DisplayProxy { DisplayProxy::new() }
 
 fn update_webview_from_tools(
     tools: &[alloyos_welder::ToolExecutionOutput],
-    ui: &FerrofluidSystemUi,
+    ui: &DisplayProxy,
     current_webview: &mut Option<alloyos_mcp::display::WebViewState>,
     pinned_tile_ids: &[String],
 ) {
@@ -78,7 +79,7 @@ fn update_webview_from_tools(
 }
 
 pub fn run(
-    mut ui: FerrofluidSystemUi,
+    mut ui: DisplayProxy,
     mut forge: super::forge::ForgeService,
     mut agent: alloyos_welder::AgentRuntime,
 ) -> ! {

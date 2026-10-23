@@ -329,6 +329,49 @@ component PinnedTileRow inherits Rectangle {
     }
 }
 
+component PinnedWebViewRow inherits Rectangle {
+    in property <string> origin;
+    in property <string> title;
+    in property <string> status;
+    in property <bool> crashed: false;
+    in property <image> frame;
+    in property <bool> pending: false;
+    in property <bool> pinned;
+    in property <bool> reduced-motion;
+    callback expand();
+    callback reload();
+    callback pin();
+    callback finished();
+    Timer {
+        interval: 440ms;
+        running: !root.pinned && !root.reduced-motion;
+        triggered => { root.finished(); }
+    }
+    clip: true;
+    height: root.pinned ? card.preferred-height + 12px : 0px;
+    animate height {
+        delay: root.reduced-motion || root.pinned ? 0ms : 200ms;
+        duration: root.reduced-motion ? 0ms : 240ms;
+        easing: ease-in-out;
+    }
+    card := WebViewCard {
+        x: root.pinned ? 0px : -root.width;
+        width: root.width;
+        height: self.preferred-height;
+        origin: root.origin;
+        title: root.title;
+        status: root.status;
+        crashed: root.crashed;
+        frame: root.frame;
+        pending: root.pending || !root.pinned;
+        pinned: root.pinned;
+        animate x { duration: root.reduced-motion ? 0ms : 200ms; easing: ease-in; }
+        expand => { root.expand(); }
+        reload => { root.reload(); }
+        pin => { root.pin(); }
+    }
+}
+
 component ThinkingIndicator inherits Rectangle {
     in property <int> time-ms: 0;
     height: 30px;
@@ -504,6 +547,10 @@ export component SystemUi inherits Window {
     in property <image> webview-frame;
     callback webview-set-expanded(bool);
     callback webview-reload();
+    in-out property <bool> webview-pinned: false;
+    in-out property <bool> webview-pin-departing: false;
+    callback webview-pin(bool);
+    callback finish-webview-unpin();
     in property <[TileView]> dashboard-pins;
     pure callback tile-is-pinned(string, [TileView]) -> bool;
     callback pin-tile(string, bool);
@@ -683,6 +730,7 @@ export component SystemUi inherits Window {
                             crashed: root.webview-crashed;
                             frame: root.webview-frame;
                             pending: root.reply-pending;
+                            pinned: root.webview-pinned;
                             expand => {
                                 root.release-editor();
                                 root.sidebar-open = false;
@@ -690,6 +738,7 @@ export component SystemUi inherits Window {
                                 root.webview-set-expanded(true);
                             }
                             reload => { root.webview-reload(); }
+                            pin => { root.webview-pin(!root.webview-pinned); }
                         }
                         if root.voice-caption != "" && (root.voice-state == 2 || root.voice-state == 3 || root.voice-state == 4): Text {
                             text: root.voice-caption;
@@ -918,11 +967,30 @@ export component SystemUi inherits Window {
                             padding-bottom: 16px;
                             spacing: 0px;
                             alignment: start;
-                            if root.dashboard-tiles.length == 0: Text {
+                            if root.dashboard-tiles.length == 0 && (!root.webview-visible || (!root.webview-pinned && !root.webview-pin-departing)): Text {
                                 text: "Pin an available app tile below or add one from the conversation.";
                                 color: AlloyPalette.muted;
                                 wrap: word-wrap;
                                 vertical-stretch: 0;
+                            }
+                            if root.webview-visible && (root.webview-pinned || root.webview-pin-departing): PinnedWebViewRow {
+                                origin: root.webview-origin;
+                                title: root.webview-title;
+                                status: root.webview-status;
+                                crashed: root.webview-crashed;
+                                frame: root.webview-frame;
+                                pending: root.reply-pending;
+                                pinned: root.webview-pinned;
+                                reduced-motion: root.reduced-motion;
+                                expand => {
+                                    root.release-editor();
+                                    root.sidebar-open = false;
+                                    root.webview-expanded = true;
+                                    root.webview-set-expanded(true);
+                                }
+                                reload => { root.webview-reload(); }
+                                pin => { root.webview-pin(false); }
+                                finished => { root.finish-webview-unpin(); }
                             }
                             for tile[index] in root.dashboard-tiles: PinnedTileRow {
                                 reorder-enabled: index > 0;

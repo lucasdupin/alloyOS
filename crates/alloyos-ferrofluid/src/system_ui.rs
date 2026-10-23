@@ -366,6 +366,28 @@ impl FerrofluidSystemUi {
                 ui.set_webview_expanded(expanded);
             }
         });
+        let weak = ui.as_weak();
+        let dash = dashboard.clone();
+        ui.on_webview_pin(move |pin| {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_webview_pinned(pin);
+                if pin {
+                    ui.set_webview_pin_departing(false);
+                    dash.borrow_mut().pin("web.card");
+                } else {
+                    ui.set_webview_pin_departing(true);
+                    dash.borrow_mut().unpin("web.card");
+                }
+            }
+        });
+        let weak = ui.as_weak();
+        ui.on_finish_webview_unpin(move || {
+            if let Some(ui) = weak.upgrade() {
+                if !ui.get_webview_pinned() {
+                    ui.set_webview_pin_departing(false);
+                }
+            }
+        });
         ui.show()?;
         window.dispatch_event(WindowEvent::WindowActiveChanged(true));
         Ok(Self {
@@ -531,6 +553,9 @@ impl FerrofluidSystemUi {
             self.ui.set_webview_expanded(false);
             self.ui.set_webview_editable_focused(false);
             self.ui.set_webview_frame(slint::Image::default());
+            self.ui.set_webview_pinned(false);
+            self.ui.set_webview_pin_departing(false);
+            self.dashboard.borrow_mut().unpin("web.card");
             return;
         };
         let origin = webview
@@ -561,7 +586,37 @@ impl FerrofluidSystemUi {
             .map(webview_frame_image)
             .unwrap_or_default();
         self.ui.set_webview_frame(frame_image);
+        if self.dashboard.borrow().pinned_ids().iter().any(|id| id == "web.card") {
+            self.ui.set_webview_pinned(true);
+        }
         self.ui.set_webview_visible(true);
+    }
+
+    pub fn set_webview_pinned(&self, pinned: bool) {
+        if self.ui.get_webview_pinned() == pinned {
+            return;
+        }
+        self.backdrop_dirty.set(true);
+        self.ui.set_webview_pinned(pinned);
+        if pinned {
+            self.ui.set_webview_pin_departing(false);
+            self.dashboard.borrow_mut().pin("web.card");
+        } else {
+            self.dashboard.borrow_mut().unpin("web.card");
+        }
+    }
+
+    pub fn webview_pinned(&self) -> bool {
+        self.ui.get_webview_visible() && self.ui.get_webview_pinned()
+    }
+
+    pub fn set_sidebar_open(&self, open: bool) {
+        self.backdrop_dirty.set(true);
+        self.ui.set_sidebar_open(open);
+    }
+
+    pub fn sidebar_open(&self) -> bool {
+        self.ui.get_sidebar_open()
     }
 
     pub fn set_webview_expanded(&self, expanded: bool) {
@@ -659,6 +714,14 @@ impl FerrofluidSystemUi {
     }
     pub fn restore_dashboard(&self, ids: &[String]) {
         self.dashboard.borrow_mut().restore(ids);
+        let webview_pinned = ids.iter().any(|id| id == "web.card");
+        if self.ui.get_webview_pinned() != webview_pinned {
+            self.backdrop_dirty.set(true);
+            self.ui.set_webview_pinned(webview_pinned);
+            if webview_pinned {
+                self.ui.set_webview_pin_departing(false);
+            }
+        }
         update_dashboard(
             &self.ui,
             &self.dashboard.borrow().tiles(&self.available_tiles.borrow()),

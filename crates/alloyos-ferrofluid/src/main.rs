@@ -106,12 +106,18 @@ pub extern "C" fn _start(heap_start: usize, heap_length: usize) -> ! {
                                 if wv.expanded {
                                     ui.set_webview_expanded(true);
                                 }
+                                if wv.pinned {
+                                    ui.set_webview_pinned(true);
+                                }
                                 active_webview = Some(ctrl);
                             }
                         } else if let Some(ctrl) = &active_webview {
                             ui.set_webview(Some(ctrl));
                             if wv.expanded != ui.webview_expanded() {
                                 ui.set_webview_expanded(wv.expanded);
+                            }
+                            if wv.pinned != ui.webview_pinned() {
+                                ui.set_webview_pinned(wv.pinned);
                             }
                         }
                     } else if active_webview.is_some() {

@@ -63,6 +63,7 @@ fn update_webview_from_tools(
                     title,
                     origin,
                     expanded: false,
+                    pinned: current_webview.as_ref().map(|w| w.pinned).unwrap_or(false),
                 };
                 ui.set_webview(Some(&state));
                 *current_webview = Some(state);

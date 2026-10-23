@@ -95,8 +95,48 @@ fn webview_in_conversation_screenshot() {
 
     snapshot(&mut suite, "webview-in-conversation", &ui);
 
+    // Tapping the Pin icon button on the inline conversation WebView card pins it.
+    assert!(!ui.webview_pinned());
+    assert!(!ui.dashboard_state().pinned_ids().contains(&"web.card".to_string()));
+    tap(&mut ui, 1035, 976);
+    ui.render(Duration::from_millis(100));
+    assert!(
+        ui.webview_pinned(),
+        "tapping Pin on the conversation WebView card must pin the webview"
+    );
+    assert!(
+        ui.dashboard_state().pinned_ids().contains(&"web.card".to_string()),
+        "dashboard state must include web.card when pinned"
+    );
+
+    // Opening the sidebar with pinned webview renders drawer content without blank placeholder.
+    ui.set_sidebar_open(true);
+    for frame in 1..=4 {
+        ui.render(Duration::from_millis(100 + frame * 16));
+    }
+    assert!(ui.sidebar_open());
+    assert!(ui.webview_pinned());
+
+    // Close sidebar and toggle pin off.
+    ui.set_sidebar_open(false);
+    ui.render(Duration::from_millis(100));
+    tap(&mut ui, 1035, 976);
+    ui.render(Duration::from_millis(100));
+    assert!(
+        !ui.webview_pinned(),
+        "tapping Pin again on the conversation WebView card must unpin the webview"
+    );
+    assert!(
+        !ui.dashboard_state().pinned_ids().contains(&"web.card".to_string()),
+        "dashboard state must remove web.card when unpinned"
+    );
+
+    // Restoring dashboard pins with web.card repins the webview.
+    ui.restore_dashboard(&["web.card".into()]);
+    assert!(ui.webview_pinned());
+
     // Tapping the Expand icon button on the inline conversation WebView card promotes it.
-    tap(&mut ui, 1050, 976);
+    tap(&mut ui, 930, 976);
     ui.render(Duration::from_millis(250));
     assert!(
         ui.webview_expanded(),

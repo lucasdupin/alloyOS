@@ -9,8 +9,10 @@ export component WebViewCard inherits Rectangle {
     in property <bool> crashed: false;
     in property <image> frame;
     in property <bool> pending: false;
+    in property <bool> pinned: false;
     callback expand();
     callback reload();
+    callback pin();
     min-width: 0px;
     clip: true;
     background: AlloyPalette.charcoal;
@@ -69,6 +71,18 @@ export component WebViewCard inherits Rectangle {
                 height: 32px;
                 horizontal-stretch: 0;
                 clicked => { root.expand(); }
+            }
+            AlloyButton {
+                flat: true;
+                icon-only: true;
+                icon: root.pinned ? @image-url("../icons/pin-active.svg") : @image-url("../icons/pin.svg");
+                enabled: !root.pending;
+                button-label: root.pinned ? "Unpin webview" : "Pin webview";
+                min-width: 32px;
+                max-width: 32px;
+                height: 32px;
+                horizontal-stretch: 0;
+                clicked => { root.pin(); }
             }
         }
         viewport := Rectangle {

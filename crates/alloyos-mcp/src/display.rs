@@ -69,6 +69,8 @@ pub struct WebViewState {
     pub origin: String,
     #[serde(default)]
     pub expanded: bool,
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 #[derive(Default, Clone, PartialEq, Serialize, Deserialize)]

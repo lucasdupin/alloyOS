@@ -74,7 +74,7 @@ fn webview_expanded_screenshot() {
     assert!(inline_blue > 1_000);
 
     // Expand via the conversation card's Expand icon button, resize viewport, and commit updated frame.
-    tap(&mut ui, 1050, 976);
+    tap(&mut ui, 950, 976);
     ui.render(Duration::from_millis(100));
     assert!(ui.webview_expanded());
 

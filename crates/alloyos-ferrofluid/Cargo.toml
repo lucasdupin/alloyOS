@@ -17,6 +17,7 @@ zune-png = { version = "=0.5.1", default-features = false }
 alloyos-keyboard = { path = "../alloyos-keyboard" }
 alloyos-proto = { path = "../alloyos-proto" }
 alloyos-mcp = { path = "../alloyos-mcp" }
+alloyos-js = { path = "../alloyos-js" }
 slint = { version = "=1.18.1", default-features = false, features = ["compat-1-18", "unsafe-single-threaded", "libm", "renderer-software", "software-renderer-path"] }
 
 [build-dependencies]
@@ -24,7 +25,6 @@ alloyos-proto = { path = "../alloyos-proto" }
 slint-build = "=1.18.1"
 
 [dev-dependencies]
-alloyos-js = { path = "../alloyos-js" }
 png = "=0.18.1"
 
 [features]

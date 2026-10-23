@@ -4,7 +4,10 @@
 //! The bare-metal Slint runtime uses `unsafe-single-threaded` storage. Keep this
 //! owner local to the UI loop; do not put it in a global mutex or mark it Send.
 
-use alloc::{boxed::Box, collections::VecDeque, rc::Rc, string::String, vec, vec::Vec};
+use alloc::{
+    boxed::Box, collections::VecDeque, format, rc::Rc, string::String, string::ToString, vec,
+    vec::Vec,
+};
 use alloyos_keyboard::{LiquidDisplacement, SoftKey};
 use alloyos_mcp::protocol::{AppTile, TileAction};
 use alloyos_proto::{DirtyRect, InputEvent, InputEventKind};
@@ -63,6 +66,7 @@ pub struct FerrofluidSystemUi {
     tile_events: Rc<RefCell<VecDeque<crate::TileEvent>>>,
     image_cache: Rc<RefCell<crate::tile_images::ImageCache>>,
     webview_reloads: Rc<Cell<usize>>,
+    webview_url: Rc<RefCell<String>>,
     rgb: Vec<slint::Rgb8Pixel>,
     argb: Vec<u32>,
     size: PhysicalSize,
@@ -239,10 +243,11 @@ impl FerrofluidSystemUi {
         let available = available_tiles.clone();
         let weak = ui.as_weak();
         ui.on_pin_tile(move |id, pin| {
-            if !available
-                .borrow()
-                .iter()
-                .any(|tile| tile.tile_id == id.as_str())
+            if !id.starts_with("web.")
+                && !available
+                    .borrow()
+                    .iter()
+                    .any(|tile| tile.tile_id == id.as_str())
             {
                 return;
             }
@@ -366,16 +371,25 @@ impl FerrofluidSystemUi {
                 ui.set_webview_expanded(expanded);
             }
         });
+        let webview_url = Rc::new(RefCell::new(String::new()));
         let weak = ui.as_weak();
         let dash = dashboard.clone();
+        let current_url = webview_url.clone();
         ui.on_webview_pin(move |pin| {
             if let Some(ui) = weak.upgrade() {
                 ui.set_webview_pinned(pin);
+                let url = current_url.borrow().clone();
+                let pin_id = if url.is_empty() {
+                    String::from("web.card")
+                } else {
+                    alloc::format!("web.{}", url)
+                };
                 if pin {
                     ui.set_webview_pin_departing(false);
-                    dash.borrow_mut().pin("web.card");
+                    dash.borrow_mut().pin(&pin_id);
                 } else {
                     ui.set_webview_pin_departing(true);
+                    dash.borrow_mut().unpin(&pin_id);
                     dash.borrow_mut().unpin("web.card");
                 }
             }
@@ -409,6 +423,7 @@ impl FerrofluidSystemUi {
             tile_events,
             image_cache,
             webview_reloads,
+            webview_url,
             rgb: vec![slint::Rgb8Pixel::default(); width as usize * height as usize],
             argb: vec![0xff000000; width as usize * height as usize],
             size,
@@ -555,9 +570,18 @@ impl FerrofluidSystemUi {
             self.ui.set_webview_frame(slint::Image::default());
             self.ui.set_webview_pinned(false);
             self.ui.set_webview_pin_departing(false);
+            let prev_url = self.webview_url.borrow().clone();
+            if !prev_url.is_empty() {
+                self.dashboard.borrow_mut().unpin(&format!("web.{}", prev_url));
+            }
             self.dashboard.borrow_mut().unpin("web.card");
+            *self.webview_url.borrow_mut() = String::new();
+            self.ui.set_webview_url("".into());
             return;
         };
+        let url = webview.requested_url().or_else(|| webview.committed_url()).unwrap_or("");
+        *self.webview_url.borrow_mut() = url.to_string();
+        self.ui.set_webview_url(url.into());
         let origin = webview
             .trusted_origin()
             .map(|o| o.as_str())
@@ -586,7 +610,12 @@ impl FerrofluidSystemUi {
             .map(webview_frame_image)
             .unwrap_or_default();
         self.ui.set_webview_frame(frame_image);
-        if self.dashboard.borrow().pinned_ids().iter().any(|id| id == "web.card") {
+        let pin_id = if url.is_empty() {
+            "web.card".to_string()
+        } else {
+            format!("web.{}", url)
+        };
+        if self.dashboard.borrow().pinned_ids().iter().any(|id| id == &pin_id || id == "web.card" || (!url.is_empty() && id == url)) {
             self.ui.set_webview_pinned(true);
         }
         self.ui.set_webview_visible(true);
@@ -598,10 +627,17 @@ impl FerrofluidSystemUi {
         }
         self.backdrop_dirty.set(true);
         self.ui.set_webview_pinned(pinned);
+        let url = self.webview_url.borrow().clone();
+        let pin_id = if url.is_empty() {
+            "web.card".to_string()
+        } else {
+            format!("web.{}", url)
+        };
         if pinned {
             self.ui.set_webview_pin_departing(false);
-            self.dashboard.borrow_mut().pin("web.card");
+            self.dashboard.borrow_mut().pin(&pin_id);
         } else {
+            self.dashboard.borrow_mut().unpin(&pin_id);
             self.dashboard.borrow_mut().unpin("web.card");
         }
     }
@@ -714,7 +750,17 @@ impl FerrofluidSystemUi {
     }
     pub fn restore_dashboard(&self, ids: &[String]) {
         self.dashboard.borrow_mut().restore(ids);
-        let webview_pinned = ids.iter().any(|id| id == "web.card");
+        let url = self.webview_url.borrow().clone();
+        let pin_id = if url.is_empty() {
+            "web.card".to_string()
+        } else {
+            format!("web.{}", url)
+        };
+        let webview_pinned = ids.iter().any(|id| {
+            id == &pin_id
+                || id == "web.card"
+                || (!url.is_empty() && (id == &url || id.strip_prefix("web.") == Some(&url)))
+        });
         if self.ui.get_webview_pinned() != webview_pinned {
             self.backdrop_dirty.set(true);
             self.ui.set_webview_pinned(webview_pinned);

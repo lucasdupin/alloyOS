@@ -96,8 +96,9 @@ fn webview_in_conversation_screenshot() {
     snapshot(&mut suite, "webview-in-conversation", &ui);
 
     // Tapping the Pin icon button on the inline conversation WebView card pins it.
+    let expected_pin_id = format!("web.{}", webview_fixture::ACCEPTANCE_URL);
     assert!(!ui.webview_pinned());
-    assert!(!ui.dashboard_state().pinned_ids().contains(&"web.card".to_string()));
+    assert!(!ui.dashboard_state().pinned_ids().contains(&expected_pin_id));
     tap(&mut ui, 1035, 976);
     ui.render(Duration::from_millis(100));
     assert!(
@@ -105,8 +106,8 @@ fn webview_in_conversation_screenshot() {
         "tapping Pin on the conversation WebView card must pin the webview"
     );
     assert!(
-        ui.dashboard_state().pinned_ids().contains(&"web.card".to_string()),
-        "dashboard state must include web.card when pinned"
+        ui.dashboard_state().pinned_ids().contains(&expected_pin_id),
+        "dashboard state must include web.<url> when pinned"
     );
 
     // Opening the sidebar with pinned webview renders drawer content without blank placeholder.
@@ -127,12 +128,12 @@ fn webview_in_conversation_screenshot() {
         "tapping Pin again on the conversation WebView card must unpin the webview"
     );
     assert!(
-        !ui.dashboard_state().pinned_ids().contains(&"web.card".to_string()),
-        "dashboard state must remove web.card when unpinned"
+        !ui.dashboard_state().pinned_ids().contains(&expected_pin_id),
+        "dashboard state must remove web.<url> when unpinned"
     );
 
-    // Restoring dashboard pins with web.card repins the webview.
-    ui.restore_dashboard(&["web.card".into()]);
+    // Restoring dashboard pins with web.<url> repins the webview.
+    ui.restore_dashboard(&[expected_pin_id]);
     assert!(ui.webview_pinned());
 
     // Tapping the Expand icon button on the inline conversation WebView card promotes it.

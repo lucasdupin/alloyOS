@@ -38,6 +38,7 @@ fn update_webview_from_tools(
     tools: &[alloyos_welder::ToolExecutionOutput],
     ui: &FerrofluidSystemUi,
     current_webview: &mut Option<alloyos_mcp::display::WebViewState>,
+    pinned_tile_ids: &[String],
 ) {
     for tool_out in tools {
         if let Some(view) = &tool_out.synthesized_view {
@@ -58,12 +59,16 @@ fn update_webview_from_tools(
                     url.clone()
                 };
                 let target_url = if !url.is_empty() { url } else { view.title.clone() };
+                let is_pinned = current_webview.as_ref().map(|w| w.pinned).unwrap_or(false)
+                    || pinned_tile_ids.iter().any(|id| {
+                        id == &alloc::format!("web.{}", target_url) || id == "web.card" || id == &target_url
+                    });
                 let state = alloyos_mcp::display::WebViewState {
                     url: target_url,
                     title,
                     origin,
                     expanded: false,
-                    pinned: current_webview.as_ref().map(|w| w.pinned).unwrap_or(false),
+                    pinned: is_pinned,
                 };
                 ui.set_webview(Some(&state));
                 *current_webview = Some(state);
@@ -230,7 +235,7 @@ pub fn run(
             ui.set_available_tiles(&agent.available_dashboard_tiles());
         }
         while let Some(output) = voice.take_tool_output() {
-            update_webview_from_tools(core::slice::from_ref(&output), &ui, &mut current_webview);
+            update_webview_from_tools(core::slice::from_ref(&output), &ui, &mut current_webview, agent.pinned_tile_ids());
             if let Some(tile) = output.synthesized_view.and_then(|view|view.tile) {
                 if let Some(existing) = chat_tiles.iter_mut().find(|t|t.tile_id == tile.tile_id) {
                     *existing = tile.clone();
@@ -287,6 +292,15 @@ pub fn run(
             match agent.set_pinned_tile_ids(dashboard.pinned_ids()) {
                 Ok(()) => {
                     dashboard_revision = dashboard.revision();
+                    if let Some(wv) = current_webview.as_mut() {
+                        let is_pinned = dashboard.pinned_ids().iter().any(|id| {
+                            id == &alloc::format!("web.{}", wv.url) || id == "web.card" || id == &wv.url
+                        });
+                        if wv.pinned != is_pinned {
+                            wv.pinned = is_pinned;
+                            ui.set_webview(Some(wv));
+                        }
+                    }
                     // Pinning materializes the selected widget in Welder. Publish
                     // it immediately instead of leaving the catalog placeholder
                     // visible until the next periodic refresh.
@@ -381,7 +395,7 @@ pub fn run(
                                 }
                             }
                         }
-                        update_webview_from_tools(&output.tool_outputs, &ui, &mut current_webview);
+                        update_webview_from_tools(&output.tool_outputs, &ui, &mut current_webview, agent.pinned_tile_ids());
                     }
                     Err(error) => {
                         if let Some(id) = console_rpc_id.take() {
@@ -455,7 +469,7 @@ pub fn run(
                             }
                         }
                     }
-                    update_webview_from_tools(&output.tool_outputs, &ui, &mut current_webview);
+                    update_webview_from_tools(&output.tool_outputs, &ui, &mut current_webview, agent.pinned_tile_ids());
                 }
                 Ok(None) => {
                     pending = true;

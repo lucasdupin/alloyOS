@@ -9,6 +9,7 @@ pub mod auth;
 pub mod dashboard;
 pub use dashboard::{DashboardState, TileEvent};
 pub mod system_ui;
+pub mod webview;
 
 pub use auth::{AgentUiToken, CallerPrincipal, FerrofluidError, SecurityGate};
 pub use system_ui::{ChatItem, FerrofluidSystemUi};

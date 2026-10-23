@@ -483,6 +483,7 @@ pub mod runtime;
 pub mod voice;
 pub mod tools;
 pub mod ui_synth;
+pub mod webview;
 pub use knowledge::{
     KnowledgeBasis, KnowledgeCategory, KnowledgeEntry, KnowledgeSearchMatch, KnowledgeStorageKind,
     KnowledgeTurnReport,

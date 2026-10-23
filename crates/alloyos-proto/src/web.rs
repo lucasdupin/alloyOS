@@ -152,6 +152,252 @@ fn url_valid(bytes: &[u8]) -> bool {
         && (bytes == b"about:blank" || (bytes.starts_with(b"https://") && bytes.len() > 8))
 }
 
+/// Displayable canonical origin derived strictly from the browser service's
+/// committed URL (`Opcode::Url`). Page titles (`Opcode::Title`) and unverified
+/// navigation targets (`Opcode::Navigate`) are never trusted as origin evidence.
+#[derive(Clone, Copy)]
+pub struct TrustedOrigin {
+    bytes: [u8; MAX_URL_BYTES],
+    len: usize,
+    host_start: usize,
+    host_end: usize,
+    port: Option<u16>,
+    about_blank: bool,
+}
+
+impl TrustedOrigin {
+    pub fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.bytes[..self.len]).unwrap_or("")
+    }
+
+    pub fn scheme(&self) -> &str {
+        if self.about_blank {
+            "about"
+        } else {
+            "https"
+        }
+    }
+
+    pub fn host(&self) -> &str {
+        if self.about_blank {
+            ""
+        } else {
+            core::str::from_utf8(&self.bytes[self.host_start..self.host_end]).unwrap_or("")
+        }
+    }
+
+    pub fn port(&self) -> Option<u16> {
+        self.port
+    }
+
+    pub fn is_about_blank(&self) -> bool {
+        self.about_blank
+    }
+}
+
+impl core::fmt::Debug for TrustedOrigin {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TrustedOrigin")
+            .field("origin", &self.as_str())
+            .field("host", &self.host())
+            .field("port", &self.port)
+            .finish()
+    }
+}
+
+impl core::fmt::Display for TrustedOrigin {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl PartialEq for TrustedOrigin {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for TrustedOrigin {}
+
+impl PartialEq<&str> for TrustedOrigin {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl PartialEq<str> for TrustedOrigin {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl core::ops::Deref for TrustedOrigin {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_str()
+    }
+}
+
+impl AsRef<str> for TrustedOrigin {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+fn valid_hostname(host: &str) -> bool {
+    if host.is_empty() || host.starts_with('.') || host.ends_with('.') {
+        return false;
+    }
+    for label in host.split('.') {
+        if label.is_empty()
+            || label.starts_with('-')
+            || label.ends_with('-')
+            || !label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn valid_ipv6_literal(bracketed: &str) -> bool {
+    if !bracketed.starts_with('[') || !bracketed.ends_with(']') {
+        return false;
+    }
+    let inner = &bracketed[1..bracketed.len() - 1];
+    !inner.is_empty()
+        && inner.contains(':')
+        && inner
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.')
+}
+
+/// Derives the displayable origin (`https://host[:port]` or `about:blank`)
+/// strictly from a browser-committed canonical URL. Rejects userinfo
+/// (`user:pass@`), backslashes, invalid ports, relative paths, and non-HTTPS
+/// schemes (except exact `about:blank`).
+pub fn trusted_origin(committed_url: &str) -> Result<TrustedOrigin, Error> {
+    let raw = committed_url.as_bytes();
+    if !url_valid(raw) || raw.contains(&b'\\') {
+        return Err(Error::InvalidPayload);
+    }
+    let mut bytes = [0u8; MAX_URL_BYTES];
+    if committed_url == "about:blank" {
+        let s = b"about:blank";
+        bytes[..s.len()].copy_from_slice(s);
+        return Ok(TrustedOrigin {
+            bytes,
+            len: s.len(),
+            host_start: 0,
+            host_end: 0,
+            port: None,
+            about_blank: true,
+        });
+    }
+
+    let rest = committed_url
+        .strip_prefix("https://")
+        .ok_or(Error::InvalidPayload)?;
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    if authority.is_empty() || authority.contains('@') {
+        return Err(Error::InvalidPayload);
+    }
+
+    let (host, port_part) = if authority.starts_with('[') {
+        let close = authority.find(']').ok_or(Error::InvalidPayload)?;
+        let bracketed = &authority[..=close];
+        if !valid_ipv6_literal(bracketed) {
+            return Err(Error::InvalidPayload);
+        }
+        let remainder = &authority[close + 1..];
+        let port_str = if remainder.is_empty() {
+            None
+        } else if let Some(p) = remainder.strip_prefix(':') {
+            Some(p)
+        } else {
+            return Err(Error::InvalidPayload);
+        };
+        (bracketed, port_str)
+    } else {
+        let mut parts = authority.split(':');
+        let host_part = parts.next().unwrap_or("");
+        let port_str = parts.next();
+        if parts.next().is_some() || !valid_hostname(host_part) {
+            return Err(Error::InvalidPayload);
+        }
+        (host_part, port_str)
+    };
+
+    let parsed_port = if let Some(p_str) = port_part {
+        if p_str.is_empty()
+            || p_str.len() > 5
+            || p_str.starts_with('0')
+            || !p_str.bytes().all(|b| b.is_ascii_digit())
+        {
+            return Err(Error::InvalidPayload);
+        }
+        let p = p_str.parse::<u16>().map_err(|_| Error::InvalidPayload)?;
+        if p == 0 {
+            return Err(Error::InvalidPayload);
+        }
+        Some((p, p_str))
+    } else {
+        None
+    };
+
+    let prefix = b"https://";
+    bytes[..prefix.len()].copy_from_slice(prefix);
+    let host_start = prefix.len();
+    let host_bytes = host.as_bytes();
+    for (i, &b) in host_bytes.iter().enumerate() {
+        bytes[host_start + i] = b.to_ascii_lowercase();
+    }
+    let host_end = host_start + host_bytes.len();
+    let mut len = host_end;
+
+    let port = if let Some((p, p_str)) = parsed_port {
+        bytes[len] = b':';
+        len += 1;
+        let pb = p_str.as_bytes();
+        bytes[len..len + pb.len()].copy_from_slice(pb);
+        len += pb.len();
+        Some(p)
+    } else {
+        None
+    };
+
+    Ok(TrustedOrigin {
+        bytes,
+        len,
+        host_start,
+        host_end,
+        port,
+        about_blank: false,
+    })
+}
+
+/// Extracts a `TrustedOrigin` strictly from a validated `Opcode::Url` reply
+/// matching `current_view`. Rejects `Opcode::Title` and `Opcode::Navigate` so
+/// untrusted page titles or uncommitted target URLs can never spoof origin UI.
+pub fn trusted_origin_from_packet(
+    packet: &Packet<'_>,
+    current_view: View,
+) -> Result<TrustedOrigin, Error> {
+    packet.validate()?;
+    if packet.view != current_view {
+        return Err(Error::StaleFrame);
+    }
+    if packet.opcode != Opcode::Url {
+        return Err(Error::Opcode);
+    }
+    let url = core::str::from_utf8(packet.payload).map_err(|_| Error::InvalidPayload)?;
+    trusted_origin(url)
+}
+
 fn viewport_valid(bytes: &[u8]) -> bool {
     if bytes.len() != 12 {
         return false;
@@ -499,5 +745,90 @@ mod tests {
         assert_eq!(invalid.validate(), Err(Error::InvalidIdentity));
         assert!(Opcode::BeginFrame.is_reply());
         assert!(!Opcode::Navigate.is_reply());
+    }
+
+    #[test]
+    fn extracts_trusted_origin_and_rejects_spoofing_or_invalid_urls() {
+        let origin = trusted_origin("https://Example.ORG/login?next=/dashboard#top").unwrap();
+        assert_eq!(origin, "https://example.org");
+        assert_eq!(origin.scheme(), "https");
+        assert_eq!(origin.host(), "example.org");
+        assert_eq!(origin.port(), None);
+        assert!(!origin.is_about_blank());
+
+        let with_port = trusted_origin("https://sub.example.org:8443/api/v1").unwrap();
+        assert_eq!(with_port, "https://sub.example.org:8443");
+        assert_eq!(with_port.host(), "sub.example.org");
+        assert_eq!(with_port.port(), Some(8443));
+
+        let ipv6 = trusted_origin("https://[2001:db8::1]:9443/form").unwrap();
+        assert_eq!(ipv6, "https://[2001:db8::1]:9443");
+        assert_eq!(ipv6.host(), "[2001:db8::1]");
+        assert_eq!(ipv6.port(), Some(9443));
+
+        let blank = trusted_origin("about:blank").unwrap();
+        assert_eq!(blank, "about:blank");
+        assert_eq!(blank.scheme(), "about");
+        assert_eq!(blank.host(), "");
+        assert_eq!(blank.port(), None);
+        assert!(blank.is_about_blank());
+
+        for rejected in [
+            "",
+            "/relative/path",
+            "http://example.org/form",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "about:blank/extra",
+            "https://",
+            "https:///path-only",
+            "https://user:pass@example.org/login",
+            "https://bank.example.org@evil.example/phish",
+            "https://example.org:0/path",
+            "https://example.org:0443/path",
+            "https://example.org:65536/path",
+            "https://example.org:notaport/path",
+            "https://example.org:/path",
+            "https://example.org:443:443/path",
+            "https://.example.org/path",
+            "https://example..org/path",
+            "https://-example.org/path",
+            "https://example.org\\@evil.example/path",
+        ] {
+            assert_eq!(
+                trusted_origin(rejected),
+                Err(Error::InvalidPayload),
+                "expected {rejected:?} to be rejected"
+            );
+        }
+
+        let committed_pkt = packet(Opcode::Url, b"https://portal.example.org:8443/form");
+        assert_eq!(
+            trusted_origin_from_packet(&committed_pkt, VIEW).unwrap(),
+            "https://portal.example.org:8443"
+        );
+
+        // Title and unverified Navigate packets must never be accepted as origin evidence.
+        let spoofed_title = packet(Opcode::Title, b"https://bank.example.org");
+        assert_eq!(
+            trusted_origin_from_packet(&spoofed_title, VIEW),
+            Err(Error::Opcode)
+        );
+        let unverified_nav = packet(Opcode::Navigate, b"https://bank.example.org/login");
+        assert_eq!(
+            trusted_origin_from_packet(&unverified_nav, VIEW),
+            Err(Error::Opcode)
+        );
+        let stale_url = Packet {
+            view: View {
+                id: VIEW.id,
+                generation: VIEW.generation - 1,
+            },
+            ..committed_pkt
+        };
+        assert_eq!(
+            trusted_origin_from_packet(&stale_url, VIEW),
+            Err(Error::StaleFrame)
+        );
     }
 }

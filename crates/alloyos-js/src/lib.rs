@@ -6,8 +6,12 @@ extern crate std;
 extern crate alloc;
 
 pub mod app;
+pub mod engine;
 pub mod process;
 pub use app::{invoke_app_handler, validate_app_handlers, AppHandler, AppHandlerResult};
+pub use engine::{
+    AlloyJsEngine, EngineLimits, JsEngine, JsExecutionDomain, WebScriptOutput,
+};
 pub mod ast;
 pub mod host;
 pub mod lexer;
@@ -596,5 +600,124 @@ mod forge_tests {
         for script in ["AlloyOS.forge('hello', {max_tokens:0});","AlloyOS.forge('hello', {max_tokens:257});","AlloyOS.forge('hello', {auth_token:'secret'});","AlloyOS.forge(42);","AlloyOS.forge('hello', false);"] {
             assert!(rt.eval_with_host(script,&mut host).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod engine_smoke_tests {
+    use super::*;
+    use alloc::string::ToString;
+    use alloc::vec;
+
+    #[test]
+    fn test_web_engine_smoke_fixture_executes_unaltered() {
+        let source = include_str!("../../../tests/fixtures/web/engine-smoke.js");
+        let engine = AlloyJsEngine::new();
+        engine
+            .validate_source(JsExecutionDomain::IsolatedWebScript, source)
+            .expect("engine-smoke.js should pass syntax validation");
+        let output = engine
+            .eval_isolated_web_script(source)
+            .expect("engine-smoke.js should execute cleanly in IsolatedWebScript mode");
+        assert_eq!(output.printed, vec!["ALLOYOS_JSC_SMOKE_PASS".to_string()]);
+        assert!(output.steps_executed > 0);
+    }
+
+    #[test]
+    fn test_isolated_web_script_rejects_alloyos_bindings_even_with_host() {
+        let engine = AlloyJsEngine::new();
+        let mut host = VirtualHostEnv::new();
+        host.files
+            .insert("/etc/secret.conf".to_string(), "classified".to_string());
+
+        for snippet in [
+            "AlloyOS.fs.read('/etc/secret.conf');",
+            "AlloyOS.sys.status();",
+            "AlloyOS.status();",
+            "AlloyOS.log('leak');",
+            "AlloyOS;",
+        ] {
+            let err = engine
+                .eval_in_domain(JsExecutionDomain::IsolatedWebScript, snippet, &mut host)
+                .expect_err("IsolatedWebScript must reject AlloyOS access");
+            assert!(
+                matches!(err, JsError::ReferenceError(_)),
+                "Expected ReferenceError for '{}', got {:?}",
+                snippet,
+                err
+            );
+
+            let err_isolated = engine
+                .eval_isolated_web_script(snippet)
+                .expect_err("eval_isolated_web_script must reject AlloyOS access");
+            assert!(matches!(err_isolated, JsError::ReferenceError(_)));
+        }
+    }
+
+    #[test]
+    fn test_fuel_exhaustion_inside_try_catch_cannot_be_swallowed() {
+        let engine = AlloyJsEngine::with_limits(EngineLimits {
+            max_source_bytes: 256 * 1024,
+            max_steps: 200,
+            max_result_bytes: 1024 * 1024,
+        });
+        let err = engine
+            .eval_isolated_web_script("try { while (true) {} } catch (e) { print('caught'); }")
+            .expect_err("OutOfFuel must not be catchable by user try/catch");
+        assert_eq!(err, JsError::OutOfFuel);
+        assert_eq!(err, JsError::ExecutionLimitExceeded { max_steps: 200 });
+    }
+
+    #[test]
+    fn test_ecmascript_map_uint8array_promises_and_exceptions() {
+        let mut isolate = JsIsolate::new();
+        let script = r#"
+            'use strict';
+            const m = new Map([['a', 10]]);
+            m.set('b', 20);
+            m.set('a', 15);
+            const hasB = m.has('b');
+            const delB = m.delete('b');
+            const sizeAfter = m.size;
+
+            const u8 = new Uint8Array([256, -1, 10, 20]);
+            const sliced = u8.slice(1, 3);
+            const mapped = sliced.map(x => x + 2);
+
+            let trace = [];
+            try {
+                try {
+                    undeclaredVar + 1;
+                } catch (e) {
+                    if (e instanceof ReferenceError && e instanceof Error) {
+                        trace.push('ref:' + m.get('a'));
+                    }
+                    throw new TypeError('custom-type');
+                } finally {
+                    trace.push('finally1');
+                }
+            } catch (e2) {
+                if (e2 instanceof TypeError && !(e2 instanceof SyntaxError)) {
+                    trace.push('type:' + sizeAfter + ':' + hasB + ':' + delB);
+                }
+            }
+
+            Promise.reject(new SyntaxError('bad-syntax'))
+                .catch(err => {
+                    if (err instanceof SyntaxError) {
+                        return mapped.reduce((acc, v) => acc + v, 0);
+                    }
+                    return -1;
+                })
+                .then(total => {
+                    print(trace.join('|') + '|u8:' + total);
+                });
+        "#;
+
+        isolate.eval(script).expect("script should succeed");
+        assert_eq!(
+            isolate.drain_printed_output(),
+            vec!["ref:15|finally1|type:1:true:true|u8:13".to_string()]
+        );
     }
 }

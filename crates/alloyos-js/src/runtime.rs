@@ -1,4 +1,4 @@
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, VecDeque};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -28,11 +28,45 @@ enum ControlFlow {
     Return(JsValue),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PromiseState {
+    Pending,
+    Fulfilled(JsValue),
+    Rejected(JsValue),
+}
+
+#[derive(Debug, Clone)]
+struct PromiseReaction {
+    on_fulfilled: Option<JsFunction>,
+    on_rejected: Option<JsFunction>,
+    child_promise_id: usize,
+}
+
+#[derive(Debug, Clone)]
+struct PromiseRecord {
+    state: PromiseState,
+    reactions: Vec<PromiseReaction>,
+    handled: bool,
+}
+
+#[derive(Debug, Clone)]
+struct Microtask {
+    handler: Option<JsFunction>,
+    is_rejection: bool,
+    arg: JsValue,
+    child_promise_id: usize,
+}
+
 /// Isolated JavaScript execution context (`JsIsolate` / `V8Isolate` / `JsRuntime`).
 pub struct JsIsolate {
     scopes: Vec<BTreeMap<String, VarSlot>>,
     max_steps: usize,
     steps_executed: usize,
+    allow_alloyos_bindings: bool,
+    printed: Vec<String>,
+    pending_exception: Option<JsValue>,
+    promises: Vec<PromiseRecord>,
+    microtasks: VecDeque<Microtask>,
 }
 
 /// Alias for `JsIsolate` representing the embedded V8 isolate abstraction.
@@ -59,7 +93,39 @@ impl JsIsolate {
             scopes: vec![BTreeMap::new()],
             max_steps,
             steps_executed: 0,
+            allow_alloyos_bindings: true,
+            printed: Vec::new(),
+            pending_exception: None,
+            promises: Vec::new(),
+            microtasks: VecDeque::new(),
         }
+    }
+
+    /// Creates a pure ECMAScript isolate for untrusted web/smoke scripts with `AlloyOS.*` disabled.
+    pub fn new_isolated_web(max_steps: usize) -> Self {
+        let mut isolate = Self::with_max_steps(max_steps);
+        isolate.allow_alloyos_bindings = false;
+        isolate
+    }
+
+    /// Enables or disables `AlloyOS.*` host namespace bindings in this isolate.
+    pub fn set_allow_alloyos_bindings(&mut self, allow: bool) {
+        self.allow_alloyos_bindings = allow;
+    }
+
+    /// Returns whether `AlloyOS.*` host namespace bindings are enabled in this isolate.
+    pub fn allows_alloyos_bindings(&self) -> bool {
+        self.allow_alloyos_bindings
+    }
+
+    /// Returns lines emitted via the global `print(...)` function.
+    pub fn printed_output(&self) -> &[String] {
+        &self.printed
+    }
+
+    /// Drains and returns all lines emitted via the global `print(...)` function.
+    pub fn drain_printed_output(&mut self) -> Vec<String> {
+        core::mem::take(&mut self.printed)
     }
 
     /// Returns the number of AST evaluation steps executed in the last run.
@@ -118,6 +184,7 @@ impl JsIsolate {
         run_main: bool,
     ) -> Result<JsValue, JsError> {
         self.steps_executed = 0;
+        self.pending_exception = None;
         let program = parse_program(source)?;
 
         // Hoist top-level function declarations before statement execution
@@ -127,16 +194,23 @@ impl JsIsolate {
         for stmt in &program {
             match self.exec_stmt(stmt, host)? {
                 ControlFlow::None(v) => last_val = v,
-                ControlFlow::Return(v) => return Ok(v),
+                ControlFlow::Return(v) => {
+                    self.drain_microtasks(host)?;
+                    return Ok(v);
+                }
             }
         }
-        if run_main && last_val == JsValue::Undefined
+        if run_main
+            && last_val == JsValue::Undefined
             && matches!(program.last(), Some(Stmt::FunctionDecl { name, .. }) if name == "main")
         {
             if let Ok(JsValue::Function(main_fn)) = self.lookup_var("main") {
-                return self.invoke_js_function(main_fn, &[], host);
+                let res = self.invoke_js_function(main_fn, &[], host)?;
+                self.drain_microtasks(host)?;
+                return Ok(res);
             }
         }
+        self.drain_microtasks(host)?;
         Ok(last_val)
     }
 
@@ -152,7 +226,11 @@ impl JsIsolate {
         self.evaluate_source(source, host, false)?;
         let func_val = self.lookup_var(fn_name)?;
         match func_val {
-            JsValue::Function(func) => self.invoke_js_function(func, args, host),
+            JsValue::Function(func) => {
+                let res = self.invoke_js_function(func, args, host)?;
+                self.drain_microtasks(host)?;
+                Ok(res)
+            }
             other => Err(JsError::TypeError(format!(
                 "'{}' is not a function (found {})",
                 fn_name,
@@ -218,10 +296,23 @@ impl JsIsolate {
                 SHELL_FORBIDDEN_MSG.to_string(),
             ));
         }
+        if name == "AlloyOS" && !self.allow_alloyos_bindings {
+            return Err(JsError::ReferenceError(
+                "'AlloyOS' is not defined".to_string(),
+            ));
+        }
         for scope in self.scopes.iter().rev() {
             if let Some(slot) = scope.get(name) {
                 return Ok(slot.value.clone());
             }
+        }
+        if is_builtin_constructor(name) {
+            return Ok(JsValue::Function(JsFunction {
+                name: Some(name.to_string()),
+                params: Vec::new(),
+                body: FunctionBody::Block(Vec::new()),
+                captured_env: BTreeMap::new(),
+            }));
         }
         Err(JsError::ReferenceError(format!(
             "'{}' is not defined",
@@ -243,6 +334,24 @@ impl JsIsolate {
                         name
                     )));
                 }
+                slot.value = value;
+                return Ok(());
+            }
+        }
+        Err(JsError::ReferenceError(format!(
+            "'{}' is not defined",
+            name
+        )))
+    }
+
+    fn mutate_var(&mut self, name: &str, value: JsValue) -> Result<(), JsError> {
+        if is_forbidden_shell_ident(name) {
+            return Err(JsError::ForbiddenCapability(
+                SHELL_FORBIDDEN_MSG.to_string(),
+            ));
+        }
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(slot) = scope.get_mut(name) {
                 slot.value = value;
                 return Ok(());
             }
@@ -356,6 +465,72 @@ impl JsIsolate {
                     None => JsValue::Undefined,
                 };
                 Ok(ControlFlow::Return(val))
+            }
+            Stmt::Throw(expr) => {
+                let val = self.eval_expr(expr, host)?;
+                let err = js_value_to_js_error(&val);
+                self.pending_exception = Some(val);
+                Err(err)
+            }
+            Stmt::Try {
+                body,
+                catch_param,
+                catch_body,
+                finally_body,
+            } => {
+                let body_res = self.exec_block(body, host);
+                let outcome = match body_res {
+                    Ok(cf) => Ok(cf),
+                    Err(err) => {
+                        if is_uncatchable_error(&err) {
+                            return Err(err);
+                        }
+                        let caught_val = self
+                            .pending_exception
+                            .take()
+                            .unwrap_or_else(|| js_error_to_js_value(&err));
+                        if let Some(c_body) = catch_body {
+                            self.push_scope();
+                            self.hoist_functions(c_body);
+                            if let Some(param) = catch_param {
+                                self.define_var(param.clone(), caught_val, false);
+                            }
+                            let mut last = JsValue::Undefined;
+                            let mut catch_res = None;
+                            for s in c_body {
+                                match self.exec_stmt(s, host) {
+                                    Ok(ControlFlow::None(v)) => last = v,
+                                    Ok(ControlFlow::Return(v)) => {
+                                        catch_res = Some(Ok(ControlFlow::Return(v)));
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        catch_res = Some(Err(e));
+                                        break;
+                                    }
+                                }
+                            }
+                            self.pop_scope();
+                            catch_res.unwrap_or(Ok(ControlFlow::None(last)))
+                        } else {
+                            self.pending_exception = Some(caught_val);
+                            Err(err)
+                        }
+                    }
+                };
+
+                if let Some(f_body) = finally_body {
+                    match self.exec_block(f_body, host) {
+                        Ok(ControlFlow::None(_)) => outcome,
+                        Ok(ControlFlow::Return(v)) => {
+                            self.pending_exception = None;
+                            Ok(ControlFlow::Return(v))
+                        }
+                        Err(f_err) => Err(f_err),
+                    }
+                } else {
+                    outcome
+                }
             }
         }
     }
@@ -481,12 +656,19 @@ impl JsIsolate {
                 Ok(final_val)
             }
             Expr::Member { object, property } => {
-                // Check for forbidden AlloyOS shell properties before evaluating object
+                // Check for forbidden AlloyOS shell properties or isolated web mode before evaluating object
                 if let Expr::Ident(obj_name) = object.as_ref() {
-                    if obj_name == "AlloyOS" && is_forbidden_shell_prop(property) {
-                        return Err(JsError::ForbiddenCapability(
-                            SHELL_FORBIDDEN_MSG.to_string(),
-                        ));
+                    if obj_name == "AlloyOS" {
+                        if !self.allow_alloyos_bindings {
+                            return Err(JsError::ReferenceError(
+                                "'AlloyOS' is not defined".to_string(),
+                            ));
+                        }
+                        if is_forbidden_shell_prop(property) {
+                            return Err(JsError::ForbiddenCapability(
+                                SHELL_FORBIDDEN_MSG.to_string(),
+                            ));
+                        }
                     }
                 }
                 let obj_val = self.eval_expr(object, host)?;
@@ -498,6 +680,7 @@ impl JsIsolate {
                 self.eval_index_access(&obj_val, &idx_val)
             }
             Expr::Call { callee, args } => self.eval_call(callee, args, host),
+            Expr::New { callee, args } => self.eval_new(callee, args, host),
         }
     }
 
@@ -542,7 +725,7 @@ impl JsIsolate {
                             )))
                         }
                     }
-                    self.assign_var(var_name, container)
+                    self.mutate_var(var_name, container)
                 } else {
                     Err(JsError::TypeError(
                         "Nested member assignment requires an identifier receiver".to_string(),
@@ -566,6 +749,21 @@ impl JsIsolate {
                             }
                             items[idx] = value;
                         }
+                        (JsValue::Object(map), JsValue::Number(i))
+                            if map.get("__class__")
+                                == Some(&JsValue::String("Uint8Array".to_string())) =>
+                        {
+                            if i >= 0 {
+                                let byte_val =
+                                    JsValue::Number(value.to_number()?.rem_euclid(256));
+                                if let Some(JsValue::Array(bytes)) = map.get_mut("__bytes__") {
+                                    let idx = i as usize;
+                                    if idx < bytes.len() {
+                                        bytes[idx] = byte_val;
+                                    }
+                                }
+                            }
+                        }
                         (JsValue::Object(map), key_val) => {
                             map.insert(key_val.to_js_string(), value);
                         }
@@ -575,7 +773,7 @@ impl JsIsolate {
                             ))
                         }
                     }
-                    self.assign_var(var_name, container)
+                    self.mutate_var(var_name, container)
                 } else {
                     Err(JsError::TypeError(
                         "Index assignment requires an identifier receiver".to_string(),
@@ -627,6 +825,17 @@ impl JsIsolate {
                         .nth(*i as usize)
                         .map(|c| JsValue::String(c.to_string()))
                         .unwrap_or(JsValue::Undefined))
+                }
+            }
+            (JsValue::Object(map), JsValue::Number(i))
+                if map.get("__class__") == Some(&JsValue::String("Uint8Array".to_string())) =>
+            {
+                if *i < 0 {
+                    Ok(JsValue::Undefined)
+                } else if let Some(JsValue::Array(bytes)) = map.get("__bytes__") {
+                    Ok(bytes.get(*i as usize).cloned().unwrap_or(JsValue::Undefined))
+                } else {
+                    Ok(JsValue::Undefined)
                 }
             }
             (JsValue::Object(map), key) => {
@@ -708,6 +917,7 @@ impl JsIsolate {
                 (JsValue::String(a), JsValue::String(b)) => Ok(JsValue::Bool(a >= b)),
                 _ => Ok(JsValue::Bool(l.to_number()? >= r.to_number()?)),
             },
+            BinaryOp::Instanceof => eval_instanceof(&l, &r),
             BinaryOp::And | BinaryOp::Or => unreachable!(),
         }
     }
@@ -724,6 +934,25 @@ impl JsIsolate {
                 return Err(JsError::ForbiddenCapability(
                     SHELL_FORBIDDEN_MSG.to_string(),
                 ));
+            }
+            if name == "print" && !self.is_var_defined_in_scopes("print") {
+                let mut parts = Vec::with_capacity(arg_exprs.len());
+                for a in arg_exprs {
+                    parts.push(self.eval_expr(a, host)?.to_js_string());
+                }
+                self.printed.push(parts.join(" "));
+                return Ok(JsValue::Undefined);
+            }
+            if matches!(
+                name.as_str(),
+                "Error" | "SyntaxError" | "TypeError" | "ReferenceError"
+            ) && !self.is_var_defined_in_scopes(name)
+            {
+                let mut args = Vec::with_capacity(arg_exprs.len());
+                for a in arg_exprs {
+                    args.push(self.eval_expr(a, host)?);
+                }
+                return self.construct_builtin(name, &args, host);
             }
             if name == "parseInt" {
                 let mut args = Vec::with_capacity(arg_exprs.len());
@@ -801,12 +1030,116 @@ impl JsIsolate {
         }
 
         match callee_val {
-            JsValue::Function(func) => self.invoke_js_function(func, &args, host),
+            JsValue::Function(func) => {
+                if func.body == FunctionBody::Block(Vec::new()) {
+                    if let Some(ref ctor_name) = func.name {
+                        if is_builtin_constructor(ctor_name) {
+                            return self.construct_builtin(ctor_name, &args, host);
+                        }
+                    }
+                }
+                self.invoke_js_function(func, &args, host)
+            }
             other => Err(JsError::TypeError(format!(
                 "'{}' is not a function",
                 other.to_js_string()
             ))),
         }
+    }
+
+    fn eval_new(
+        &mut self,
+        callee: &Expr,
+        arg_exprs: &[Expr],
+        host: &mut dyn AlloyOsHost,
+    ) -> Result<JsValue, JsError> {
+        let mut args = Vec::with_capacity(arg_exprs.len());
+        for a in arg_exprs {
+            args.push(self.eval_expr(a, host)?);
+        }
+        if let Expr::Ident(name) = callee {
+            if is_builtin_constructor(name) && !self.is_var_defined_in_scopes(name) {
+                return self.construct_builtin(name, &args, host);
+            }
+        }
+        let callee_val = self.eval_expr(callee, host)?;
+        match callee_val {
+            JsValue::Function(func) => {
+                if let Some(ref ctor_name) = func.name {
+                    if is_builtin_constructor(ctor_name)
+                        && func.body == FunctionBody::Block(Vec::new())
+                    {
+                        return self.construct_builtin(ctor_name, &args, host);
+                    }
+                }
+                let res = self.invoke_js_function(func.clone(), &args, host)?;
+                if matches!(res, JsValue::Object(_) | JsValue::Array(_)) {
+                    Ok(res)
+                } else {
+                    let mut map = BTreeMap::new();
+                    if let Some(name) = func.name {
+                        map.insert("__class__".to_string(), JsValue::String(name));
+                    }
+                    Ok(JsValue::Object(map))
+                }
+            }
+            other => Err(JsError::TypeError(format!(
+                "'{}' is not a constructor",
+                other.to_js_string()
+            ))),
+        }
+    }
+
+    fn construct_builtin(
+        &mut self,
+        ctor_name: &str,
+        args: &[JsValue],
+        host: &mut dyn AlloyOsHost,
+    ) -> Result<JsValue, JsError> {
+        match ctor_name {
+            "Error" | "SyntaxError" | "TypeError" | "ReferenceError" => {
+                let msg = args
+                    .first()
+                    .filter(|v| !matches!(v, JsValue::Undefined))
+                    .map(|v| v.to_js_string())
+                    .unwrap_or_default();
+                Ok(make_error_object(ctor_name, msg))
+            }
+            "Map" => make_map_object(args.first()),
+            "Uint8Array" => make_uint8_array_object(args.first()),
+            "Array" => {
+                if args.len() == 1 {
+                    if let JsValue::Number(n) = args[0] {
+                        if n < 0 {
+                            return Err(JsError::TypeError("Invalid array length".to_string()));
+                        }
+                        return Ok(JsValue::Array(vec![JsValue::Undefined; n as usize]));
+                    }
+                }
+                Ok(JsValue::Array(args.to_vec()))
+            }
+            "Object" => Ok(args
+                .first()
+                .cloned()
+                .unwrap_or_else(|| JsValue::Object(BTreeMap::new()))),
+            "Promise" => {
+                let Some(JsValue::Function(_executor)) = args.first() else {
+                    return Err(JsError::TypeError(
+                        "Promise resolver is not a function".to_string(),
+                    ));
+                };
+                let _ = host;
+                Ok(self.promise_resolve(JsValue::Undefined))
+            }
+            _ => Err(JsError::TypeError(format!(
+                "'{}' is not a constructor",
+                ctor_name
+            ))),
+        }
+    }
+
+    fn is_var_defined_in_scopes(&self, name: &str) -> bool {
+        self.scopes.iter().any(|s| s.contains_key(name))
     }
 
     fn try_eval_builtin_namespace_call(
@@ -820,6 +1153,11 @@ impl JsIsolate {
             if let Expr::Ident(ns) = object.as_ref() {
                 match ns.as_str() {
                     "AlloyOS" => {
+                        if !self.allow_alloyos_bindings {
+                            return Err(JsError::ReferenceError(
+                                "'AlloyOS' is not defined".to_string(),
+                            ));
+                        }
                         if is_forbidden_shell_prop(property) {
                             return Err(JsError::ForbiddenCapability(
                                 SHELL_FORBIDDEN_MSG.to_string(),
@@ -916,8 +1254,12 @@ impl JsIsolate {
                         return match property.as_str() {
                             "keys" => {
                                 if let Some(JsValue::Object(map)) = args.first() {
-                                    let keys =
-                                        map.keys().cloned().map(JsValue::String).collect();
+                                    let keys = map
+                                        .keys()
+                                        .filter(|k| !k.starts_with("__"))
+                                        .cloned()
+                                        .map(JsValue::String)
+                                        .collect();
                                     Ok(Some(JsValue::Array(keys)))
                                 } else {
                                     Ok(Some(JsValue::Array(Vec::new())))
@@ -925,7 +1267,11 @@ impl JsIsolate {
                             }
                             "values" => {
                                 if let Some(JsValue::Object(map)) = args.first() {
-                                    let vals = map.values().cloned().collect();
+                                    let vals = map
+                                        .iter()
+                                        .filter(|(k, _)| !k.starts_with("__"))
+                                        .map(|(_, v)| v.clone())
+                                        .collect();
                                     Ok(Some(JsValue::Array(vals)))
                                 } else {
                                     Ok(Some(JsValue::Array(Vec::new())))
@@ -933,6 +1279,26 @@ impl JsIsolate {
                             }
                             other => Err(JsError::TypeError(format!(
                                 "Object.{} is not a function",
+                                other
+                            ))),
+                        };
+                    }
+                    "Promise" => {
+                        let mut args = Vec::with_capacity(arg_exprs.len());
+                        for a in arg_exprs {
+                            args.push(self.eval_expr(a, host)?);
+                        }
+                        return match property.as_str() {
+                            "resolve" => {
+                                let first = args.first().cloned().unwrap_or(JsValue::Undefined);
+                                Ok(Some(self.promise_resolve(first)))
+                            }
+                            "reject" => {
+                                let first = args.first().cloned().unwrap_or(JsValue::Undefined);
+                                Ok(Some(self.promise_reject(first)))
+                            }
+                            other => Err(JsError::TypeError(format!(
+                                "Promise.{} is not a function",
                                 other
                             ))),
                         };
@@ -949,6 +1315,11 @@ impl JsIsolate {
             {
                 if let Expr::Ident(root_name) = root_obj.as_ref() {
                     if root_name == "AlloyOS" {
+                        if !self.allow_alloyos_bindings {
+                            return Err(JsError::ReferenceError(
+                                "'AlloyOS' is not defined".to_string(),
+                            ));
+                        }
                         if is_forbidden_shell_prop(subsystem) || is_forbidden_shell_prop(property) {
                             return Err(JsError::ForbiddenCapability(
                                 SHELL_FORBIDDEN_MSG.to_string(),
@@ -1204,14 +1575,14 @@ impl JsIsolate {
                     }
                     let new_len = items.len() as i64;
                     if let Expr::Ident(var_name) = receiver_expr {
-                        self.assign_var(var_name, JsValue::Array(items))?;
+                        self.mutate_var(var_name, JsValue::Array(items))?;
                     }
                     Ok(JsValue::Number(new_len))
                 }
                 "pop" => {
                     let popped = items.pop().unwrap_or(JsValue::Undefined);
                     if let Expr::Ident(var_name) = receiver_expr {
-                        self.assign_var(var_name, JsValue::Array(items))?;
+                        self.mutate_var(var_name, JsValue::Array(items))?;
                     }
                     Ok(popped)
                 }
@@ -1290,9 +1661,173 @@ impl JsIsolate {
                     }
                     Ok(JsValue::Array(filtered))
                 }
+                "reduce" => self.eval_array_reduce(&items, args, host),
+                "forEach" => {
+                    let Some(JsValue::Function(cb)) = args.first() else {
+                        return Err(JsError::TypeError(
+                            "Array.prototype.forEach requires a callback function".to_string(),
+                        ));
+                    };
+                    for (idx, item) in items.iter().enumerate() {
+                        self.invoke_js_function(
+                            cb.clone(),
+                            &[item.clone(), JsValue::Number(idx as i64)],
+                            host,
+                        )?;
+                    }
+                    Ok(JsValue::Undefined)
+                }
                 other => Err(JsError::TypeError(format!(
                     "Array.prototype.{} is not a function",
                     other
+                ))),
+            },
+            JsValue::Object(mut map) => match map.get("__class__").cloned() {
+                Some(JsValue::String(cls)) if cls == "Map" => {
+                    let mut entries = match map.get("__entries__") {
+                        Some(JsValue::Array(arr)) => arr.clone(),
+                        _ => Vec::new(),
+                    };
+                    match method {
+                        "get" => {
+                            let key = args.first().unwrap_or(&JsValue::Undefined);
+                            for entry in &entries {
+                                if let JsValue::Array(pair) = entry {
+                                    if pair.first().map(|k| k.strict_eq(key)).unwrap_or(false) {
+                                        return Ok(pair
+                                            .get(1)
+                                            .cloned()
+                                            .unwrap_or(JsValue::Undefined));
+                                    }
+                                }
+                            }
+                            Ok(JsValue::Undefined)
+                        }
+                        "has" => {
+                            let key = args.first().unwrap_or(&JsValue::Undefined);
+                            let found = entries.iter().any(|entry| {
+                                matches!(entry, JsValue::Array(pair) if pair.first().map(|k| k.strict_eq(key)).unwrap_or(false))
+                            });
+                            Ok(JsValue::Bool(found))
+                        }
+                        "set" => {
+                            let key = args.first().cloned().unwrap_or(JsValue::Undefined);
+                            let val = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+                            map_set_entry(&mut entries, key, val);
+                            map.insert("size".to_string(), JsValue::Number(entries.len() as i64));
+                            map.insert("__entries__".to_string(), JsValue::Array(entries));
+                            let updated = JsValue::Object(map);
+                            if let Expr::Ident(var_name) = receiver_expr {
+                                self.mutate_var(var_name, updated.clone())?;
+                            }
+                            Ok(updated)
+                        }
+                        "delete" => {
+                            let key = args.first().unwrap_or(&JsValue::Undefined);
+                            let orig_len = entries.len();
+                            entries.retain(|entry| {
+                                !matches!(entry, JsValue::Array(pair) if pair.first().map(|k| k.strict_eq(key)).unwrap_or(false))
+                            });
+                            let removed = entries.len() < orig_len;
+                            map.insert("size".to_string(), JsValue::Number(entries.len() as i64));
+                            map.insert("__entries__".to_string(), JsValue::Array(entries));
+                            if let Expr::Ident(var_name) = receiver_expr {
+                                self.mutate_var(var_name, JsValue::Object(map))?;
+                            }
+                            Ok(JsValue::Bool(removed))
+                        }
+                        "clear" => {
+                            map.insert("size".to_string(), JsValue::Number(0));
+                            map.insert("__entries__".to_string(), JsValue::Array(Vec::new()));
+                            if let Expr::Ident(var_name) = receiver_expr {
+                                self.mutate_var(var_name, JsValue::Object(map))?;
+                            }
+                            Ok(JsValue::Undefined)
+                        }
+                        other => Err(JsError::TypeError(format!(
+                            "Map.prototype.{} is not a function",
+                            other
+                        ))),
+                    }
+                }
+                Some(JsValue::String(cls)) if cls == "Uint8Array" => {
+                    let bytes = match map.get("__bytes__") {
+                        Some(JsValue::Array(arr)) => arr.clone(),
+                        _ => Vec::new(),
+                    };
+                    match method {
+                        "reduce" => self.eval_array_reduce(&bytes, args, host),
+                        "map" => {
+                            let Some(JsValue::Function(cb)) = args.first() else {
+                                return Err(JsError::TypeError(
+                                    "Uint8Array.prototype.map requires a callback function"
+                                        .to_string(),
+                                ));
+                            };
+                            let mut mapped = Vec::with_capacity(bytes.len());
+                            for (idx, item) in bytes.iter().enumerate() {
+                                let res = self.invoke_js_function(
+                                    cb.clone(),
+                                    &[item.clone(), JsValue::Number(idx as i64)],
+                                    host,
+                                )?;
+                                mapped.push(JsValue::Number(res.to_number()?.rem_euclid(256)));
+                            }
+                            Ok(make_uint8_array_from_vec(mapped))
+                        }
+                        "slice" => {
+                            let len = bytes.len() as i64;
+                            let start = args
+                                .first()
+                                .and_then(|v| v.to_number().ok())
+                                .unwrap_or(0)
+                                .clamp(0, len) as usize;
+                            let end = args
+                                .get(1)
+                                .and_then(|v| v.to_number().ok())
+                                .unwrap_or(len)
+                                .clamp(start as i64, len) as usize;
+                            Ok(make_uint8_array_from_vec(bytes[start..end].to_vec()))
+                        }
+                        other => Err(JsError::TypeError(format!(
+                            "Uint8Array.prototype.{} is not a function",
+                            other
+                        ))),
+                    }
+                }
+                Some(JsValue::String(cls)) if cls == "Promise" => {
+                    let Some(JsValue::Number(id)) = map.get("__promise_id__") else {
+                        return Err(JsError::TypeError("Invalid Promise object".to_string()));
+                    };
+                    let promise_id = *id as usize;
+                    match method {
+                        "then" => {
+                            let on_fulfilled = match args.first() {
+                                Some(JsValue::Function(f)) => Some(f.clone()),
+                                _ => None,
+                            };
+                            let on_rejected = match args.get(1) {
+                                Some(JsValue::Function(f)) => Some(f.clone()),
+                                _ => None,
+                            };
+                            self.promise_then(promise_id, on_fulfilled, on_rejected)
+                        }
+                        "catch" => {
+                            let on_rejected = match args.first() {
+                                Some(JsValue::Function(f)) => Some(f.clone()),
+                                _ => None,
+                            };
+                            self.promise_then(promise_id, None, on_rejected)
+                        }
+                        other => Err(JsError::TypeError(format!(
+                            "Promise.prototype.{} is not a function",
+                            other
+                        ))),
+                    }
+                }
+                _ => Err(JsError::TypeError(format!(
+                    "Property '{}' is not callable on Object",
+                    method
                 ))),
             },
             JsValue::String(s) => match method {
@@ -1439,6 +1974,404 @@ impl JsIsolate {
         self.pop_scope();
         res
     }
+
+    fn eval_array_reduce(
+        &mut self,
+        items: &[JsValue],
+        args: &[JsValue],
+        host: &mut dyn AlloyOsHost,
+    ) -> Result<JsValue, JsError> {
+        let Some(JsValue::Function(cb)) = args.first() else {
+            return Err(JsError::TypeError(
+                "Array.prototype.reduce requires a callback function".to_string(),
+            ));
+        };
+        if args.len() >= 2 {
+            let mut acc = args[1].clone();
+            for (idx, item) in items.iter().enumerate() {
+                acc = self.invoke_js_function(
+                    cb.clone(),
+                    &[acc, item.clone(), JsValue::Number(idx as i64)],
+                    host,
+                )?;
+            }
+            Ok(acc)
+        } else {
+            let Some(first) = items.first() else {
+                return Err(JsError::TypeError(
+                    "Reduce of empty array with no initial value".to_string(),
+                ));
+            };
+            let mut acc = first.clone();
+            for (idx, item) in items.iter().enumerate().skip(1) {
+                acc = self.invoke_js_function(
+                    cb.clone(),
+                    &[acc, item.clone(), JsValue::Number(idx as i64)],
+                    host,
+                )?;
+            }
+            Ok(acc)
+        }
+    }
+
+    fn alloc_promise(&mut self, state: PromiseState) -> (usize, JsValue) {
+        let id = self.promises.len();
+        self.promises.push(PromiseRecord {
+            state,
+            reactions: Vec::new(),
+            handled: false,
+        });
+        let mut map = BTreeMap::new();
+        map.insert("__class__".to_string(), JsValue::String("Promise".to_string()));
+        map.insert("__promise_id__".to_string(), JsValue::Number(id as i64));
+        (id, JsValue::Object(map))
+    }
+
+    fn promise_resolve(&mut self, value: JsValue) -> JsValue {
+        if let JsValue::Object(ref map) = value {
+            if map.get("__class__") == Some(&JsValue::String("Promise".to_string())) {
+                return value;
+            }
+        }
+        self.alloc_promise(PromiseState::Fulfilled(value)).1
+    }
+
+    fn promise_reject(&mut self, reason: JsValue) -> JsValue {
+        self.alloc_promise(PromiseState::Rejected(reason)).1
+    }
+
+    fn promise_then(
+        &mut self,
+        promise_id: usize,
+        on_fulfilled: Option<JsFunction>,
+        on_rejected: Option<JsFunction>,
+    ) -> Result<JsValue, JsError> {
+        if promise_id >= self.promises.len() {
+            return Err(JsError::TypeError("Invalid Promise reference".to_string()));
+        }
+        let (child_id, child_obj) = self.alloc_promise(PromiseState::Pending);
+        let state = {
+            let record = &mut self.promises[promise_id];
+            record.handled = true;
+            record.state.clone()
+        };
+        match state {
+            PromiseState::Fulfilled(val) => {
+                self.microtasks.push_back(Microtask {
+                    handler: on_fulfilled,
+                    is_rejection: false,
+                    arg: val,
+                    child_promise_id: child_id,
+                });
+            }
+            PromiseState::Rejected(reason) => {
+                self.microtasks.push_back(Microtask {
+                    handler: on_rejected,
+                    is_rejection: true,
+                    arg: reason,
+                    child_promise_id: child_id,
+                });
+            }
+            PromiseState::Pending => {
+                self.promises[promise_id].reactions.push(PromiseReaction {
+                    on_fulfilled,
+                    on_rejected,
+                    child_promise_id: child_id,
+                });
+            }
+        }
+        Ok(child_obj)
+    }
+
+    fn settle_promise(&mut self, promise_id: usize, new_state: PromiseState) {
+        if promise_id >= self.promises.len() {
+            return;
+        }
+        if !matches!(self.promises[promise_id].state, PromiseState::Pending) {
+            return;
+        }
+        // If fulfilling with another Promise, adopt its state
+        let adopted_state = match &new_state {
+            PromiseState::Fulfilled(JsValue::Object(map))
+                if map.get("__class__") == Some(&JsValue::String("Promise".to_string())) =>
+            {
+                if let Some(JsValue::Number(other_id)) = map.get("__promise_id__") {
+                    let oid = *other_id as usize;
+                    if let Some(other_rec) = self.promises.get_mut(oid) {
+                        other_rec.handled = true;
+                        other_rec.state.clone()
+                    } else {
+                        new_state
+                    }
+                } else {
+                    new_state
+                }
+            }
+            _ => new_state,
+        };
+
+        let reactions = core::mem::take(&mut self.promises[promise_id].reactions);
+        if !reactions.is_empty() {
+            self.promises[promise_id].handled = true;
+        }
+        self.promises[promise_id].state = adopted_state.clone();
+
+        for reaction in reactions {
+            match &adopted_state {
+                PromiseState::Fulfilled(val) => {
+                    self.microtasks.push_back(Microtask {
+                        handler: reaction.on_fulfilled,
+                        is_rejection: false,
+                        arg: val.clone(),
+                        child_promise_id: reaction.child_promise_id,
+                    });
+                }
+                PromiseState::Rejected(reason) => {
+                    self.microtasks.push_back(Microtask {
+                        handler: reaction.on_rejected,
+                        is_rejection: true,
+                        arg: reason.clone(),
+                        child_promise_id: reaction.child_promise_id,
+                    });
+                }
+                PromiseState::Pending => {}
+            }
+        }
+    }
+
+    fn drain_microtasks(&mut self, host: &mut dyn AlloyOsHost) -> Result<(), JsError> {
+        while let Some(task) = self.microtasks.pop_front() {
+            self.tick_step()?;
+            match (task.handler, task.is_rejection) {
+                (Some(func), _) => match self.invoke_js_function(func, &[task.arg], host) {
+                    Ok(val) => {
+                        self.settle_promise(task.child_promise_id, PromiseState::Fulfilled(val));
+                    }
+                    Err(err) => {
+                        if is_uncatchable_error(&err) {
+                            return Err(err);
+                        }
+                        let reason = self
+                            .pending_exception
+                            .take()
+                            .unwrap_or_else(|| js_error_to_js_value(&err));
+                        self.settle_promise(task.child_promise_id, PromiseState::Rejected(reason));
+                    }
+                },
+                (None, false) => {
+                    self.settle_promise(task.child_promise_id, PromiseState::Fulfilled(task.arg));
+                }
+                (None, true) => {
+                    self.settle_promise(task.child_promise_id, PromiseState::Rejected(task.arg));
+                }
+            }
+        }
+        for rec in &mut self.promises {
+            if !rec.handled {
+                if let PromiseState::Rejected(ref reason) = rec.state {
+                    rec.handled = true;
+                    return Err(js_value_to_js_error(reason));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn is_builtin_constructor(name: &str) -> bool {
+    matches!(
+        name,
+        "Error"
+            | "SyntaxError"
+            | "TypeError"
+            | "ReferenceError"
+            | "Map"
+            | "Uint8Array"
+            | "Promise"
+            | "Array"
+            | "Object"
+    )
+}
+
+fn is_uncatchable_error(err: &JsError) -> bool {
+    matches!(
+        err,
+        JsError::ExecutionLimitExceeded { .. }
+            | JsError::OutOfFuel
+            | JsError::ForbiddenCapability(_)
+    )
+}
+
+fn make_error_object(class_name: &str, message: String) -> JsValue {
+    let mut map = BTreeMap::new();
+    map.insert(
+        "__class__".to_string(),
+        JsValue::String(class_name.to_string()),
+    );
+    map.insert("name".to_string(), JsValue::String(class_name.to_string()));
+    map.insert("message".to_string(), JsValue::String(message));
+    JsValue::Object(map)
+}
+
+fn js_error_to_js_value(err: &JsError) -> JsValue {
+    match err {
+        JsError::SyntaxError(msg) => make_error_object("SyntaxError", msg.clone()),
+        JsError::ReferenceError(msg) => make_error_object("ReferenceError", msg.clone()),
+        JsError::TypeError(msg) => make_error_object("TypeError", msg.clone()),
+        JsError::RuntimeError(msg) | JsError::HostError(msg) => {
+            make_error_object("Error", msg.clone())
+        }
+        JsError::ForbiddenCapability(msg) => make_error_object("Error", msg.clone()),
+        JsError::ExecutionLimitExceeded { max_steps } => {
+            make_error_object("Error", format!("exceeded {} steps", max_steps))
+        }
+        JsError::OutOfFuel => make_error_object("Error", "out of fuel".to_string()),
+    }
+}
+
+fn js_value_to_js_error(val: &JsValue) -> JsError {
+    if let JsValue::Object(map) = val {
+        let cls = map
+            .get("__class__")
+            .or_else(|| map.get("name"))
+            .and_then(|v| match v {
+                JsValue::String(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .unwrap_or("Error");
+        let msg = map
+            .get("message")
+            .map(|v| v.to_js_string())
+            .unwrap_or_else(|| val.to_js_string());
+        return match cls {
+            "SyntaxError" => JsError::SyntaxError(msg),
+            "ReferenceError" => JsError::ReferenceError(msg),
+            "TypeError" => JsError::TypeError(msg),
+            _ => JsError::RuntimeError(msg),
+        };
+    }
+    JsError::RuntimeError(val.to_js_string())
+}
+
+fn eval_instanceof(left: &JsValue, right: &JsValue) -> Result<JsValue, JsError> {
+    let JsValue::Function(func) = right else {
+        return Err(JsError::TypeError(
+            "Right-hand side of 'instanceof' is not callable".to_string(),
+        ));
+    };
+    let Some(ctor_name) = func.name.as_deref() else {
+        return Ok(JsValue::Bool(false));
+    };
+    match (left, ctor_name) {
+        (JsValue::Array(_), "Array" | "Object") => Ok(JsValue::Bool(true)),
+        (JsValue::Function(_), "Function" | "Object") => Ok(JsValue::Bool(true)),
+        (JsValue::Object(map), _) => {
+            let cls = map
+                .get("__class__")
+                .and_then(|v| match v {
+                    JsValue::String(s) => Some(s.as_str()),
+                    _ => None,
+                })
+                .unwrap_or("Object");
+            if ctor_name == "Object" {
+                Ok(JsValue::Bool(true))
+            } else if ctor_name == "Error" {
+                Ok(JsValue::Bool(matches!(
+                    cls,
+                    "Error" | "SyntaxError" | "TypeError" | "ReferenceError"
+                )))
+            } else {
+                Ok(JsValue::Bool(cls == ctor_name))
+            }
+        }
+        _ => Ok(JsValue::Bool(false)),
+    }
+}
+
+fn map_set_entry(entries: &mut Vec<JsValue>, key: JsValue, val: JsValue) {
+    for entry in entries.iter_mut() {
+        if let JsValue::Array(pair) = entry {
+            if pair.first().map(|k| k.strict_eq(&key)).unwrap_or(false) {
+                if pair.len() >= 2 {
+                    pair[1] = val;
+                } else {
+                    pair.push(val);
+                }
+                return;
+            }
+        }
+    }
+    entries.push(JsValue::Array(vec![key, val]));
+}
+
+fn make_map_object(iterable: Option<&JsValue>) -> Result<JsValue, JsError> {
+    let mut entries = Vec::new();
+    match iterable {
+        None | Some(JsValue::Undefined | JsValue::Null) => {}
+        Some(JsValue::Array(items)) => {
+            for item in items {
+                let JsValue::Array(pair) = item else {
+                    return Err(JsError::TypeError(
+                        "Iterator value is not an entry object".to_string(),
+                    ));
+                };
+                let k = pair.first().cloned().unwrap_or(JsValue::Undefined);
+                let v = pair.get(1).cloned().unwrap_or(JsValue::Undefined);
+                map_set_entry(&mut entries, k, v);
+            }
+        }
+        Some(_) => {
+            return Err(JsError::TypeError(
+                "Map constructor argument is not iterable".to_string(),
+            ));
+        }
+    }
+    let mut map = BTreeMap::new();
+    map.insert("__class__".to_string(), JsValue::String("Map".to_string()));
+    map.insert("size".to_string(), JsValue::Number(entries.len() as i64));
+    map.insert("__entries__".to_string(), JsValue::Array(entries));
+    Ok(JsValue::Object(map))
+}
+
+fn make_uint8_array_from_vec(bytes: Vec<JsValue>) -> JsValue {
+    let mut map = BTreeMap::new();
+    map.insert(
+        "__class__".to_string(),
+        JsValue::String("Uint8Array".to_string()),
+    );
+    map.insert("length".to_string(), JsValue::Number(bytes.len() as i64));
+    map.insert("__bytes__".to_string(), JsValue::Array(bytes));
+    JsValue::Object(map)
+}
+
+fn make_uint8_array_object(arg: Option<&JsValue>) -> Result<JsValue, JsError> {
+    let bytes = match arg {
+        None | Some(JsValue::Undefined) => Vec::new(),
+        Some(JsValue::Number(n)) => {
+            if *n < 0 {
+                return Err(JsError::TypeError("Invalid typed array length".to_string()));
+            }
+            vec![JsValue::Number(0); *n as usize]
+        }
+        Some(JsValue::Array(items)) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                let n = item.to_number().unwrap_or(0);
+                out.push(JsValue::Number(n.rem_euclid(256)));
+            }
+            out
+        }
+        Some(JsValue::Object(map))
+            if map.get("__class__") == Some(&JsValue::String("Uint8Array".to_string())) =>
+        {
+            match map.get("__bytes__") {
+                Some(JsValue::Array(arr)) => arr.clone(),
+                _ => Vec::new(),
+            }
+        }
+        Some(_) => Vec::new(),
+    };
+    Ok(make_uint8_array_from_vec(bytes))
 }
 
 fn eval_add(l: &JsValue, r: &JsValue) -> Result<JsValue, JsError> {

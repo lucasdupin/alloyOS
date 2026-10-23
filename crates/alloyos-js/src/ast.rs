@@ -42,6 +42,7 @@ pub enum BinaryOp {
     Le,          // <=
     Gt,          // >
     Ge,          // >=
+    Instanceof,  // instanceof
     And,         // &&
     Or,          // ||
 }
@@ -120,6 +121,10 @@ pub enum Expr {
         callee: Box<Expr>,
         args: Vec<Expr>,
     },
+    New {
+        callee: Box<Expr>,
+        args: Vec<Expr>,
+    },
 }
 
 /// JavaScript AST Statement node.
@@ -153,4 +158,11 @@ pub enum Stmt {
         body: Vec<Stmt>,
     },
     Return(Option<Expr>),
+    Throw(Expr),
+    Try {
+        body: Vec<Stmt>,
+        catch_param: Option<String>,
+        catch_body: Option<Vec<Stmt>>,
+        finally_body: Option<Vec<Stmt>>,
+    },
 }

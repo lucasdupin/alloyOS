@@ -69,6 +69,8 @@ fn validate_complexity(tokens: &[Token]) -> Result<(), JsError> {
                 | Token::OrOr
                 | Token::Bang
                 | Token::Typeof
+                | Token::Instanceof
+                | Token::New
                 | Token::Dot
                 | Token::LBracket
         ) {
@@ -121,7 +123,7 @@ fn validate_expr_tree(root: &Expr) -> Result<(), JsError> {
                 pending.push((object, next));
                 pending.push((index, next));
             }
-            Expr::Call { callee, args } => {
+            Expr::Call { callee, args } | Expr::New { callee, args } => {
                 pending.push((callee, next));
                 for arg in args {
                     pending.push((arg, next));
@@ -247,6 +249,8 @@ impl Parser {
             Token::For => self.parse_for_stmt(),
             Token::Function => self.parse_func_decl(),
             Token::Return => self.parse_return_stmt(),
+            Token::Throw => self.parse_throw_stmt(),
+            Token::Try => self.parse_try_stmt(),
             Token::LBrace => {
                 let stmts = self.parse_block()?;
                 Ok(Stmt::Block(stmts))
@@ -417,6 +421,50 @@ impl Parser {
         Ok(Stmt::Return(Some(val)))
     }
 
+    fn parse_throw_stmt(&mut self) -> Result<Stmt, JsError> {
+        self.advance(); // consume 'throw'
+        let expr = self.parse_expr()?;
+        self.consume_optional_semicolon();
+        Ok(Stmt::Throw(expr))
+    }
+
+    fn parse_try_stmt(&mut self) -> Result<Stmt, JsError> {
+        self.advance(); // consume 'try'
+        let body = self.parse_block()?;
+        let mut catch_param = None;
+        let mut catch_body = None;
+
+        if self.check(&Token::Catch) {
+            self.advance();
+            if self.check(&Token::LParen) {
+                self.advance();
+                catch_param = Some(self.expect_ident("Expected catch parameter identifier")?);
+                self.consume(&Token::RParen, "Expected ')' after catch parameter")?;
+            }
+            catch_body = Some(self.parse_block()?);
+        }
+
+        let finally_body = if self.check(&Token::Finally) {
+            self.advance();
+            Some(self.parse_block()?)
+        } else {
+            None
+        };
+
+        if catch_body.is_none() && finally_body.is_none() {
+            return Err(JsError::SyntaxError(
+                "Missing catch or finally after try".to_string(),
+            ));
+        }
+
+        Ok(Stmt::Try {
+            body,
+            catch_param,
+            catch_body,
+            finally_body,
+        })
+    }
+
     fn parse_expr(&mut self) -> Result<Expr, JsError> {
         self.parse_assignment()
     }
@@ -562,6 +610,7 @@ impl Parser {
                 Token::Le => Some(BinaryOp::Le),
                 Token::Gt => Some(BinaryOp::Gt),
                 Token::Ge => Some(BinaryOp::Ge),
+                Token::Instanceof => Some(BinaryOp::Instanceof),
                 _ => None,
             };
             if let Some(op) = op {
@@ -706,25 +755,7 @@ impl Parser {
             match self.peek() {
                 Token::Dot => {
                     self.advance();
-                    let prop = match self.advance() {
-                        Token::Ident(s) => s,
-                        // Allow keywords as property names (e.g. obj.return or obj.typeof)
-                        Token::Return => "return".to_string(),
-                        Token::If => "if".to_string(),
-                        Token::Else => "else".to_string(),
-                        Token::For => "for".to_string(),
-                        Token::While => "while".to_string(),
-                        Token::Function => "function".to_string(),
-                        Token::Let => "let".to_string(),
-                        Token::Const => "const".to_string(),
-                        Token::Var => "var".to_string(),
-                        other => {
-                            return Err(JsError::SyntaxError(format!(
-                                "Expected property name after '.', found {:?}",
-                                other
-                            )))
-                        }
-                    };
+                    let prop = self.parse_property_name()?;
                     expr = Expr::Member {
                         object: Box::new(expr),
                         property: prop,
@@ -850,11 +881,91 @@ impl Parser {
             }
             Token::LBracket => self.parse_array_literal(),
             Token::LBrace => self.parse_object_literal(),
+            Token::New => self.parse_new_expr(),
             other => Err(JsError::SyntaxError(format!(
                 "Unexpected token in expression: {:?}",
                 other
             ))),
         }
+    }
+
+    fn parse_property_name(&mut self) -> Result<String, JsError> {
+        match self.advance() {
+            Token::Ident(s) => Ok(s),
+            Token::Return => Ok("return".to_string()),
+            Token::If => Ok("if".to_string()),
+            Token::Else => Ok("else".to_string()),
+            Token::For => Ok("for".to_string()),
+            Token::While => Ok("while".to_string()),
+            Token::Function => Ok("function".to_string()),
+            Token::Let => Ok("let".to_string()),
+            Token::Const => Ok("const".to_string()),
+            Token::Var => Ok("var".to_string()),
+            Token::Try => Ok("try".to_string()),
+            Token::Catch => Ok("catch".to_string()),
+            Token::Finally => Ok("finally".to_string()),
+            Token::Throw => Ok("throw".to_string()),
+            Token::New => Ok("new".to_string()),
+            Token::Instanceof => Ok("instanceof".to_string()),
+            Token::True => Ok("true".to_string()),
+            Token::False => Ok("false".to_string()),
+            Token::Null => Ok("null".to_string()),
+            Token::Undefined => Ok("undefined".to_string()),
+            Token::Typeof => Ok("typeof".to_string()),
+            other => Err(JsError::SyntaxError(format!(
+                "Expected property name after '.', found {:?}",
+                other
+            ))),
+        }
+    }
+
+    fn parse_new_expr(&mut self) -> Result<Expr, JsError> {
+        self.advance(); // consume 'new'
+        let mut callee = self.parse_primary()?;
+        loop {
+            match self.peek() {
+                Token::Dot => {
+                    self.advance();
+                    let prop = self.parse_property_name()?;
+                    callee = Expr::Member {
+                        object: Box::new(callee),
+                        property: prop,
+                    };
+                }
+                Token::LBracket => {
+                    self.advance();
+                    let index = self.parse_expr()?;
+                    self.consume(&Token::RBracket, "Expected ']' after index expression")?;
+                    callee = Expr::Index {
+                        object: Box::new(callee),
+                        index: Box::new(index),
+                    };
+                }
+                _ => break,
+            }
+        }
+        let mut args = Vec::new();
+        if self.check(&Token::LParen) {
+            self.advance();
+            if !self.check(&Token::RParen) {
+                loop {
+                    args.push(self.parse_expr()?);
+                    if self.check(&Token::Comma) {
+                        self.advance();
+                        if self.check(&Token::RParen) {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            }
+            self.consume(&Token::RParen, "Expected ')' after constructor arguments")?;
+        }
+        Ok(Expr::New {
+            callee: Box::new(callee),
+            args,
+        })
     }
 
     fn parse_array_literal(&mut self) -> Result<Expr, JsError> {

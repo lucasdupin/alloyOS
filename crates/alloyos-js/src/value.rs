@@ -8,7 +8,7 @@ use core::fmt;
 use crate::ast::{Expr, Stmt};
 
 /// Error type returned by the JavaScript lexer, parser, or runtime evaluator.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Eq)]
 pub enum JsError {
     /// Lexical or grammatical syntax error.
     SyntaxError(String),
@@ -16,12 +16,37 @@ pub enum JsError {
     ReferenceError(String),
     /// Invalid type operation or call on non-function.
     TypeError(String),
+    /// Uncaught runtime error (`new Error(...)` or `throw ...`).
+    RuntimeError(String),
     /// Deterministic fuel limit (`max_steps`) exceeded.
     ExecutionLimitExceeded { max_steps: usize },
+    /// Deterministic step fuel exhausted (unit alias for fuel limit errors).
+    OutOfFuel,
     /// Attempt to invoke a forbidden capability (such as shell execution).
     ForbiddenCapability(String),
     /// Error propagated from a `AlloyOS.*` host binding.
     HostError(String),
+}
+
+impl PartialEq for JsError {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (JsError::SyntaxError(a), JsError::SyntaxError(b)) => a == b,
+            (JsError::ReferenceError(a), JsError::ReferenceError(b)) => a == b,
+            (JsError::TypeError(a), JsError::TypeError(b)) => a == b,
+            (JsError::RuntimeError(a), JsError::RuntimeError(b)) => a == b,
+            (
+                JsError::ExecutionLimitExceeded { max_steps: a },
+                JsError::ExecutionLimitExceeded { max_steps: b },
+            ) => a == b,
+            (JsError::OutOfFuel, JsError::OutOfFuel)
+            | (JsError::ExecutionLimitExceeded { .. }, JsError::OutOfFuel)
+            | (JsError::OutOfFuel, JsError::ExecutionLimitExceeded { .. }) => true,
+            (JsError::ForbiddenCapability(a), JsError::ForbiddenCapability(b)) => a == b,
+            (JsError::HostError(a), JsError::HostError(b)) => a == b,
+            _ => false,
+        }
+    }
 }
 
 impl fmt::Display for JsError {
@@ -30,9 +55,11 @@ impl fmt::Display for JsError {
             JsError::SyntaxError(msg) => write!(f, "SyntaxError: {}", msg),
             JsError::ReferenceError(msg) => write!(f, "ReferenceError: {}", msg),
             JsError::TypeError(msg) => write!(f, "TypeError: {}", msg),
+            JsError::RuntimeError(msg) => write!(f, "Error: {}", msg),
             JsError::ExecutionLimitExceeded { max_steps } => {
                 write!(f, "ExecutionLimitExceeded: exceeded {} steps", max_steps)
             }
+            JsError::OutOfFuel => write!(f, "OutOfFuel: execution step limit exceeded"),
             JsError::ForbiddenCapability(msg) => write!(f, "ForbiddenCapability: {}", msg),
             JsError::HostError(msg) => write!(f, "HostError: {}", msg),
         }
@@ -115,7 +142,29 @@ impl JsValue {
                 }
                 out
             }
-            JsValue::Object(_) => "[object Object]".to_string(),
+            JsValue::Object(map) => {
+                if let Some(JsValue::String(cls)) = map.get("__class__") {
+                    if matches!(
+                        cls.as_str(),
+                        "Error" | "SyntaxError" | "TypeError" | "ReferenceError"
+                    ) {
+                        let name = map
+                            .get("name")
+                            .map(|v| v.to_js_string())
+                            .unwrap_or_else(|| cls.clone());
+                        let msg = map
+                            .get("message")
+                            .map(|v| v.to_js_string())
+                            .unwrap_or_default();
+                        return if msg.is_empty() {
+                            name
+                        } else {
+                            format!("{}: {}", name, msg)
+                        };
+                    }
+                }
+                "[object Object]".to_string()
+            }
             JsValue::Function(func) => {
                 let name = func.name.as_deref().unwrap_or("anonymous");
                 format!("[Function: {}]", name)
@@ -208,7 +257,7 @@ pub fn json_stringify(value: &JsValue) -> String {
             let mut out = String::from("{");
             let mut first = true;
             for (k, v) in map.iter() {
-                if matches!(v, JsValue::Undefined | JsValue::Function(_)) {
+                if k.starts_with("__") || matches!(v, JsValue::Undefined | JsValue::Function(_)) {
                     continue;
                 }
                 if !first {

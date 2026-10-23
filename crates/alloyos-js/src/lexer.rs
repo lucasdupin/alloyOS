@@ -22,6 +22,12 @@ pub enum Token {
     Null,
     Undefined,
     Typeof,
+    Try,
+    Catch,
+    Finally,
+    Throw,
+    New,
+    Instanceof,
 
     // Identifiers and Literals
     Ident(String),
@@ -214,6 +220,12 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, JsError> {
                 "null" => Token::Null,
                 "undefined" => Token::Undefined,
                 "typeof" => Token::Typeof,
+                "try" => Token::Try,
+                "catch" => Token::Catch,
+                "finally" => Token::Finally,
+                "throw" => Token::Throw,
+                "new" => Token::New,
+                "instanceof" => Token::Instanceof,
                 _ => Token::Ident(ident),
             };
             tokens.push(tok);

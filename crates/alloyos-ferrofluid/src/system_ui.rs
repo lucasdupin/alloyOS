@@ -62,6 +62,7 @@ pub struct FerrofluidSystemUi {
     dashboard: Rc<RefCell<crate::DashboardState>>,
     tile_events: Rc<RefCell<VecDeque<crate::TileEvent>>>,
     image_cache: Rc<RefCell<crate::tile_images::ImageCache>>,
+    webview_reloads: Rc<Cell<usize>>,
     rgb: Vec<slint::Rgb8Pixel>,
     argb: Vec<u32>,
     size: PhysicalSize,
@@ -74,6 +75,7 @@ pub struct FerrofluidSystemUi {
     sidebar_drag: Option<crate::sidebar::SidebarDrag>,
     backdrop_dirty: Cell<bool>,
     previous_sidebar_active: bool,
+    previous_webview_expanded: bool,
     previous_keyboard_reveal: f32,
     previous_chat_offset: f32,
     top_blur: Vec<slint::Rgb8Pixel>,
@@ -353,6 +355,17 @@ impl FerrofluidSystemUi {
                 }
             }
         });
+        let webview_reloads = Rc::new(Cell::new(0usize));
+        let reloads = webview_reloads.clone();
+        ui.on_webview_reload(move || {
+            reloads.set(reloads.get().saturating_add(1).min(16));
+        });
+        let weak = ui.as_weak();
+        ui.on_webview_set_expanded(move |expanded| {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_webview_expanded(expanded);
+            }
+        });
         ui.show()?;
         window.dispatch_event(WindowEvent::WindowActiveChanged(true));
         Ok(Self {
@@ -373,6 +386,7 @@ impl FerrofluidSystemUi {
             dashboard,
             tile_events,
             image_cache,
+            webview_reloads,
             rgb: vec![slint::Rgb8Pixel::default(); width as usize * height as usize],
             argb: vec![0xff000000; width as usize * height as usize],
             size,
@@ -385,6 +399,7 @@ impl FerrofluidSystemUi {
             sidebar_drag: None,
             backdrop_dirty: Cell::new(true),
             previous_sidebar_active: false,
+            previous_webview_expanded: false,
             previous_keyboard_reveal: 0.0,
             previous_chat_offset: 0.0,
             previous_blur_top: None,
@@ -506,6 +521,66 @@ impl FerrofluidSystemUi {
             images.set_revision(images.get_revision().wrapping_add(1));
             self.backdrop_dirty.set(true);
         }
+    }
+
+    /// Synchronize the Ferrofluid-owned WebView surface and trusted origin chrome.
+    pub fn set_webview(&self, webview: Option<&crate::webview::WebViewController>) {
+        self.backdrop_dirty.set(true);
+        let Some(webview) = webview else {
+            self.ui.set_webview_visible(false);
+            self.ui.set_webview_expanded(false);
+            self.ui.set_webview_editable_focused(false);
+            self.ui.set_webview_frame(slint::Image::default());
+            return;
+        };
+        let origin = webview
+            .trusted_origin()
+            .map(|o| o.as_str())
+            .unwrap_or("Unverified origin");
+        let title = if webview.untrusted_title().is_empty() {
+            "Untitled page"
+        } else {
+            webview.untrusted_title()
+        };
+        let status = if webview.is_crashed() {
+            "Renderer crashed"
+        } else {
+            match webview.loading_state() {
+                crate::webview::LoadingState::Idle => "Verified origin",
+                crate::webview::LoadingState::Loading => "Loading…",
+                crate::webview::LoadingState::Failed => "Load failed",
+            }
+        };
+        self.ui.set_webview_origin(origin.into());
+        self.ui.set_webview_title(title.into());
+        self.ui.set_webview_status(status.into());
+        self.ui.set_webview_crashed(webview.is_crashed());
+        self.ui.set_webview_editable_focused(webview.soft_keyboard_visible());
+        let frame_image = webview
+            .committed_frame()
+            .map(webview_frame_image)
+            .unwrap_or_default();
+        self.ui.set_webview_frame(frame_image);
+        self.ui.set_webview_visible(true);
+    }
+
+    pub fn set_webview_expanded(&self, expanded: bool) {
+        self.backdrop_dirty.set(true);
+        if expanded {
+            self.ui.set_sidebar_open(false);
+            self.ui.invoke_release_editor();
+        }
+        self.ui.set_webview_expanded(expanded);
+    }
+
+    pub fn webview_expanded(&self) -> bool {
+        self.ui.get_webview_visible() && self.ui.get_webview_expanded()
+    }
+
+    pub fn take_webview_reload(&self) -> bool {
+        let count = self.webview_reloads.get();
+        self.webview_reloads.set(count.saturating_sub(1));
+        count > 0
     }
     /// Render semantic app descriptors in the chat thread.
     pub fn set_tiles(&self, tiles: &[AppTile]) {
@@ -765,9 +840,12 @@ impl FerrofluidSystemUi {
             None
         };
         let sidebar_active = !booting && self.ui.get_sidebar_reveal() > 0.0;
+        let webview_expanded = !booting && self.ui.get_webview_visible() && self.ui.get_webview_expanded();
+        let webview_mode_changed = webview_expanded != self.previous_webview_expanded;
         let keyboard_reveal = self.ui.get_keyboard_reveal();
         let chat_offset = self.ui.get_scroll_offset();
         if sidebar_active && (!self.previous_sidebar_active
+            || webview_mode_changed
             || keyboard_reveal != self.previous_keyboard_reveal
             || chat_offset != self.previous_chat_offset || self.ui.get_reply_pending()) {
             self.backdrop_dirty.set(true);
@@ -781,7 +859,7 @@ impl FerrofluidSystemUi {
             self.ui.get_keyboard_reveal(),
             booting || sidebar_active || self.ui.get_reduced_motion(),
         );
-        if liquid_damage.is_some() || sidebar_damage.is_some() || boot_damage.is_some() {
+        if liquid_damage.is_some() || sidebar_damage.is_some() || boot_damage.is_some() || webview_mode_changed {
             self.window.request_redraw();
         }
         let mut damage = None;
@@ -803,11 +881,14 @@ impl FerrofluidSystemUi {
             let origin = region.bounding_box_origin();
             let size = region.bounding_box_size();
             if (size.width == 0 || size.height == 0) && boot_damage.is_none()
-                && liquid_damage.is_none() && sidebar_damage.is_none() {
+                && liquid_damage.is_none() && sidebar_damage.is_none() && !webview_mode_changed {
                 return;
             }
-            let mut rect =
-                DirtyRect::new(origin.x as u32, origin.y as u32, size.width, size.height);
+            let mut rect = if webview_mode_changed {
+                DirtyRect::new(0, 0, self.size.width, self.size.height)
+            } else {
+                DirtyRect::new(origin.x as u32, origin.y as u32, size.width, size.height)
+            };
             if let Some(boot) = boot_damage {
                 if size.width == 0 || size.height == 0 {
                     rect = boot;
@@ -839,7 +920,7 @@ impl FerrofluidSystemUi {
             let chat_top = (self.ui.get_chat_top() * self.scale) as u32;
             let blur_height = (40.0 * self.scale) as u32;
             let blur_bottom = (chat_top + blur_height).min(self.size.height);
-            let blur_active = !booting && !sidebar_active && chat_offset > 0.0;
+            let blur_active = !booting && !sidebar_active && !webview_expanded && chat_offset > 0.0;
             if blur_active {
                 if let Some(previous) = self.previous_blur_top {
                     if previous != chat_top || chat_offset != self.previous_chat_offset {
@@ -877,7 +958,7 @@ impl FerrofluidSystemUi {
             let bottom_top = (self.ui.get_bottom_fade_top().max(0.0) * self.scale) as u32;
             let bottom_height = ((self.ui.get_bottom_fade_height() * self.scale) as u32)
                 .min(self.size.height.saturating_sub(bottom_top));
-            let bottom_dirty = !booting && !sidebar_active && bottom_height > 0
+            let bottom_dirty = !booting && !sidebar_active && !webview_expanded && bottom_height > 0
                 && rect.y < bottom_top + bottom_height && rect.y + rect.height > bottom_top;
             if bottom_dirty {
                 let end = (rect.y + rect.height).max(bottom_top + bottom_height);
@@ -926,10 +1007,31 @@ impl FerrofluidSystemUi {
             self.window.draw_if_needed(|_| {});
         }
         self.previous_sidebar_active = sidebar_active;
+        self.previous_webview_expanded = webview_expanded;
         self.previous_keyboard_reveal = keyboard_reveal;
         self.previous_chat_offset = self.ui.get_scroll_offset();
         damage
     }
+}
+
+fn webview_frame_image(frame: &crate::webview::CommittedFrame) -> slint::Image {
+    let mut buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(frame.width, frame.height);
+    let dst = buffer.make_mut_slice();
+    let row_bytes = (frame.width as usize) * 4;
+    for y in 0..(frame.height as usize) {
+        let row_start = y * (frame.stride as usize);
+        let row = &frame.pixels[row_start..row_start + row_bytes];
+        let dst_row = &mut dst[y * (frame.width as usize)..(y + 1) * (frame.width as usize)];
+        for (px, bgra) in dst_row.iter_mut().zip(row.chunks_exact(4)) {
+            *px = slint::Rgba8Pixel {
+                r: bgra[2],
+                g: bgra[1],
+                b: bgra[0],
+                a: bgra[3],
+            };
+        }
+    }
+    slint::Image::from_rgba8(buffer)
 }
 
 fn update_dashboard(ui: &SystemUi, tiles: &[AppTile], available: &[AppTile]) {

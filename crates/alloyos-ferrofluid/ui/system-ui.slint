@@ -343,6 +343,199 @@ component TileCard inherits Rectangle {
     }
 }
 
+component WebViewCard inherits Rectangle {
+    in property <string> origin;
+    in property <string> title;
+    in property <string> status;
+    in property <bool> crashed: false;
+    in property <image> frame;
+    in property <bool> pending: false;
+    callback expand();
+    callback reload();
+    min-width: 0px;
+    clip: true;
+    background: AlloyPalette.charcoal;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: AlloyPalette.border;
+    preferred-height: max(card-content.preferred-height, card-end.y + 6px);
+    min-height: self.preferred-height;
+    vertical-stretch: 0;
+    card-content := VerticalLayout {
+        width: parent.width;
+        height: self.preferred-height;
+        padding: 16px;
+        padding-bottom: 6px;
+        spacing: 10px;
+        HorizontalBox {
+            VerticalLayout {
+                horizontal-stretch: 1;
+                min-width: 0px;
+                spacing: 4px;
+                Text {
+                    text: root.title;
+                    color: AlloyPalette.text;
+                    font-size: 20px;
+                    font-weight: 700;
+                    font-family: "Quicksand Bold";
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: root.origin;
+                    color: root.crashed ? AlloyPalette.rust : AlloyPalette.muted;
+                    font-size: 13px;
+                    overflow: elide;
+                }
+            }
+            AlloyButton {
+                flat: true;
+                icon-only: true;
+                icon: @image-url("icons/reload.svg");
+                enabled: !root.pending;
+                button-label: "Reload webview";
+                min-width: 32px;
+                max-width: 32px;
+                height: 32px;
+                horizontal-stretch: 0;
+                clicked => { root.reload(); }
+            }
+            AlloyButton {
+                flat: true;
+                icon-only: true;
+                icon: @image-url("icons/expand.svg");
+                enabled: !root.pending;
+                button-label: "Expand webview";
+                min-width: 32px;
+                max-width: 32px;
+                height: 32px;
+                horizontal-stretch: 0;
+                clicked => { root.expand(); }
+            }
+        }
+        viewport := Rectangle {
+            height: root.frame.width > 0 ? min(260px, self.width * root.frame.height / max(1, root.frame.width)) : 180px;
+            vertical-stretch: 0;
+            background: #101418;
+            border-radius: 8px;
+            border-width: 1px;
+            border-color: AlloyPalette.border;
+            clip: true;
+            if root.frame.width > 0 && !root.crashed: Image {
+                source: root.frame;
+                width: parent.width;
+                height: parent.height;
+                image-fit: contain;
+            }
+            if root.crashed: Text {
+                x: 16px;
+                width: parent.width - 32px;
+                height: parent.height;
+                text: "Web content process terminated unexpectedly.";
+                color: AlloyPalette.rust;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            if root.frame.width == 0 && !root.crashed: Text {
+                x: 16px;
+                width: parent.width - 32px;
+                height: parent.height;
+                text: "Waiting for browser frame…";
+                color: AlloyPalette.muted;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+        card-end := Rectangle { height: 0px; }
+    }
+}
+
+component ExpandedWebView inherits Rectangle {
+    in property <string> origin;
+    in property <string> title;
+    in property <string> status;
+    in property <bool> crashed: false;
+    in property <image> frame;
+    callback collapse();
+    callback reload();
+    background: AlloyPalette.obsidian;
+    TouchArea { width: parent.width; height: parent.height; }
+    VerticalLayout {
+        padding: 20px;
+        spacing: 12px;
+        HorizontalLayout {
+            spacing: 4px;
+            vertical-stretch: 0;
+            VerticalLayout {
+                horizontal-stretch: 1;
+                min-width: 0px;
+                spacing: 2px;
+                Text {
+                    text: root.title;
+                    color: AlloyPalette.text;
+                    font-size: 20px;
+                    font-weight: 700;
+                    font-family: "Quicksand Bold";
+                    overflow: elide;
+                }
+                Text {
+                    text: root.origin;
+                    color: root.crashed ? AlloyPalette.rust : AlloyPalette.muted;
+                    font-size: 13px;
+                    overflow: elide;
+                }
+            }
+            AlloyButton {
+                flat: true;
+                icon-only: true;
+                icon: @image-url("icons/reload.svg");
+                button-label: "Reload webview";
+                min-width: 32px;
+                max-width: 32px;
+                height: 32px;
+                horizontal-stretch: 0;
+                clicked => { root.reload(); }
+            }
+            AlloyButton {
+                flat: true;
+                icon-only: true;
+                icon: @image-url("icons/collapse.svg");
+                button-label: "Collapse webview";
+                min-width: 32px;
+                max-width: 32px;
+                height: 32px;
+                horizontal-stretch: 0;
+                clicked => { root.collapse(); }
+            }
+        }
+        Rectangle {
+            vertical-stretch: 1;
+            background: #101418;
+            border-radius: 12px;
+            border-width: 1px;
+            border-color: AlloyPalette.border;
+            clip: true;
+            if root.frame.width > 0 && !root.crashed: Image {
+                source: root.frame;
+                width: parent.width;
+                height: parent.height;
+                image-fit: contain;
+            }
+            if root.crashed: Text {
+                x: 24px;
+                width: parent.width - 48px;
+                height: parent.height;
+                text: "Web content process terminated unexpectedly.";
+                color: AlloyPalette.rust;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+    }
+}
+
 component DrippingColumn inherits Rectangle {
     in property <int> time-ms: 0;
     in property <int> delay-ms: 0;
@@ -599,6 +792,16 @@ export component SystemUi inherits Window {
     property <bool> install-decision-sent: false;
     changed pending-install-id => { root.install-decision-sent = false; }
     callback remote-install-decision(string, bool);
+    in property <bool> webview-visible: false;
+    in-out property <bool> webview-expanded: false;
+    in property <string> webview-origin;
+    in property <string> webview-title;
+    in property <string> webview-status;
+    in property <bool> webview-crashed: false;
+    in property <bool> webview-editable-focused: false;
+    in property <image> webview-frame;
+    callback webview-set-expanded(bool);
+    callback webview-reload();
     in property <[TileView]> dashboard-pins;
     pure callback tile-is-pinned(string, [TileView]) -> bool;
     callback pin-tile(string, bool);
@@ -607,6 +810,7 @@ export component SystemUi inherits Window {
     callback refresh-tile(string);
     changed transcript => { scroll.content-y = min(0px, scroll.visible-height - scroll.content-height); }
     changed chat-items => { scroll.content-y = min(0px, scroll.visible-height - scroll.content-height); }
+    changed webview-visible => { scroll.content-y = min(0px, scroll.visible-height - scroll.content-height); }
     changed reply-pending => {
         if root.reply-pending {
             scroll.content-y = min(0px, scroll.visible-height - scroll.content-height);
@@ -770,6 +974,21 @@ export component SystemUi inherits Window {
                                 refresh => { root.refresh-tile(item.tile.tile-id); }
                             }
                         }
+                        if root.webview-visible: WebViewCard {
+                            origin: root.webview-origin;
+                            title: root.webview-title;
+                            status: root.webview-status;
+                            crashed: root.webview-crashed;
+                            frame: root.webview-frame;
+                            pending: root.reply-pending;
+                            expand => {
+                                root.release-editor();
+                                root.sidebar-open = false;
+                                root.webview-expanded = true;
+                                root.webview-set-expanded(true);
+                            }
+                            reload => { root.webview-reload(); }
+                        }
                         if root.voice-caption != "" && (root.voice-state == 2 || root.voice-state == 3 || root.voice-state == 4): Text {
                             text: root.voice-caption;
                             color: AlloyPalette.text;
@@ -812,7 +1031,7 @@ export component SystemUi inherits Window {
             x: 4px;
             y: parent.height - root.keyboard-reveal;
             width: parent.width - 8px;
-            requested: input.has-focus || root.client-profile-focused;
+            requested: input.has-focus || root.client-profile-focused || (root.webview-visible && root.webview-editable-focused);
             reduced-motion: root.reduced-motion;
             suspended: root.booting || root.sidebar-reveal > 0px;
             key(value) => { root.soft-key(value); }
@@ -1149,6 +1368,21 @@ export component SystemUi inherits Window {
                 root.client-profile-submit(issuer, client, scopes, port, secret, offline, reprompt);
             }
             cancel => { root.release-editor(); root.client-profile-cancel(); }
+        }
+        if root.webview-visible && root.webview-expanded: ExpandedWebView {
+            width: parent.width;
+            height: parent.height - root.keyboard-reveal;
+            origin: root.webview-origin;
+            title: root.webview-title;
+            status: root.webview-status;
+            crashed: root.webview-crashed;
+            frame: root.webview-frame;
+            collapse => {
+                root.release-editor();
+                root.webview-expanded = false;
+                root.webview-set-expanded(false);
+            }
+            reload => { root.webview-reload(); }
         }
     }
 }

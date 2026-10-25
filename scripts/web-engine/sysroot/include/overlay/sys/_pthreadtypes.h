@@ -44,6 +44,16 @@ typedef struct {
     uint32_t state;
 } pthread_once_t;
 
+typedef struct {
+    int pshared;
+} pthread_rwlockattr_t;
+
+typedef struct {
+    uint32_t state;
+    uint32_t readers;
+    uint64_t writer_tid;
+} pthread_rwlock_t;
+
 #ifdef __cplusplus
 }
 #endif

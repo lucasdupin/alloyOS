@@ -130,14 +130,14 @@ extern "C" {
 
 void* __dso_handle = &__dso_handle;
 
-void __cxa_pure_virtual(void)
+__attribute__((weak)) void __cxa_pure_virtual(void)
 {
     static const char msg[] = "alloyOS __cxa_pure_virtual called";
     __alloyos_panic_report(msg, sizeof(msg) - 1U);
     abort();
 }
 
-void __cxa_deleted_virtual(void)
+__attribute__((weak)) void __cxa_deleted_virtual(void)
 {
     static const char msg[] = "alloyOS __cxa_deleted_virtual called";
     __alloyos_panic_report(msg, sizeof(msg) - 1U);
@@ -147,7 +147,7 @@ void __cxa_deleted_virtual(void)
 /* Itanium / ARM64 C++ ABI static initialization guards.
  * Bit 0 indicates initialization complete; 0x100 indicates in-progress.
  */
-int __cxa_guard_acquire(uint64_t* guard_object)
+__attribute__((weak)) int __cxa_guard_acquire(uint64_t* guard_object)
 {
     if (!guard_object) {
         return 0;
@@ -176,7 +176,7 @@ int __cxa_guard_acquire(uint64_t* guard_object)
     }
 }
 
-void __cxa_guard_release(uint64_t* guard_object)
+__attribute__((weak)) void __cxa_guard_release(uint64_t* guard_object)
 {
     if (!guard_object) {
         return;
@@ -189,7 +189,7 @@ void __cxa_guard_release(uint64_t* guard_object)
                            0ULL);
 }
 
-void __cxa_guard_abort(uint64_t* guard_object)
+__attribute__((weak)) void __cxa_guard_abort(uint64_t* guard_object)
 {
     if (!guard_object) {
         return;

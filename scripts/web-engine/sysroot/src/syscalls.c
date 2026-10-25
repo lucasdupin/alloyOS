@@ -3,8 +3,11 @@
 #include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -20,7 +23,7 @@ _Thread_local uint64_t __alloyos_tls_anchor = 0x414c4c4f594f5331ULL;
 
 static _Thread_local int g_tls_errno = 0;
 
-int* __errno(void)
+__attribute__((weak)) int* __errno(void)
 {
     return &g_tls_errno;
 }
@@ -81,7 +84,7 @@ void __alloyos_panic_report(const char* message, size_t length)
     (void)alloyos_syscall2(ALLOYOS_SYS_PANIC_REPORT, (uint64_t)(uintptr_t)message, (uint64_t)length);
 }
 
-__attribute__((noreturn)) void _exit(int status)
+__attribute__((weak, noreturn)) void _exit(int status)
 {
     (void)alloyos_syscall1(ALLOYOS_SYS_EXIT, (uint64_t)(uint32_t)status);
     for (;;) {
@@ -89,12 +92,12 @@ __attribute__((noreturn)) void _exit(int status)
     }
 }
 
-__attribute__((noreturn)) void _Exit(int status)
+__attribute__((weak, noreturn)) void _Exit(int status)
 {
     _exit(status);
 }
 
-__attribute__((noreturn)) void exit(int status)
+__attribute__((weak, noreturn)) void exit(int status)
 {
     if (__cxa_finalize) {
         __cxa_finalize(NULL);
@@ -102,7 +105,7 @@ __attribute__((noreturn)) void exit(int status)
     _exit(status);
 }
 
-__attribute__((noreturn)) void abort(void)
+__attribute__((weak, noreturn)) void abort(void)
 {
     static const char msg[] = "alloyOS userland abort()";
     __alloyos_panic_report(msg, sizeof(msg) - 1U);
@@ -126,20 +129,28 @@ __attribute__((weak)) int atexit(void (*func)(void))
 }
 
 /* Honest error-returning hooks for unavailable descriptor/signal services */
-int _close(int fd) { (void)fd; errno = EBADF; return -1; }
-int close(int fd) { return _close(fd); }
+__attribute__((weak)) int _close(int fd) { (void)fd; errno = EBADF; return -1; }
+__attribute__((weak)) int close(int fd) { return _close(fd); }
 
-int _fstat(int fd, struct stat* st) { (void)fd; (void)st; errno = EBADF; return -1; }
-int fstat(int fd, struct stat* st) { return _fstat(fd, st); }
+__attribute__((weak)) int _fstat(int fd, struct stat* st) { (void)fd; (void)st; errno = EBADF; return -1; }
+__attribute__((weak)) int fstat(int fd, struct stat* st) { return _fstat(fd, st); }
 
-int _stat(const char* file, struct stat* st) { (void)file; (void)st; errno = ENOENT; return -1; }
-int stat(const char* file, struct stat* st) { return _stat(file, st); }
+__attribute__((weak)) int _stat(const char* file, struct stat* st) { (void)file; (void)st; errno = ENOENT; return -1; }
+__attribute__((weak)) int stat(const char* file, struct stat* st) { return _stat(file, st); }
 
-int _open(const char* file, int flags, ...) { (void)file; (void)flags; errno = ENOENT; return -1; }
-int open(const char* file, int flags, ...) { return _open(file, flags); }
+__attribute__((weak)) int _lstat(const char* file, struct stat* st) { return _stat(file, st); }
+__attribute__((weak)) int lstat(const char* file, struct stat* st) { return _stat(file, st); }
 
-int ftruncate(int fd, off_t length) { (void)fd; (void)length; errno = EBADF; return -1; }
-int fsync(int fd) { (void)fd; return 0; }
+__attribute__((weak)) int _open(const char* file, int flags, ...) { (void)file; (void)flags; errno = ENOENT; return -1; }
+__attribute__((weak)) int open(const char* file, int flags, ...) { return _open(file, flags); }
+
+__attribute__((weak)) int _unlink(const char* pathname) { (void)pathname; errno = ENOENT; return -1; }
+__attribute__((weak)) int unlink(const char* pathname) { return _unlink(pathname); }
+
+__attribute__((weak)) int ioctl(int fd, unsigned long request, ...) { (void)fd; (void)request; errno = ENOTTY; return -1; }
+
+__attribute__((weak)) int ftruncate(int fd, off_t length) { (void)fd; (void)length; errno = EBADF; return -1; }
+__attribute__((weak)) int fsync(int fd) { (void)fd; return 0; }
 
 char* getcwd(char* buf, size_t size)
 {
@@ -189,17 +200,17 @@ off_t lseek(int fd, off_t offset, int whence) { return _lseek(fd, offset, whence
 #define _READ_WRITE_RETURN_TYPE ssize_t
 #endif
 
-_READ_WRITE_RETURN_TYPE _read(int fd, void* buf, size_t count) { (void)fd; (void)buf; (void)count; errno = EBADF; return -1; }
-_READ_WRITE_RETURN_TYPE read(int fd, void* buf, size_t count) { return _read(fd, buf, count); }
+__attribute__((weak)) _READ_WRITE_RETURN_TYPE _read(int fd, void* buf, size_t count) { (void)fd; (void)buf; (void)count; errno = EBADF; return -1; }
+__attribute__((weak)) _READ_WRITE_RETURN_TYPE read(int fd, void* buf, size_t count) { return _read(fd, buf, count); }
 
-_READ_WRITE_RETURN_TYPE _write(int fd, const void* buf, size_t count) { (void)fd; (void)buf; (void)count; errno = EBADF; return -1; }
-_READ_WRITE_RETURN_TYPE write(int fd, const void* buf, size_t count) { return _write(fd, buf, count); }
+__attribute__((weak)) _READ_WRITE_RETURN_TYPE _write(int fd, const void* buf, size_t count) { (void)fd; (void)buf; (void)count; errno = EBADF; return -1; }
+__attribute__((weak)) _READ_WRITE_RETURN_TYPE write(int fd, const void* buf, size_t count) { return _write(fd, buf, count); }
 
-int _isatty(int fd) { (void)fd; errno = EBADF; return 0; }
-int isatty(int fd) { return _isatty(fd); }
+__attribute__((weak)) int _isatty(int fd) { (void)fd; errno = EBADF; return 0; }
+__attribute__((weak)) int isatty(int fd) { return _isatty(fd); }
 
-int _kill(int pid, int sig) { (void)pid; (void)sig; errno = ENOSYS; return -1; }
-int kill(int pid, int sig) { return _kill(pid, sig); }
+__attribute__((weak)) int _kill(int pid, int sig) { (void)pid; (void)sig; errno = ENOSYS; return -1; }
+__attribute__((weak)) int kill(int pid, int sig) { return _kill(pid, sig); }
 
 int _getpid(void)
 {
@@ -574,3 +585,429 @@ __attribute__((weak)) char* strncpy(char* dst, const char* src, size_t n)
     }
     return dst;
 }
+
+__attribute__((weak)) int poll(void* fds, unsigned int nfds, int timeout)
+{
+    (void)fds;
+    (void)nfds;
+    (void)timeout;
+    return 0;
+}
+
+__attribute__((weak)) int res_query(const char* dname, int c, int t, unsigned char* ans, int anslen)
+{
+    (void)dname; (void)c; (void)t; (void)ans; (void)anslen;
+    return -1;
+}
+
+__attribute__((weak)) int res_search(const char* dname, int c, int t, unsigned char* ans, int anslen)
+{
+    (void)dname; (void)c; (void)t; (void)ans; (void)anslen;
+    return -1;
+}
+
+__attribute__((weak)) int res_init(void)
+{
+    return 0;
+}
+
+__attribute__((weak)) int dn_comp(const char* src, unsigned char* dst, int dstsiz, unsigned char** dnptrs, unsigned char** lastdnptr)
+{
+    (void)src; (void)dst; (void)dstsiz; (void)dnptrs; (void)lastdnptr;
+    return -1;
+}
+
+__attribute__((weak)) int dn_expand(const unsigned char* msg, const unsigned char* eomorig, const unsigned char* comp_dn, char* exp_dn, int length)
+{
+    (void)msg; (void)eomorig; (void)comp_dn; (void)exp_dn; (void)length;
+    return -1;
+}
+
+__attribute__((weak)) int socket(int domain, int type, int protocol)
+{
+    (void)domain; (void)type; (void)protocol;
+    return -1;
+}
+
+__attribute__((weak)) int bind(int sockfd, const struct sockaddr* addr, socklen_t addrlen)
+{
+    (void)sockfd; (void)addr; (void)addrlen;
+    return -1;
+}
+
+__attribute__((weak)) int listen(int sockfd, int backlog)
+{
+    (void)sockfd; (void)backlog;
+    return -1;
+}
+
+__attribute__((weak)) int accept(int sockfd, struct sockaddr* addr, socklen_t* addrlen)
+{
+    (void)sockfd; (void)addr; (void)addrlen;
+    return -1;
+}
+
+__attribute__((weak)) int connect(int sockfd, const struct sockaddr* addr, socklen_t addrlen)
+{
+    (void)sockfd; (void)addr; (void)addrlen;
+    return -1;
+}
+
+__attribute__((weak)) ssize_t send(int sockfd, const void* buf, size_t len, int flags)
+{
+    (void)sockfd; (void)buf; (void)len; (void)flags;
+    return -1;
+}
+
+__attribute__((weak)) ssize_t recv(int sockfd, void* buf, size_t len, int flags)
+{
+    (void)sockfd; (void)buf; (void)len; (void)flags;
+    return -1;
+}
+
+__attribute__((weak)) ssize_t sendto(int sockfd, const void* buf, size_t len, int flags, const struct sockaddr* dest_addr, socklen_t addrlen)
+{
+    (void)sockfd; (void)buf; (void)len; (void)flags; (void)dest_addr; (void)addrlen;
+    return -1;
+}
+
+__attribute__((weak)) ssize_t recvfrom(int sockfd, void* buf, size_t len, int flags, struct sockaddr* src_addr, socklen_t* addrlen)
+{
+    (void)sockfd; (void)buf; (void)len; (void)flags; (void)src_addr; (void)addrlen;
+    return -1;
+}
+
+__attribute__((weak)) int shutdown(int sockfd, int how)
+{
+    (void)sockfd; (void)how;
+    return -1;
+}
+
+__attribute__((weak)) int getsockopt(int sockfd, int level, int optname, void* optval, socklen_t* optlen)
+{
+    (void)sockfd; (void)level; (void)optname; (void)optval; (void)optlen;
+    return -1;
+}
+
+__attribute__((weak)) int setsockopt(int sockfd, int level, int optname, const void* optval, socklen_t optlen)
+{
+    (void)sockfd; (void)level; (void)optname; (void)optval; (void)optlen;
+    return -1;
+}
+
+__attribute__((weak)) int getsockname(int sockfd, struct sockaddr* addr, socklen_t* addrlen)
+{
+    (void)sockfd; (void)addr; (void)addrlen;
+    return -1;
+}
+
+__attribute__((weak)) int getpeername(int sockfd, struct sockaddr* addr, socklen_t* addrlen)
+{
+    (void)sockfd; (void)addr; (void)addrlen;
+    return -1;
+}
+
+__attribute__((weak)) int socketpair(int domain, int type, int protocol, int sv[2])
+{
+    (void)domain; (void)type; (void)protocol; (void)sv;
+    return -1;
+}
+
+#include <utime.h>
+
+__attribute__((weak)) int utime(const char* path, const struct utimbuf* times)
+{
+    (void)path; (void)times;
+    return 0;
+}
+
+__attribute__((weak)) int getrlimit(int resource, void* rlp)
+{
+    (void)resource; (void)rlp;
+    return 0;
+}
+
+__attribute__((weak)) int setrlimit(int resource, const void* rlp)
+{
+    (void)resource; (void)rlp;
+    return 0;
+}
+
+#include <iconv.h>
+
+__attribute__((weak)) iconv_t iconv_open(const char* tocode, const char* fromcode)
+{
+    (void)tocode;
+    (void)fromcode;
+    return (iconv_t)(uintptr_t)1;
+}
+
+__attribute__((weak)) size_t iconv(iconv_t cd, char** inbuf, size_t* inbytesleft, char** outbuf, size_t* outbytesleft)
+{
+    (void)cd;
+    if (!inbuf || !*inbuf) return 0;
+    size_t n = (*inbytesleft < *outbytesleft) ? *inbytesleft : *outbytesleft;
+    memcpy(*outbuf, *inbuf, n);
+    *inbuf += n;
+    *outbuf += n;
+    *inbytesleft -= n;
+    *outbytesleft -= n;
+    return 0;
+}
+
+__attribute__((weak)) int iconv_close(iconv_t cd)
+{
+    (void)cd;
+    return 0;
+}
+
+struct termios;
+__attribute__((weak)) int tcgetattr(int fd, struct termios* termios_p) { (void)fd; (void)termios_p; return 0; }
+__attribute__((weak)) int tcsetattr(int fd, int optional_actions, const struct termios* termios_p) { (void)fd; (void)optional_actions; (void)termios_p; return 0; }
+__attribute__((weak)) unsigned int cfgetispeed(const struct termios* termios_p) { (void)termios_p; return 9600; }
+__attribute__((weak)) unsigned int cfgetospeed(const struct termios* termios_p) { (void)termios_p; return 9600; }
+__attribute__((weak)) int cfsetispeed(struct termios* termios_p, unsigned int speed) { (void)termios_p; (void)speed; return 0; }
+__attribute__((weak)) int cfsetospeed(struct termios* termios_p, unsigned int speed) { (void)termios_p; (void)speed; return 0; }
+
+__attribute__((weak)) int uname(void* name)
+{
+    if (!name) return -1;
+    char* p = (char*)name;
+    for (int i = 0; i < 65 * 5; i++) p[i] = 0;
+    const char* sys = "alloyOS";
+    for (int i = 0; sys[i]; i++) p[i] = sys[i];
+    const char* m = "aarch64";
+    for (int i = 0; m[i]; i++) p[65 * 4 + i] = m[i];
+    return 0;
+}
+
+__attribute__((weak)) int pthread_rwlock_init(pthread_rwlock_t* rwlock, const pthread_rwlockattr_t* attr)
+{
+    (void)rwlock; (void)attr;
+    return 0;
+}
+
+__attribute__((weak)) int pthread_rwlock_destroy(pthread_rwlock_t* rwlock)
+{
+    (void)rwlock;
+    return 0;
+}
+
+__attribute__((weak)) int pthread_rwlock_rdlock(pthread_rwlock_t* rwlock)
+{
+    (void)rwlock;
+    return 0;
+}
+
+__attribute__((weak)) int pthread_rwlock_tryrdlock(pthread_rwlock_t* rwlock)
+{
+    (void)rwlock;
+    return 0;
+}
+
+__attribute__((weak)) int pthread_rwlock_wrlock(pthread_rwlock_t* rwlock)
+{
+    (void)rwlock;
+    return 0;
+}
+
+__attribute__((weak)) int pthread_rwlock_trywrlock(pthread_rwlock_t* rwlock)
+{
+    (void)rwlock;
+    return 0;
+}
+
+__attribute__((weak)) int pthread_rwlock_unlock(pthread_rwlock_t* rwlock)
+{
+    (void)rwlock;
+    return 0;
+}
+
+const struct in6_addr in6addr_any = { { 0 } };
+const struct in6_addr in6addr_loopback = { { 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1 } };
+
+__attribute__((weak)) int inet_aton(const char* cp, void* inp)
+{
+    if (!cp || !inp) return 0;
+    unsigned char bytes[4];
+    int parts = 0;
+    while (*cp) {
+        if (parts >= 4) return 0;
+        if (*cp < '0' || *cp > '9') return 0;
+        unsigned int byte = 0;
+        while (*cp >= '0' && *cp <= '9') {
+            byte = byte * 10 + (*cp - '0');
+            if (byte > 255) return 0;
+            cp++;
+        }
+        bytes[parts++] = (unsigned char)byte;
+        if (*cp == '.') {
+            cp++;
+            if (*cp == '\0') return 0;
+        } else if (*cp != '\0') {
+            return 0;
+        }
+    }
+    if (parts != 4) return 0;
+    memcpy(inp, bytes, 4);
+    return 1;
+}
+
+__attribute__((weak)) int inet_pton(int af, const char* src, void* dst)
+{
+    if (!src || !dst) {
+        errno = EAFNOSUPPORT;
+        return -1;
+    }
+    if (af == AF_INET) {
+        return inet_aton(src, dst);
+    }
+    if (af == AF_INET6) {
+        unsigned char* out = (unsigned char*)dst;
+        memset(out, 0, 16);
+        uint16_t words[8] = { 0 };
+        int word_count = 0;
+        int double_colon_pos = -1;
+        const char* p = src;
+
+        if (*p == ':' && *(p + 1) == ':') {
+            double_colon_pos = 0;
+            p += 2;
+        }
+
+        while (*p && word_count < 8) {
+            char* end;
+            unsigned long val = strtoul(p, &end, 16);
+            if (end == p || val > 0xFFFF) return 0;
+            words[word_count++] = (uint16_t)val;
+            p = end;
+            if (*p == ':') {
+                p++;
+                if (*p == ':') {
+                    if (double_colon_pos >= 0) return 0;
+                    double_colon_pos = word_count;
+                    p++;
+                }
+            } else if (*p != '\0') {
+                return 0;
+            }
+        }
+        if (*p != '\0') return 0;
+
+        if (double_colon_pos >= 0) {
+            int fill = 8 - word_count;
+            int j = 0;
+            for (int i = 0; i < double_colon_pos; i++) {
+                out[j++] = (words[i] >> 8) & 0xFF;
+                out[j++] = words[i] & 0xFF;
+            }
+            for (int i = 0; i < fill; i++) {
+                out[j++] = 0;
+                out[j++] = 0;
+            }
+            for (int i = double_colon_pos; i < word_count; i++) {
+                out[j++] = (words[i] >> 8) & 0xFF;
+                out[j++] = words[i] & 0xFF;
+            }
+        } else if (word_count == 8) {
+            for (int i = 0; i < 8; i++) {
+                out[i * 2] = (words[i] >> 8) & 0xFF;
+                out[i * 2 + 1] = words[i] & 0xFF;
+            }
+        } else {
+            return 0;
+        }
+        return 1;
+    }
+    errno = EAFNOSUPPORT;
+    return -1;
+}
+
+__attribute__((weak)) long syscall(long number, ...)
+{
+    (void)number;
+    errno = ENOSYS;
+    return -1;
+}
+
+__attribute__((weak)) void* getservbyname(const char* name, const char* proto)
+{
+    (void)name; (void)proto;
+    return NULL;
+}
+
+__attribute__((weak)) void* getservbyport(int port, const char* proto)
+{
+    (void)port; (void)proto;
+    return NULL;
+}
+
+__attribute__((weak)) ssize_t readv(int fd, const struct iovec* iov, int iovcnt)
+{
+    (void)fd; (void)iov; (void)iovcnt;
+    return -1;
+}
+
+__attribute__((weak)) ssize_t writev(int fd, const struct iovec* iov, int iovcnt)
+{
+    (void)fd; (void)iov; (void)iovcnt;
+    return -1;
+}
+
+int h_errno = 0;
+
+__attribute__((weak)) ssize_t sendmsg(int sockfd, const struct msghdr* msg, int flags)
+{
+    (void)sockfd; (void)msg; (void)flags;
+    return -1;
+}
+
+__attribute__((weak)) ssize_t recvmsg(int sockfd, struct msghdr* msg, int flags)
+{
+    (void)sockfd; (void)msg; (void)flags;
+    return -1;
+}
+
+__attribute__((weak)) const char* gai_strerror(int errcode)
+{
+    (void)errcode;
+    return "Unknown resolver error";
+}
+
+__attribute__((weak)) int getnameinfo(const void* sa, socklen_t salen, char* host, socklen_t hostlen, char* serv, socklen_t servlen, int flags)
+{
+    (void)sa; (void)salen; (void)host; (void)hostlen; (void)serv; (void)servlen; (void)flags;
+    return -1;
+}
+
+__attribute__((weak)) int _link(const char* oldpath, const char* newpath)
+{
+    (void)oldpath; (void)newpath;
+    errno = ENOSYS;
+    return -1;
+}
+__attribute__((weak)) int link(const char* oldpath, const char* newpath) { return _link(oldpath, newpath); }
+
+__attribute__((weak)) void* getgrgid(unsigned int gid) { (void)gid; return NULL; }
+__attribute__((weak)) void* getgrnam(const char* name) { (void)name; return NULL; }
+__attribute__((weak)) void* getpwuid(unsigned int uid) { (void)uid; return NULL; }
+__attribute__((weak)) void* getpwnam(const char* name) { (void)name; return NULL; }
+
+__attribute__((weak)) int _mkdir(const char* pathname, mode_t mode) { (void)pathname; (void)mode; errno = ENOSYS; return -1; }
+__attribute__((weak)) int mkdir(const char* pathname, mode_t mode) { return _mkdir(pathname, mode); }
+
+__attribute__((weak)) int _chmod(const char* pathname, mode_t mode) { (void)pathname; (void)mode; errno = ENOSYS; return -1; }
+__attribute__((weak)) int chmod(const char* pathname, mode_t mode) { return _chmod(pathname, mode); }
+
+__attribute__((weak)) int _chown(const char* pathname, uid_t owner, gid_t group) { (void)pathname; (void)owner; (void)group; errno = ENOSYS; return -1; }
+__attribute__((weak)) int chown(const char* pathname, uid_t owner, gid_t group) { return _chown(pathname, owner, group); }
+
+
+
+
+
+
+
+
+
+

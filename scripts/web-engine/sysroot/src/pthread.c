@@ -411,6 +411,12 @@ int pthread_join(pthread_t thread, void** retval)
     return 0;
 }
 
+int pthread_cancel(pthread_t thread)
+{
+    (void)thread;
+    return ENOSYS;
+}
+
 int pthread_detach(pthread_t thread)
 {
     if (!thread) {

@@ -40,10 +40,32 @@ int nanosleep(const struct timespec* req, struct timespec* rem);
 NEWLIB_UNISTD_SUPPLEMENT = """
 #ifndef _ALLOYOS_NEWLIB_UNISTD_SUPPLEMENT
 #define _ALLOYOS_NEWLIB_UNISTD_SUPPLEMENT
+#ifndef _POSIX_HOST_NAME_MAX
+#define _POSIX_HOST_NAME_MAX 255
+#endif
+#ifndef HOST_NAME_MAX
+#define HOST_NAME_MAX _POSIX_HOST_NAME_MAX
+#endif
+#ifndef SSIZE_MAX
+#define SSIZE_MAX (__LONG_MAX__)
+#endif
 #ifdef __cplusplus
 extern "C" {
 #endif
 int getentropy(void* buf, size_t buflen);
+#ifdef __cplusplus
+}
+#endif
+#endif
+"""
+
+NEWLIB_STAT_SUPPLEMENT = """
+#ifndef _ALLOYOS_NEWLIB_STAT_SUPPLEMENT
+#define _ALLOYOS_NEWLIB_STAT_SUPPLEMENT
+#ifdef __cplusplus
+extern "C" {
+#endif
+int lstat(const char *__restrict __path, struct stat *__restrict __buf);
 #ifdef __cplusplus
 }
 #endif
@@ -185,10 +207,6 @@ def main():
     obj_dir = output / "build/obj"
     verify_dir = output / "verify"
 
-    if include_dir.exists():
-        shutil.rmtree(include_dir)
-    if lib_dir.exists():
-        shutil.rmtree(lib_dir)
     if obj_dir.exists():
         shutil.rmtree(obj_dir)
     if verify_dir.exists():
@@ -209,6 +227,9 @@ def main():
         unistd_h = include_dir / "unistd.h"
         if unistd_h.is_file():
             unistd_h.write_text(unistd_h.read_text() + "\n" + NEWLIB_UNISTD_SUPPLEMENT)
+        stat_h = include_dir / "sys/stat.h"
+        if stat_h.is_file():
+            stat_h.write_text(stat_h.read_text() + "\n" + NEWLIB_STAT_SUPPLEMENT)
         newlib_libs = {}
         for lib_name in ("libc.a", "libm.a"):
             src_lib = newlib_dir / "lib" / lib_name
@@ -222,6 +243,10 @@ def main():
         newlib_info = dict(source_dir=str(newlib_dir), libraries=newlib_libs)
     else:
         shutil.copytree(sysroot_src / "include/base", include_dir, dirs_exist_ok=True)
+
+    rust_builtins = list(Path.home().glob(".rustup/toolchains/*/lib/rustlib/aarch64-unknown-none/lib/libcompiler_builtins-*.rlib"))
+    if rust_builtins:
+        shutil.copy2(rust_builtins[0], lib_dir / "libcompiler_rt.a")
 
     shutil.copytree(sysroot_src / "include/overlay", include_dir, dirs_exist_ok=True)
     linker_script = lib_dir / "process.ld"

@@ -7,6 +7,7 @@ extern "C" {
 #define RTLD_NOW    2
 #define RTLD_GLOBAL 4
 #define RTLD_LOCAL  8
+#define RTLD_NOLOAD 16
 #define RTLD_DEFAULT ((void *) 0)
 static inline void* dlopen(const char* filename, int flags) { (void)filename; (void)flags; return (void*)0; }
 static inline void* dlsym(void* handle, const char* symbol) { (void)handle; (void)symbol; return (void*)0; }

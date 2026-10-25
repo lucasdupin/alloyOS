@@ -201,3 +201,18 @@ int msync(void* addr, size_t len, int flags)
     }
     return 0;
 }
+
+int shm_open(const char* name, int oflag, mode_t mode)
+{
+    (void)name;
+    (void)oflag;
+    (void)mode;
+    errno = ENOSYS;
+    return -1;
+}
+
+int shm_unlink(const char* name)
+{
+    (void)name;
+    return 0;
+}

@@ -69,6 +69,26 @@ enum Commands {
     },
     /// Runs workspace tests followed by headless QEMU E2E tests
     Ci,
+    /// Builds the alloyOS POSIX compatibility sysroot (newlib, libc++, pthreads, ICU)
+    Sysroot {
+        #[arg(long)]
+        force: bool,
+    },
+    /// Fetches WPE WebKit and builds the native AArch64 JavaScriptCore engine
+    Jsc {
+        #[arg(long)]
+        force: bool,
+    },
+    /// Cross-compiles WebCore C/C++ rendering and parsing dependencies (zlib, png, jpeg, sqlite, xml2, freetype, harfbuzz)
+    WebcoreDeps {
+        #[arg(long)]
+        force: bool,
+    },
+    /// Cross-compiles and packages native WPE WebKit 2.54.1 for alloyOS AArch64
+    Wpe {
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 /// Harness for controlling and testing a headless QEMU virtual machine (`qemu-system-aarch64`).
@@ -770,9 +790,271 @@ fn validate_forge_launch(memory: &str, image: Option<&Path>, timeout: u64) -> Re
     Ok(())
 }
 
+fn resolve_llvm_ar() -> Result<PathBuf> {
+    let output = Command::new("rustc").args(["--print", "sysroot"]).output()?;
+    let sysroot = String::from_utf8(output.stdout)?.trim().to_string();
+    let host_output = Command::new("rustc").arg("-vV").output()?;
+    let host_str = String::from_utf8(host_output.stdout)?;
+    let host = host_str
+        .lines()
+        .find(|l| l.starts_with("host: "))
+        .map(|l| l["host: ".len()..].trim())
+        .ok_or_else(|| anyhow!("could not determine rustc host"))?;
+    let ar_path = PathBuf::from(sysroot)
+        .join("lib/rustlib")
+        .join(host)
+        .join("bin/llvm-ar");
+    if ar_path.is_file() {
+        Ok(ar_path)
+    } else {
+        Err(anyhow!("llvm-ar not found at {}", ar_path.display()))
+    }
+}
+
+fn run_sysroot(_force: bool) -> Result<()> {
+    let root = get_workspace_root()?;
+    println!("[xtask] Ensuring alloyOS POSIX compatibility sysroot...");
+    let sysroot_dir = root.join("build/sysroot");
+    let script = root.join("scripts/web-engine/build-sysroot.py");
+    let newlib_dir = PathBuf::from("/private/tmp/alloyos-newlib-full/sysroot/aarch64-none-elf");
+
+    let mut cmd = Command::new("python3");
+    cmd.current_dir(&root).arg(script).arg("--output").arg(&sysroot_dir);
+    if newlib_dir.is_dir() {
+        cmd.arg("--newlib").arg(&newlib_dir);
+    }
+    let status = cmd.status().context("Failed to run build-sysroot.py")?;
+    if !status.success() {
+        return Err(anyhow!("build-sysroot.py failed"));
+    }
+
+    let staging_sysroot = PathBuf::from("/private/tmp/web-runtime-newlib-acceptance/sysroot");
+    if staging_sysroot.is_dir() {
+        let _ = std::fs::remove_dir_all(sysroot_dir.join("include/c++"));
+        let _ = Command::new("cp")
+            .args(["-R"])
+            .arg(staging_sysroot.join("include/c++"))
+            .arg(sysroot_dir.join("include/"))
+            .status();
+        let _ = Command::new("cp")
+            .args(["-R"])
+            .arg(staging_sysroot.join("include/unicode"))
+            .arg(sysroot_dir.join("include/"))
+            .status();
+        for lib in [
+            "libc++.a",
+            "libc++abi.a",
+            "libicudata.a",
+            "libicui18n.a",
+            "libicuuc.a",
+        ] {
+            let src = staging_sysroot.join("lib").join(lib);
+            if src.is_file() {
+                let _ = std::fs::copy(&src, sysroot_dir.join("lib").join(lib));
+            }
+        }
+    }
+
+    let overlay = root.join("scripts/web-engine/sysroot/include/overlay");
+    if overlay.is_dir() {
+        for entry in ["alloyos", "sys", "pthread.h", "sched.h", "semaphore.h", "dlfcn.h"] {
+            let src = overlay.join(entry);
+            let dst = sysroot_dir.join("include").join(entry);
+            if src.is_dir() {
+                let _ = Command::new("cp")
+                    .args(["-R"])
+                    .arg(&src)
+                    .arg(sysroot_dir.join("include/"))
+                    .status();
+            } else if src.is_file() {
+                let _ = std::fs::copy(&src, &dst);
+            }
+        }
+    }
+
+    println!(
+        "[xtask] alloyOS AArch64 sysroot is up to date at {}",
+        sysroot_dir.display()
+    );
+    Ok(())
+}
+
+fn run_jsc(force: bool) -> Result<()> {
+    let root = get_workspace_root()?;
+    run_sysroot(false)?;
+
+    let wpe_source = root.join("build/wpewebkit");
+    if !wpe_source.join(".alloyos-patched").is_file() || force {
+        println!("[xtask] Fetching and patching WPE WebKit 2.54.1...");
+        let status = Command::new("python3")
+            .current_dir(&root)
+            .arg(root.join("scripts/web-engine/fetch-webkit.py"))
+            .status()
+            .context("Failed to run fetch-webkit.py")?;
+        if !status.success() {
+            return Err(anyhow!("fetch-webkit.py failed"));
+        }
+    }
+
+    println!("[xtask] Configuring and building JavaScriptCore (JSCOnly) for AArch64 alloyOS...");
+    let jsc_build = root.join("build/jsc");
+    if !jsc_build.join("build.ninja").is_file() || force {
+        let status = Command::new("sh")
+            .current_dir(&root)
+            .arg(root.join("scripts/web-engine/configure-jsc.sh"))
+            .status()
+            .context("Failed to run configure-jsc.sh")?;
+        if !status.success() {
+            return Err(anyhow!("configure-jsc.sh failed"));
+        }
+    }
+
+    let status = Command::new("ninja")
+        .current_dir(&jsc_build)
+        .arg("jsc")
+        .status()
+        .context("Failed to run ninja jsc")?;
+    if !status.success() {
+        return Err(anyhow!("ninja jsc build failed"));
+    }
+
+    // Convert thin archives to standalone fat archives in build/sysroot/lib
+    let ar = resolve_llvm_ar()?;
+    for (name, fat_name) in [
+        ("libJavaScriptCore.a", "libJavaScriptCore_fat.a"),
+        ("libWTF.a", "libWTF_fat.a"),
+        ("libbmalloc.a", "libbmalloc_fat.a"),
+    ] {
+        let lib_dir = jsc_build.join("lib");
+        let thin = lib_dir.join(name);
+        if thin.is_file() {
+            let list_out = Command::new(&ar)
+                .args(["-t"])
+                .arg(&thin)
+                .output()?;
+            let obj_str = String::from_utf8(list_out.stdout)?;
+            let mut objs: Vec<PathBuf> = Vec::new();
+            for line in obj_str.split_whitespace() {
+                let p = lib_dir.join(line);
+                if p.is_file() {
+                    objs.push(p);
+                }
+            }
+            if name == "libJavaScriptCore.a" {
+                let jit_dir = jsc_build.join("Source/JavaScriptCore/CMakeFiles/JavaScriptCoreJIT.dir");
+                if jit_dir.is_dir() {
+                    let mut stack = vec![jit_dir];
+                    while let Some(dir) = stack.pop() {
+                        if let Ok(entries) = std::fs::read_dir(dir) {
+                            for entry in entries.flatten() {
+                                let path = entry.path();
+                                if path.is_dir() {
+                                    stack.push(path);
+                                } else if path.extension().and_then(|s| s.to_str()) == Some("obj") {
+                                    objs.push(path);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !objs.is_empty() {
+                let fat_path = lib_dir.join(fat_name);
+                let _ = std::fs::remove_file(&fat_path);
+                for chunk in objs.chunks(50) {
+                    let mut cmd = Command::new(&ar);
+                    cmd.arg("-rcs").arg(&fat_path);
+                    for obj in chunk {
+                        cmd.arg(obj);
+                    }
+                    let status = cmd.status()?;
+                    if !status.success() {
+                        return Err(anyhow!("llvm-ar failed creating fat archive {}", fat_name));
+                    }
+                }
+                if fat_path.is_file() {
+                    let dest = root.join("build/sysroot/lib").join(name);
+                    let _ = std::fs::copy(&fat_path, &dest);
+                }
+            }
+        }
+    }
+
+    // Install JavaScriptCore C API headers to sysroot
+    let jsc_headers_src = jsc_build.join("JavaScriptCore/Headers/JavaScriptCore");
+    let jsc_headers_dest = root.join("build/sysroot/include/JavaScriptCore");
+    if jsc_headers_src.is_dir() {
+        std::fs::create_dir_all(&jsc_headers_dest)?;
+        for entry in std::fs::read_dir(&jsc_headers_src)? {
+            let entry = entry?;
+            if entry.path().extension().and_then(|s| s.to_str()) == Some("h") {
+                let _ = std::fs::copy(entry.path(), jsc_headers_dest.join(entry.file_name()));
+            }
+        }
+    }
+
+    // Strip and package binary
+    let raw_bin = jsc_build.join("bin/jsc");
+    let target_bin = root.join("build/bin/jsc");
+    std::fs::create_dir_all(root.join("build/bin"))?;
+    let strip_cmd = ar.parent().unwrap().join("llvm-strip");
+    if strip_cmd.is_file() && raw_bin.is_file() {
+        let _ = Command::new(&strip_cmd)
+            .arg(&raw_bin)
+            .arg("-o")
+            .arg(&target_bin)
+            .status();
+    } else if raw_bin.is_file() {
+        let _ = std::fs::copy(&raw_bin, &target_bin);
+    }
+
+    println!(
+        "[xtask] Native AArch64 JavaScriptCore engine built and packaged successfully to {}",
+        target_bin.display()
+    );
+    Ok(())
+}
+
+fn run_webcore_deps(force: bool) -> Result<()> {
+    let root = get_workspace_root()?;
+    run_sysroot(false)?;
+    let mut cmd = Command::new("python3");
+    cmd.current_dir(&root);
+    cmd.arg(root.join("scripts/web-engine/build-webcore-deps.py"));
+    if force {
+        cmd.arg("--force");
+    }
+    let status = cmd.status().context("Failed to run build-webcore-deps.py")?;
+    if !status.success() {
+        return Err(anyhow!("build-webcore-deps.py failed"));
+    }
+    Ok(())
+}
+
+fn run_wpe(force: bool) -> Result<()> {
+    let root = get_workspace_root()?;
+    run_sysroot(false)?;
+    run_webcore_deps(false)?;
+    let mut cmd = Command::new("python3");
+    cmd.current_dir(&root);
+    cmd.arg(root.join("scripts/web-engine/build-wpe.py"));
+    if force {
+        cmd.arg("--force");
+    }
+    let status = cmd.status().context("Failed to run build-wpe.py")?;
+    if !status.success() {
+        return Err(anyhow!("build-wpe.py failed"));
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Commands::Sysroot { force } => run_sysroot(force),
+        Commands::Jsc { force } => run_jsc(force),
+        Commands::WebcoreDeps { force } => run_webcore_deps(force),
+        Commands::Wpe { force } => run_wpe(force),
         Commands::Build { release, debug_shell } => {
             let image = build_crates(release, debug_shell)?;
             println!("[xtask] Kernel built: {}", image.display());

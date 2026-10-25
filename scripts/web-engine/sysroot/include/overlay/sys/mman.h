@@ -46,6 +46,8 @@ int mprotect(void* addr, size_t len, int prot);
 int msync(void* addr, size_t len, int flags);
 int madvise(void* addr, size_t len, int advice);
 int posix_madvise(void* addr, size_t len, int advice);
+int shm_open(const char* name, int oflag, mode_t mode);
+int shm_unlink(const char* name);
 
 #ifdef __cplusplus
 }

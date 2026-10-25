@@ -1,0 +1,22 @@
+[binaries]
+c = ['clang', '--target=aarch64-none-elf', '--sysroot=/Users/wagnerzaniboni/alloyOS/build/sysroot', '-D__alloyos__=1']
+cpp = ['clang++', '--target=aarch64-none-elf', '--sysroot=/Users/wagnerzaniboni/alloyOS/build/sysroot', '-D__alloyos__=1']
+ar = '/Users/wagnerzaniboni/.rustup/toolchains/nightly-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-ar'
+ranlib = '/Users/wagnerzaniboni/.rustup/toolchains/nightly-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-ranlib'
+pkgconfig = 'pkg-config'
+
+[built-in options]
+pkg_config_path = ['/Users/wagnerzaniboni/alloyOS/build/sysroot/lib/pkgconfig']
+c_args = ['-O2', '-ffreestanding', '-fno-stack-protector', '-fno-pic', '-fno-builtin']
+c_link_args = ['-fuse-ld=/Users/wagnerzaniboni/alloyOS/scripts/web-engine/bin/ld.lld', '-T/Users/wagnerzaniboni/alloyOS/build/sysroot/lib/process.ld', '-nostdlib', '-lc', '-lm', '-lalloyos_posix', '-lcompiler_rt']
+cpp_args = ['-O2', '-ffreestanding', '-fno-stack-protector', '-fno-pic', '-fno-builtin']
+cpp_link_args = ['-fuse-ld=/Users/wagnerzaniboni/alloyOS/scripts/web-engine/bin/ld.lld', '-T/Users/wagnerzaniboni/alloyOS/build/sysroot/lib/process.ld', '-nostdlib', '-lc++', '-lc++abi', '-lc', '-lm', '-lalloyos_posix', '-lalloyos_cxxrt', '-lcompiler_rt']
+
+[properties]
+needs_exe_wrapper = true
+
+[host_machine]
+system = 'baremetal'
+cpu_family = 'aarch64'
+cpu = 'aarch64'
+endian = 'little'

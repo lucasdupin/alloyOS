@@ -50,13 +50,18 @@ int clock_getres(clockid_t clock_id, struct timespec* res)
     return 0;
 }
 
-int gettimeofday(struct timeval* tv, void* tz)
+__attribute__((weak)) int gettimeofday(struct timeval* tv, void* tz)
 {
     (void)tv;
     (void)tz;
     /* Protected ABI deliberately exposes only CLOCK_MONOTONIC, not wall time */
     errno = ENOSYS;
     return -1;
+}
+
+__attribute__((weak)) int _gettimeofday(struct timeval* tv, void* tz)
+{
+    return gettimeofday(tv, tz);
 }
 
 int nanosleep(const struct timespec* req, struct timespec* rem)

@@ -10,6 +10,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <netinet/in.h>
+#include <netdb.h>
+#include <poll.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -589,12 +592,16 @@ __attribute__((weak)) char* strncpy(char* dst, const char* src, size_t n)
     return dst;
 }
 
-__attribute__((weak)) int poll(void* fds, unsigned int nfds, int timeout)
+__attribute__((weak)) int poll(struct pollfd* fds, nfds_t nfds, int timeout)
 {
-    (void)fds;
-    (void)nfds;
     (void)timeout;
-    return 0;
+    if (!fds || nfds == 0) return 0;
+    int ready = 0;
+    for (nfds_t i = 0; i < nfds; ++i) {
+        fds[i].revents = fds[i].events & (POLLIN | POLLOUT | POLLPRI);
+        if (fds[i].revents) ready++;
+    }
+    return ready;
 }
 
 __attribute__((weak)) int res_query(const char* dname, int c, int t, unsigned char* ans, int anslen)
@@ -626,10 +633,19 @@ __attribute__((weak)) int dn_expand(const unsigned char* msg, const unsigned cha
     return -1;
 }
 
+struct alloyos_sockaddr_v4 {
+    uint8_t ip[4];
+    uint16_t port;
+};
+
 __attribute__((weak)) int socket(int domain, int type, int protocol)
 {
-    (void)domain; (void)type; (void)protocol;
-    return -1;
+    int64_t ret = alloyos_syscall3(ALLOYOS_SYS_SOCKET, (uint64_t)domain, (uint64_t)type, (uint64_t)protocol);
+    if (ret < 0) {
+        errno = __alloyos_map_kernel_errno(ret);
+        return -1;
+    }
+    return (int)ret;
 }
 
 __attribute__((weak)) int bind(int sockfd, const struct sockaddr* addr, socklen_t addrlen)
@@ -652,50 +668,84 @@ __attribute__((weak)) int accept(int sockfd, struct sockaddr* addr, socklen_t* a
 
 __attribute__((weak)) int connect(int sockfd, const struct sockaddr* addr, socklen_t addrlen)
 {
-    (void)sockfd; (void)addr; (void)addrlen;
-    return -1;
+    if (!addr || addrlen < (socklen_t)sizeof(struct sockaddr_in)) {
+        errno = EINVAL;
+        return -1;
+    }
+    const struct sockaddr_in* in = (const struct sockaddr_in*)addr;
+    if (in->sin_family != AF_INET) {
+        errno = EAFNOSUPPORT;
+        return -1;
+    }
+    struct alloyos_sockaddr_v4 v4;
+    memcpy(v4.ip, &in->sin_addr.s_addr, 4);
+    v4.port = ntohs(in->sin_port);
+
+    int64_t ret = alloyos_syscall3(ALLOYOS_SYS_CONNECT, (uint64_t)sockfd, (uint64_t)&v4, (uint64_t)sizeof(v4));
+    if (ret < 0) {
+        errno = __alloyos_map_kernel_errno(ret);
+        return -1;
+    }
+    return 0;
 }
 
 __attribute__((weak)) ssize_t send(int sockfd, const void* buf, size_t len, int flags)
 {
-    (void)sockfd; (void)buf; (void)len; (void)flags;
-    return -1;
+    (void)flags;
+    int64_t ret = alloyos_syscall3(ALLOYOS_SYS_SEND, (uint64_t)sockfd, (uint64_t)buf, (uint64_t)len);
+    if (ret < 0) {
+        errno = __alloyos_map_kernel_errno(ret);
+        return -1;
+    }
+    return (ssize_t)ret;
 }
 
 __attribute__((weak)) ssize_t recv(int sockfd, void* buf, size_t len, int flags)
 {
-    (void)sockfd; (void)buf; (void)len; (void)flags;
-    return -1;
+    (void)flags;
+    int64_t ret = alloyos_syscall3(ALLOYOS_SYS_RECV, (uint64_t)sockfd, (uint64_t)buf, (uint64_t)len);
+    if (ret < 0) {
+        errno = __alloyos_map_kernel_errno(ret);
+        return -1;
+    }
+    return (ssize_t)ret;
 }
 
 __attribute__((weak)) ssize_t sendto(int sockfd, const void* buf, size_t len, int flags, const struct sockaddr* dest_addr, socklen_t addrlen)
 {
-    (void)sockfd; (void)buf; (void)len; (void)flags; (void)dest_addr; (void)addrlen;
-    return -1;
+    (void)dest_addr; (void)addrlen;
+    return send(sockfd, buf, len, flags);
 }
 
 __attribute__((weak)) ssize_t recvfrom(int sockfd, void* buf, size_t len, int flags, struct sockaddr* src_addr, socklen_t* addrlen)
 {
-    (void)sockfd; (void)buf; (void)len; (void)flags; (void)src_addr; (void)addrlen;
-    return -1;
+    (void)src_addr; (void)addrlen;
+    return recv(sockfd, buf, len, flags);
 }
 
 __attribute__((weak)) int shutdown(int sockfd, int how)
 {
     (void)sockfd; (void)how;
-    return -1;
+    return 0;
 }
 
 __attribute__((weak)) int getsockopt(int sockfd, int level, int optname, void* optval, socklen_t* optlen)
 {
-    (void)sockfd; (void)level; (void)optname; (void)optval; (void)optlen;
-    return -1;
+    (void)sockfd;
+    if (level == SOL_SOCKET && optname == SO_ERROR) {
+        if (optval && optlen && *optlen >= (socklen_t)sizeof(int)) {
+            *(int*)optval = 0;
+            *optlen = (socklen_t)sizeof(int);
+            return 0;
+        }
+    }
+    return 0;
 }
 
 __attribute__((weak)) int setsockopt(int sockfd, int level, int optname, const void* optval, socklen_t optlen)
 {
     (void)sockfd; (void)level; (void)optname; (void)optval; (void)optlen;
-    return -1;
+    return 0;
 }
 
 __attribute__((weak)) int getsockname(int sockfd, struct sockaddr* addr, socklen_t* addrlen)
@@ -879,11 +929,14 @@ __attribute__((weak)) int inet_pton(int af, const char* src, void* dst)
         }
 
         while (*p && word_count < 8) {
-            char* end;
-            unsigned long val = strtoul(p, &end, 16);
-            if (end == p || val > 0xFFFF) return 0;
+            unsigned long val = 0;
+            const char* start = p;
+            while ((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f') || (*p >= 'A' && *p <= 'F')) {
+                val = (val << 4) | ((*p >= '0' && *p <= '9') ? (unsigned long)(*p - '0') : ((*p >= 'a' && *p <= 'f') ? (unsigned long)(*p - 'a' + 10) : (unsigned long)(*p - 'A' + 10)));
+                p++;
+            }
+            if (p == start || val > 0xFFFF) return 0;
             words[word_count++] = (uint16_t)val;
-            p = end;
             if (*p == ':') {
                 p++;
                 if (*p == ':') {
@@ -933,13 +986,13 @@ __attribute__((weak)) long syscall(long number, ...)
     return -1;
 }
 
-__attribute__((weak)) void* getservbyname(const char* name, const char* proto)
+__attribute__((weak)) struct servent* getservbyname(const char* name, const char* proto)
 {
     (void)name; (void)proto;
     return NULL;
 }
 
-__attribute__((weak)) void* getservbyport(int port, const char* proto)
+__attribute__((weak)) struct servent* getservbyport(int port, const char* proto)
 {
     (void)port; (void)proto;
     return NULL;
@@ -977,7 +1030,7 @@ __attribute__((weak)) const char* gai_strerror(int errcode)
     return "Unknown resolver error";
 }
 
-__attribute__((weak)) int getnameinfo(const void* sa, socklen_t salen, char* host, socklen_t hostlen, char* serv, socklen_t servlen, int flags)
+__attribute__((weak)) int getnameinfo(const struct sockaddr* sa, socklen_t salen, char* host, socklen_t hostlen, char* serv, socklen_t servlen, int flags)
 {
     (void)sa; (void)salen; (void)host; (void)hostlen; (void)serv; (void)servlen; (void)flags;
     return -1;
@@ -1083,23 +1136,122 @@ __attribute__((weak)) in_addr_t inet_addr(const char* cp) {
 }
 __attribute__((weak)) const char* inet_ntop(int af, const void* src, char* dst, socklen_t size) {
     if (af == AF_INET) {
+        if (!src || !dst || size < 16) {
+            errno = ENOSPC;
+            return NULL;
+        }
         const unsigned char* b = (const unsigned char*)src;
-        snprintf(dst, size, "%u.%u.%u.%u", b[0], b[1], b[2], b[3]);
+        char* p = dst;
+        for (int i = 0; i < 4; ++i) {
+            unsigned char v = b[i];
+            if (v >= 100) {
+                *p++ = (char)('0' + (v / 100));
+                v %= 100;
+                *p++ = (char)('0' + (v / 10));
+                v %= 10;
+                *p++ = (char)('0' + v);
+            } else if (v >= 10) {
+                *p++ = (char)('0' + (v / 10));
+                v %= 10;
+                *p++ = (char)('0' + v);
+            } else {
+                *p++ = (char)('0' + v);
+            }
+            if (i < 3) *p++ = '.';
+        }
+        *p = '\0';
         return dst;
     }
     errno = EAFNOSUPPORT;
     return NULL;
 }
-__attribute__((weak)) int select(int nfds, void* readfds, void* writefds, void* exceptfds, struct timeval* timeout) {
-    (void)nfds; (void)readfds; (void)writefds; (void)exceptfds; (void)timeout;
+__attribute__((weak)) int select(int nfds, fd_set* readfds, fd_set* writefds, fd_set* exceptfds, struct timeval* timeout) {
+    (void)readfds; (void)writefds; (void)exceptfds; (void)timeout;
+    return nfds > 0 ? 1 : 0;
+}
+
+__attribute__((weak)) int getaddrinfo(const char* node, const char* service, const struct addrinfo* hints, struct addrinfo** res) {
+    if (!res) return EAI_NONAME;
+    *res = NULL;
+
+    uint16_t port = 80;
+    if (service) {
+        if (strcmp(service, "https") == 0 || strcmp(service, "443") == 0) {
+            port = 443;
+        } else if (strcmp(service, "http") == 0 || strcmp(service, "80") == 0) {
+            port = 80;
+        } else {
+            uint16_t p = 0;
+            const char* s = service;
+            while (*s >= '0' && *s <= '9') {
+                p = (uint16_t)(p * 10 + (*s - '0'));
+                s++;
+            }
+            port = (p > 0) ? p : 80;
+        }
+    }
+
+    uint8_t ip[4] = {10, 0, 2, 2}; // Default to QEMU gateway / host
+    if (node) {
+        if (strcmp(node, "localhost") == 0 || strcmp(node, "127.0.0.1") == 0) {
+            ip[0] = 127; ip[1] = 0; ip[2] = 0; ip[3] = 1;
+        } else if (strcmp(node, "generativelanguage.googleapis.com") == 0) {
+            ip[0] = 142; ip[1] = 250; ip[2] = 190; ip[3] = 74;
+        } else if (strcmp(node, "api.anthropic.com") == 0) {
+            ip[0] = 160; ip[1] = 79; ip[2] = 104; ip[3] = 10;
+        } else if (strcmp(node, "api.openai.com") == 0) {
+            ip[0] = 162; ip[1] = 159; ip[2] = 140; ip[3] = 245;
+        } else if (inet_aton(node, (struct in_addr*)ip)) {
+            // Parsed successfully into ip
+        } else {
+            ip[0] = 10; ip[1] = 0; ip[2] = 2; ip[3] = 2;
+        }
+    }
+
+    struct addrinfo* ai = (struct addrinfo*)calloc(1, sizeof(struct addrinfo));
+    struct sockaddr_in* sin = (struct sockaddr_in*)calloc(1, sizeof(struct sockaddr_in));
+    if (!ai || !sin) {
+        if (ai) free(ai);
+        if (sin) free(sin);
+        return EAI_MEMORY;
+    }
+
+    sin->sin_family = AF_INET;
+    sin->sin_port = htons(port);
+    memcpy(&sin->sin_addr.s_addr, ip, 4);
+
+    ai->ai_family = AF_INET;
+    ai->ai_socktype = (hints && hints->ai_socktype) ? hints->ai_socktype : SOCK_STREAM;
+    ai->ai_protocol = (hints && hints->ai_protocol) ? hints->ai_protocol : IPPROTO_TCP;
+    ai->ai_addrlen = sizeof(struct sockaddr_in);
+    ai->ai_addr = (struct sockaddr*)sin;
+    ai->ai_canonname = strdup(node ? node : "");
+    ai->ai_next = NULL;
+
+    *res = ai;
     return 0;
 }
-__attribute__((weak)) int getaddrinfo(const char* node, const char* service, const void* hints, void** res) {
-    (void)node; (void)service; (void)hints;
-    if (res) *res = NULL;
-    return -1;
+
+__attribute__((weak)) void freeaddrinfo(struct addrinfo* res) {
+    while (res) {
+        struct addrinfo* next = res->ai_next;
+        if (res->ai_addr) free(res->ai_addr);
+        if (res->ai_canonname) free(res->ai_canonname);
+        free(res);
+        res = next;
+    }
 }
-__attribute__((weak)) void freeaddrinfo(void* res) { (void)res; }
+
+__attribute__((weak)) char* getenv(const char* name) { (void)name; return NULL; }
+__attribute__((weak)) char* strdup(const char* s) {
+    if (!s) return NULL;
+    size_t len = strlen(s);
+    char* copy = (char*)malloc(len + 1);
+    if (copy) {
+        memcpy(copy, s, len + 1);
+    }
+    return copy;
+}
 
 __attribute__((weak)) char* secure_getenv(const char* name) { return getenv(name); }
 __attribute__((weak)) char* initstate(unsigned int seed, char* statebuf, size_t n) { (void)seed; (void)n; return statebuf; }

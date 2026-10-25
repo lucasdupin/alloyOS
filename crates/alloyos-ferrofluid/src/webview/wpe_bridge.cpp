@@ -145,6 +145,9 @@ struct BridgeInstance {
     bool hasFrame;
     bool isInputFocused;
     int scrollY;
+    bool isNavigating;
+    bool hasNavigationError;
+    char lastTitle[512];
 
     BridgeInstance(uint32_t w, uint32_t h)
         : width(w)
@@ -160,7 +163,10 @@ struct BridgeInstance {
         , hasFrame(false)
         , isInputFocused(false)
         , scrollY(0)
+        , isNavigating(false)
+        , hasNavigationError(false)
     {
+        lastTitle[0] = '\0';
         framePixels = (uint8_t*)malloc(framePixelsSize);
         if (framePixels) {
             for (size_t i = 0; i < framePixelsSize; i += 4) {
@@ -186,6 +192,53 @@ struct BridgeInstance {
 
         wpe_view_focus_in(wpeView);
         wpe_view_map(wpeView);
+
+        WKPageNavigationClientV0 navClient;
+        memset(&navClient, 0, sizeof(navClient));
+        navClient.base.version = 0;
+        navClient.base.clientInfo = this;
+        navClient.didStartProvisionalNavigation = [](WKPageRef, WKNavigationRef, WKTypeRef, const void* info) {
+            auto* self = (BridgeInstance*)info;
+            self->isNavigating = true;
+        };
+        navClient.didFinishNavigation = [](WKPageRef p, WKNavigationRef, WKTypeRef, const void* info) {
+            auto* self = (BridgeInstance*)info;
+            self->isNavigating = false;
+            WKStringRef title = WKPageCopyTitle(p);
+            if (title && !WKStringIsEmpty(title)) {
+                WKStringGetUTF8CString(title, self->lastTitle, sizeof(self->lastTitle));
+                WKRelease(title);
+            }
+        };
+        navClient.didFailProvisionalNavigation = [](WKPageRef p, WKNavigationRef, WKErrorRef, WKTypeRef, const void* info) {
+            auto* self = (BridgeInstance*)info;
+            self->isNavigating = false;
+            self->hasNavigationError = true;
+            strncpy(self->lastTitle, "Unable to connect", sizeof(self->lastTitle) - 1);
+            const char* errHtml =
+                "<!doctype html><html><head><title>Unable to connect</title>"
+                "<style>body { font-family: sans-serif; background: #101418; color: #fff; padding: 32px; }"
+                "h1 { color: #ff6b6b; }</style></head>"
+                "<body><h1>Unable to connect</h1><p>The server could not be found.</p></body></html>";
+            WKStringRef wkErr = WKStringCreateWithUTF8CString(errHtml);
+            WKPageLoadHTMLString(p, wkErr, nullptr);
+            WKRelease(wkErr);
+        };
+        navClient.didFailNavigation = [](WKPageRef p, WKNavigationRef, WKErrorRef, WKTypeRef, const void* info) {
+            auto* self = (BridgeInstance*)info;
+            self->isNavigating = false;
+            self->hasNavigationError = true;
+            strncpy(self->lastTitle, "Unable to connect", sizeof(self->lastTitle) - 1);
+            const char* errHtml =
+                "<!doctype html><html><head><title>Unable to connect</title>"
+                "<style>body { font-family: sans-serif; background: #101418; color: #fff; padding: 32px; }"
+                "h1 { color: #ff6b6b; }</style></head>"
+                "<body><h1>Unable to connect</h1><p>The network connection was lost.</p></body></html>";
+            WKStringRef wkErr = WKStringCreateWithUTF8CString(errHtml);
+            WKPageLoadHTMLString(p, wkErr, nullptr);
+            WKRelease(wkErr);
+        };
+        WKPageSetPageNavigationClient(page, &navClient.base);
 
         g_signal_connect(wpeView, "buffer-rendered", G_CALLBACK(+[](WPEView*, WPEBuffer* buffer, gpointer userData) {
             auto* self = static_cast<BridgeInstance*>(userData);
@@ -274,10 +327,17 @@ void webkit_bridge_load_url(void* handle, const char* url)
         return;
     }
 
+    inst->isNavigating = true;
+    inst->hasNavigationError = false;
+
     WKURLRef wkUrl = WKURLCreateWithUTF8CString(url);
     WKPageLoadURL(inst->page, wkUrl);
     WKRelease(wkUrl);
-    inst->pump(150);
+
+    for (int i = 0; i < 200 && inst->isNavigating; ++i) {
+        g_main_context_iteration(nullptr, FALSE);
+    }
+    inst->pump(100);
 }
 
 void webkit_bridge_load_html(void* handle, const char* html, const char* base_url)
@@ -306,6 +366,11 @@ bool webkit_bridge_get_title(void* handle, char* out_buf, size_t max_len)
     if (!title || WKStringIsEmpty(title)) {
         if (title)
             WKRelease(title);
+        if (inst->lastTitle[0] != '\0') {
+            strncpy(out_buf, inst->lastTitle, max_len - 1);
+            out_buf[max_len - 1] = '\0';
+            return true;
+        }
         char titleBuf[512] = {0};
         if (inst->evalJS("document.title", titleBuf, sizeof(titleBuf)) && titleBuf[0] != '\0') {
             const char* start = titleBuf;

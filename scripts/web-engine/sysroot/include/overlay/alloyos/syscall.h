@@ -16,6 +16,10 @@ extern "C" {
 /* Standard alloyOS SyscallNo discriminants */
 #define ALLOYOS_SYS_YIELD            24ULL
 #define ALLOYOS_SYS_GETPID           39ULL
+#define ALLOYOS_SYS_SOCKET           41ULL
+#define ALLOYOS_SYS_CONNECT          42ULL
+#define ALLOYOS_SYS_SEND             44ULL
+#define ALLOYOS_SYS_RECV             45ULL
 #define ALLOYOS_SYS_EXIT             60ULL
 #define ALLOYOS_SYS_CLOCK_GETTIME    228ULL
 #define ALLOYOS_SYS_GETRANDOM        318ULL

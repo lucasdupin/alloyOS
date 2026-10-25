@@ -38,6 +38,7 @@
 }
 
 - (void)webView:(WKWebView *)webView didFinishNavigation:(WKNavigation *)navigation {
+    (void)navigation;
     self.isNavigating = NO;
     if (webView.title.length > 0) {
         self.lastTitle = webView.title;
@@ -127,9 +128,9 @@ void webkit_bridge_load_url(void* handle, const char* url_cstr) {
         [page.webView loadFileURL:fileURL allowingReadAccessToURL:[fileURL URLByDeletingLastPathComponent]];
     }
     
-    [page drainRunLoopUntil:8.0 condition:^{ return (BOOL)(!page.isNavigating); }];
-    // Allow an additional brief pause for inline script execution and SVG layout
-    [page drainRunLoopUntil:0.25 condition:nil];
+    [page drainRunLoopUntil:10.0 condition:^{ return (BOOL)(!page.isNavigating); }];
+    // Allow an additional pause for layout, subresources, and first paint
+    [page drainRunLoopUntil:1.0 condition:nil];
 }
 
 void webkit_bridge_load_html(void* handle, const char* html_cstr, const char* base_url_cstr) {
@@ -339,6 +340,8 @@ bool webkit_bridge_render_frame(void* handle, uint8_t* out_bgra, uint32_t width,
     __block BOOL done = NO;
     __block NSImage *captured = nil;
     
+    [page drainRunLoopUntil:0.5 condition:nil];
+
     WKSnapshotConfiguration *snapConfig = [[WKSnapshotConfiguration alloc] init];
     snapConfig.rect = NSMakeRect(0, 0, width, height);
     snapConfig.snapshotWidth = @(width);

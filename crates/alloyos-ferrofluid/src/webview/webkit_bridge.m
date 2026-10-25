@@ -337,47 +337,63 @@ bool webkit_bridge_render_frame(void* handle, uint8_t* out_bgra, uint32_t width,
     if (!handle || !out_bgra || width == 0 || height == 0) return false;
     AlloyWebKitPage *page = (__bridge AlloyWebKitPage*)handle;
     
-    __block BOOL done = NO;
-    __block NSImage *captured = nil;
-    
+    if (page.webView.isLoading || page.isNavigating) {
+        [page drainRunLoopUntil:6.0 condition:^{ return (BOOL)(!page.webView.isLoading && !page.isNavigating); }];
+    }
     [page drainRunLoopUntil:0.5 condition:nil];
 
-    WKSnapshotConfiguration *snapConfig = [[WKSnapshotConfiguration alloc] init];
-    snapConfig.rect = NSMakeRect(0, 0, width, height);
-    snapConfig.snapshotWidth = @(width);
-    
-    [page.webView takeSnapshotWithConfiguration:snapConfig completionHandler:^(NSImage * _Nullable snapshot, NSError * _Nullable error) {
-        (void)error;
-        captured = snapshot;
-        done = YES;
-    }];
-    
-    [page drainRunLoopUntil:4.0 condition:^{ return done; }];
-    
-    if (!captured) {
-        return false;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        __block BOOL done = NO;
+        __block NSImage *captured = nil;
+        
+        WKSnapshotConfiguration *snapConfig = [[WKSnapshotConfiguration alloc] init];
+        snapConfig.rect = NSMakeRect(0, 0, width, height);
+        snapConfig.snapshotWidth = @(width);
+        
+        [page.webView takeSnapshotWithConfiguration:snapConfig completionHandler:^(NSImage * _Nullable snapshot, NSError * _Nullable error) {
+            (void)error;
+            captured = snapshot;
+            done = YES;
+        }];
+        
+        [page drainRunLoopUntil:4.0 condition:^{ return done; }];
+        
+        if (captured) {
+            CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+            CGContextRef ctx = CGBitmapContextCreate(
+                out_bgra,
+                width,
+                height,
+                8,
+                width * 4,
+                colorSpace,
+                kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little
+            );
+            CGColorSpaceRelease(colorSpace);
+            
+            if (ctx) {
+                CGImageRef cgImage = [captured CGImageForProposedRect:NULL context:nil hints:nil];
+                if (cgImage) {
+                    CGContextDrawImage(ctx, CGRectMake(0, 0, width, height), cgImage);
+                }
+                CGContextRelease(ctx);
+                
+                bool hasContent = false;
+                for (size_t i = 0; i < (size_t)width * height * 4; i += 4) {
+                    uint8_t b = out_bgra[i];
+                    uint8_t g = out_bgra[i+1];
+                    uint8_t r = out_bgra[i+2];
+                    if (!((r == 16 && g == 20 && b == 24) || (r == 255 && g == 255 && b == 255))) {
+                        hasContent = true;
+                        break;
+                    }
+                }
+                if (hasContent || attempt == 2) {
+                    return true;
+                }
+            }
+        }
+        [page drainRunLoopUntil:1.0 condition:nil];
     }
-    
-    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-    CGContextRef ctx = CGBitmapContextCreate(
-        out_bgra,
-        width,
-        height,
-        8,
-        width * 4,
-        colorSpace,
-        kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little
-    );
-    CGColorSpaceRelease(colorSpace);
-    
-    if (!ctx) {
-        return false;
-    }
-    
-    CGImageRef cgImage = [captured CGImageForProposedRect:NULL context:nil hints:nil];
-    if (cgImage) {
-        CGContextDrawImage(ctx, CGRectMake(0, 0, width, height), cgImage);
-    }
-    CGContextRelease(ctx);
-    return true;
+    return false;
 }

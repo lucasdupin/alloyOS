@@ -53,6 +53,12 @@ int* __errno(void);
 #define ENOTSUP      95
 #define EOPNOTSUPP   ENOTSUP
 #define ETIMEDOUT    110
+#ifndef EBADMSG
+#define EBADMSG      77
+#endif
+#ifndef EAFNOSUPPORT
+#define EAFNOSUPPORT 106
+#endif
 
 #ifdef __cplusplus
 }

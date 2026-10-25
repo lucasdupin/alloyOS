@@ -15,10 +15,7 @@ extern "C" {
 #define CLOCK_MONOTONIC_RAW      4
 #define CLOCK_MONOTONIC_COARSE   6
 
-struct timespec {
-    time_t tv_sec;
-    long tv_nsec;
-};
+#include <sys/_timespec.h>
 
 int clock_gettime(clockid_t clock_id, struct timespec* tp);
 int clock_getres(clockid_t clock_id, struct timespec* res);

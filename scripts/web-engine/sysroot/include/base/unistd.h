@@ -13,6 +13,16 @@ extern "C" {
 #define _SC_NPROCESSORS_CONF  83
 #define _SC_NPROCESSORS_ONLN  84
 
+#ifndef SEEK_SET
+#define SEEK_SET 0
+#endif
+#ifndef SEEK_CUR
+#define SEEK_CUR 1
+#endif
+#ifndef SEEK_END
+#define SEEK_END 2
+#endif
+
 __attribute__((noreturn)) void _exit(int status);
 pid_t getpid(void);
 int close(int fd);

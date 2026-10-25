@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 200809L
+#define _GNU_SOURCE 1
 #include <cxxabi.h>
 #include <new>
 #include <stddef.h>
@@ -230,7 +232,7 @@ static void atexit_lock_release(void)
     __atomic_store_n(&g_atexit_lock, 0U, __ATOMIC_RELEASE);
 }
 
-int __cxa_atexit(void (*destructor)(void*), void* arg, void* dso_handle)
+__attribute__((weak)) int __cxa_atexit(void (*destructor)(void*), void* arg, void* dso_handle)
 {
     if (!destructor) {
         return -1;

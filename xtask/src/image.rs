@@ -186,7 +186,7 @@ mod tests {
             .expect("previous backup is retained");
         assert_eq!(fs::read(archived).unwrap(), b"older retained backup");
         assert_eq!(fs::read(image.with_extension("pre-process-backup.img")).unwrap(), original);
-        assert_eq!(fs::metadata(&image).unwrap().len(), 128 * 1024 * 1024);
+        assert_eq!(fs::metadata(&image).unwrap().len(), 512 * 1024 * 1024);
         let export = root.join("export");
         export_tree(&image, &export).unwrap();
         assert!(export.join("var/empty").is_dir());
@@ -201,7 +201,7 @@ mod tests {
         assert!(!image.with_extension("migration-pending").exists());
         // Retry does not collide with stale staging data.
         crate::ensure_cobaltfs_image(&image).unwrap();
-        assert_eq!(fs::metadata(&image).unwrap().len(), 128 * 1024 * 1024);
+        assert_eq!(fs::metadata(&image).unwrap().len(), 512 * 1024 * 1024);
         fs::remove_dir_all(root).unwrap();
     }
 

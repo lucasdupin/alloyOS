@@ -21,6 +21,15 @@ __attribute__((noreturn)) void abort(void);
 __attribute__((noreturn)) void exit(int status);
 __attribute__((noreturn)) void _Exit(int status);
 int atexit(void (*func)(void));
+char* getenv(const char* name);
+void* bsearch(const void* key, const void* base, size_t nmemb, size_t size, int (*compar)(const void*, const void*));
+void qsort(void* base, size_t nmemb, size_t size, int (*compar)(const void*, const void*));
+
+typedef struct { long quot; long rem; } ldiv_t;
+typedef struct { long long quot; long long rem; } lldiv_t;
+
+ldiv_t ldiv(long numer, long denom);
+lldiv_t lldiv(long long numer, long long denom);
 
 double strtod(const char* nptr, char** endptr);
 long strtol(const char* nptr, char** endptr, int base);

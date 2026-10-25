@@ -1,4 +1,7 @@
 #include <errno.h>
+#ifndef EAFNOSUPPORT
+#define EAFNOSUPPORT 106
+#endif
 #include <pthread.h>
 #include <signal.h>
 #include <stddef.h>
@@ -1001,6 +1004,107 @@ __attribute__((weak)) int chmod(const char* pathname, mode_t mode) { return _chm
 
 __attribute__((weak)) int _chown(const char* pathname, uid_t owner, gid_t group) { (void)pathname; (void)owner; (void)group; errno = ENOSYS; return -1; }
 __attribute__((weak)) int chown(const char* pathname, uid_t owner, gid_t group) { return _chown(pathname, owner, group); }
+
+struct statvfs;
+struct passwd;
+struct rusage;
+
+__attribute__((weak)) int _execve(const char* p, char* const a[], char* const e[]) { (void)p; (void)a; (void)e; errno = ENOSYS; return -1; }
+__attribute__((weak)) int execv(const char* p, char* const a[]) { (void)p; (void)a; errno = ENOSYS; return -1; }
+__attribute__((weak)) pid_t _fork(void) { errno = ENOSYS; return -1; }
+__attribute__((weak)) pid_t _wait(int* status) { (void)status; errno = ENOSYS; return -1; }
+__attribute__((weak)) pid_t waitpid(pid_t pid, int* status, int options) { (void)pid; (void)status; (void)options; errno = ENOSYS; return -1; }
+
+__attribute__((weak)) int access(const char* path, int mode) { (void)path; (void)mode; return 0; }
+__attribute__((weak)) int eaccess(const char* path, int mode) { (void)path; (void)mode; return 0; }
+__attribute__((weak)) int chdir(const char* path) { (void)path; return 0; }
+__attribute__((weak)) int creat(const char* path, mode_t mode) { (void)path; (void)mode; errno = ENOSYS; return -1; }
+__attribute__((weak)) int dup(int oldfd) { (void)oldfd; errno = ENOSYS; return -1; }
+__attribute__((weak)) int dup2(int oldfd, int newfd) { (void)oldfd; (void)newfd; errno = ENOSYS; return -1; }
+__attribute__((weak)) int fchmod(int fd, mode_t mode) { (void)fd; (void)mode; return 0; }
+__attribute__((weak)) int fchown(int fd, uid_t owner, gid_t group) { (void)fd; (void)owner; (void)group; return 0; }
+__attribute__((weak)) int flock(int fd, int operation) { (void)fd; (void)operation; return 0; }
+__attribute__((weak)) int fnmatch(const char* pattern, const char* string, int flags) { (void)pattern; (void)string; (void)flags; return 1; }
+__attribute__((weak)) int fstatat(int dirfd, const char* pathname, struct stat* statbuf, int flags) { (void)dirfd; (void)pathname; (void)statbuf; (void)flags; errno = ENOENT; return -1; }
+__attribute__((weak)) int openat(int dirfd, const char* pathname, int flags, ...) { (void)dirfd; (void)pathname; (void)flags; errno = ENOENT; return -1; }
+__attribute__((weak)) int pipe(int pipefd[2]) { (void)pipefd; errno = ENOSYS; return -1; }
+__attribute__((weak)) ssize_t pread(int fd, void* buf, size_t count, off_t offset) { (void)fd; (void)buf; (void)count; (void)offset; errno = ENOSYS; return -1; }
+__attribute__((weak)) ssize_t pwrite(int fd, const void* buf, size_t count, off_t offset) { (void)fd; (void)buf; (void)count; (void)offset; errno = ENOSYS; return -1; }
+__attribute__((weak)) ssize_t readlink(const char* pathname, char* buf, size_t bufsiz) { (void)pathname; (void)buf; (void)bufsiz; errno = ENOENT; return -1; }
+__attribute__((weak)) char* realpath(const char* path, char* resolved_path) {
+    if (!path) { errno = EINVAL; return NULL; }
+    if (resolved_path) {
+        strncpy(resolved_path, path, 1024);
+        return resolved_path;
+    }
+    return strdup(path);
+}
+__attribute__((weak)) int rmdir(const char* pathname) { (void)pathname; errno = ENOSYS; return -1; }
+__attribute__((weak)) int statvfs(const char* path, struct statvfs* buf) { (void)path; (void)buf; errno = ENOSYS; return -1; }
+__attribute__((weak)) int symlink(const char* target, const char* linkpath) { (void)target; (void)linkpath; errno = ENOSYS; return -1; }
+__attribute__((weak)) int utimes(const char* filename, const void* times) { (void)filename; (void)times; return 0; }
+
+__attribute__((weak)) void* opendir(const char* name) { (void)name; errno = ENOENT; return NULL; }
+__attribute__((weak)) void* fdopendir(int fd) { (void)fd; errno = EBADF; return NULL; }
+__attribute__((weak)) void* readdir(void* dirp) { (void)dirp; return NULL; }
+__attribute__((weak)) void rewinddir(void* dirp) { (void)dirp; }
+__attribute__((weak)) int closedir(void* dirp) { (void)dirp; return 0; }
+
+__attribute__((weak)) uid_t getuid(void) { return 0; }
+__attribute__((weak)) uid_t geteuid(void) { return 0; }
+__attribute__((weak)) gid_t getgid(void) { return 0; }
+__attribute__((weak)) gid_t getegid(void) { return 0; }
+__attribute__((weak)) pid_t getppid(void) { return 1; }
+__attribute__((weak)) int setuid(uid_t uid) { (void)uid; return 0; }
+__attribute__((weak)) pid_t setsid(void) { return 1; }
+__attribute__((weak)) int getpwnam_r(const char* name, struct passwd* pwd, char* buf, size_t buflen, struct passwd** result) {
+    (void)name; (void)pwd; (void)buf; (void)buflen;
+    if (result) *result = NULL;
+    return ENOENT;
+}
+__attribute__((weak)) int getrusage(int who, struct rusage* usage) {
+    (void)who;
+    if (usage) memset(usage, 0, 128);
+    return 0;
+}
+__attribute__((weak)) int gethostname(char* name, size_t len) {
+    if (name && len > 0) {
+        strncpy(name, "alloyos", len - 1);
+        name[len - 1] = '\0';
+        return 0;
+    }
+    return -1;
+}
+
+__attribute__((weak)) in_addr_t inet_addr(const char* cp) {
+    struct in_addr addr;
+    if (inet_aton(cp, &addr)) return addr.s_addr;
+    return (in_addr_t)(-1);
+}
+__attribute__((weak)) const char* inet_ntop(int af, const void* src, char* dst, socklen_t size) {
+    if (af == AF_INET) {
+        const unsigned char* b = (const unsigned char*)src;
+        snprintf(dst, size, "%u.%u.%u.%u", b[0], b[1], b[2], b[3]);
+        return dst;
+    }
+    errno = EAFNOSUPPORT;
+    return NULL;
+}
+__attribute__((weak)) int select(int nfds, void* readfds, void* writefds, void* exceptfds, struct timeval* timeout) {
+    (void)nfds; (void)readfds; (void)writefds; (void)exceptfds; (void)timeout;
+    return 0;
+}
+__attribute__((weak)) int getaddrinfo(const char* node, const char* service, const void* hints, void** res) {
+    (void)node; (void)service; (void)hints;
+    if (res) *res = NULL;
+    return -1;
+}
+__attribute__((weak)) void freeaddrinfo(void* res) { (void)res; }
+
+__attribute__((weak)) char* secure_getenv(const char* name) { return getenv(name); }
+__attribute__((weak)) char* initstate(unsigned int seed, char* statebuf, size_t n) { (void)seed; (void)n; return statebuf; }
+__attribute__((weak)) char* setstate(char* statebuf) { return statebuf; }
+
 
 
 

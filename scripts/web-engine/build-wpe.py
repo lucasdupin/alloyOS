@@ -138,6 +138,9 @@ def configure_wpe(force=False):
 def build_wpe():
     targets = [
         "WebCore",
+        "WebCoreDOMAndRendering",
+        "WebCoreStyle",
+        "WebCoreInspector",
         "PAL",
         "Skia",
         "lib/libSysProfCapture.a",
@@ -156,10 +159,21 @@ def bundle_and_install():
     print("[wpe-build] Bundling complete libWebCore.a and libWPEWebKit-2.0.a archives...")
     ar = find_llvm_ar()
 
-    # Bundle WebCore
-    webcore_objs = glob.glob(str(WPE_BUILD / "Source/WebCore/CMakeFiles/WebCore.dir/**/*.obj"), recursive=True)
+    # Bundle WebCore (including DOM/Rendering, Style, Inspector, and JSBindings)
+    webcore_patterns = [
+        "Source/WebCore/CMakeFiles/WebCore.dir/**/*.obj",
+        "Source/WebCore/CMakeFiles/WebCoreDOMAndRendering.dir/**/*.obj",
+        "Source/WebCore/CMakeFiles/WebCoreStyle.dir/**/*.obj",
+        "Source/WebCore/CMakeFiles/WebCoreInspector.dir/**/*.obj",
+        "Source/WebCore/CMakeFiles/WebCoreJSBindings.dir/**/*.obj",
+    ]
+    webcore_objs = []
+    for pattern in webcore_patterns:
+        webcore_objs.extend(glob.glob(str(WPE_BUILD / pattern), recursive=True))
+
     print(f"[wpe-build] Aggregating {len(webcore_objs)} compiled WebCore object files...")
     target_webcore = SYSROOT / "lib/libWebCore.a"
+    target_webcore.unlink(missing_ok=True)
     run([str(ar), "rcs", str(target_webcore)] + webcore_objs)
     print(f"[wpe-build] Installed {target_webcore.name} ({target_webcore.stat().st_size:,} bytes)")
     
@@ -184,19 +198,21 @@ def bundle_and_install():
     run([str(ar), "rcs", str(target_archive)] + objs)
     print(f"[wpe-build] Installed {target_archive.name} ({target_archive.stat().st_size:,} bytes)")
     
-    # Also install other libraries
-    libs_to_copy = [
-        ("lib/libSkia.a", "lib/libSkia.a"),
-        ("lib/libPAL.a", "lib/libPAL.a"),
-        ("lib/libSysProfCapture.a", "lib/libSysProfCapture.a"),
-        ("lib/libxdgmime.a", "lib/libxdgmime.a"),
+    # Also bundle Skia, PAL, SysProfCapture, JavaScriptCore, and bmalloc as fat archives
+    fat_targets = [
+        ("libPAL.a", "Source/WebCore/PAL/pal/CMakeFiles/PAL.dir/**/*.obj"),
+        ("libSkia.a", "Source/ThirdParty/skia/CMakeFiles/Skia.dir/**/*.obj"),
+        ("libSysProfCapture.a", "Source/ThirdParty/libsysprof-capture/CMakeFiles/SysProfCapture.dir/**/*.obj"),
+        ("libJavaScriptCore.a", "Source/JavaScriptCore/CMakeFiles/JavaScriptCore.dir/**/*.obj"),
+        ("libbmalloc.a", "Source/bmalloc/CMakeFiles/bmalloc.dir/**/*.obj"),
     ]
-    for src_rel, dst_rel in libs_to_copy:
-        src = WPE_BUILD / src_rel
-        dst = SYSROOT / dst_rel
-        if src.is_file():
-            shutil.copy2(src, dst)
-            print(f"[wpe-build] Installed {dst_rel} ({dst.stat().st_size:,} bytes)")
+    for lib_name, pat in fat_targets:
+        sub_objs = glob.glob(str(WPE_BUILD / pat), recursive=True)
+        out_a = SYSROOT / "lib" / lib_name
+        out_a.unlink(missing_ok=True)
+        if sub_objs:
+            run([str(ar), "rcs", str(out_a)] + sub_objs)
+            print(f"[wpe-build] Bundled fat archive {lib_name} ({len(sub_objs)} objects, {out_a.stat().st_size:,} bytes)")
 
     # Install WebKit C API headers
     wk_inc = SYSROOT / "include/WebKit"
@@ -208,6 +224,10 @@ def bundle_and_install():
     for h in glob.glob(str(WPE_SRC / "Source/WebKit/UIProcess/API/C/wpe/*.h")):
         shutil.copy2(h, wk_inc)
     for h in glob.glob(str(WPE_SRC / "Source/WebKit/Shared/API/c/*.h")):
+        shutil.copy2(h, wk_inc)
+    for h in glob.glob(str(WPE_SRC / "Source/WebKit/Shared/API/c/wpe/*.h")):
+        shutil.copy2(h, wk_inc)
+    for h in glob.glob(str(WPE_SRC / "Source/WebKit/WebProcess/InjectedBundle/API/c/*.h")):
         shutil.copy2(h, wk_inc)
 
     # Install WPEPlatform headers
@@ -242,6 +262,7 @@ def main():
     parser = argparse.ArgumentParser(description="Build WPE WebKit for alloyOS")
     parser.add_argument("--force", action="store_true", help="Force re-configuration and re-build")
     parser.add_argument("--check-only", action="store_true", help="Verify prerequisites and build status without compiling")
+    parser.add_argument("--bundle-only", action="store_true", help="Only run bundling and installation into sysroot")
     args = parser.parse_args()
 
     check_prerequisites()
@@ -253,6 +274,10 @@ def main():
         else:
             print("[wpe-build] WPE WebKit library is NOT installed.")
             sys.exit(1)
+
+    if args.bundle_only:
+        bundle_and_install()
+        return
 
     configure_wpe(force=args.force)
     build_wpe()

@@ -299,7 +299,7 @@ fn ensure_cobaltfs_image(path: &Path) -> Result<()> {
         std::fs::remove_file(&pending)?;
     }
     if path.exists() {
-        if std::fs::metadata(path)?.len() >= 128*1024*1024 {
+        if std::fs::metadata(path)?.len() >= 512*1024*1024 {
             return image::copy_tree(path, &get_workspace_root()?.join("apps"), "/apps");
         }
         let nonce=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
@@ -335,7 +335,7 @@ fn ensure_cobaltfs_image(path: &Path) -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     println!(
-        "[xtask] Formatting new 128 MiB CobaltFS volume at {}...",
+        "[xtask] Formatting new 512 MiB CobaltFS volume at {}...",
         path.display()
     );
 
@@ -410,7 +410,7 @@ fn build_processes(root: &Path, _release: bool) -> Result<()> {
     for (package, binary, features) in [("alloyos-ferrofluid", "ferrofluid", "executable"), ("alloyos-welder", "welder", "executable"), ("alloyos-user", "app-runner", "")] {
         let mut cmd=Command::new("cargo");cmd.current_dir(root).args(["rustc", "-p",package,"--bin",binary,"--target","aarch64-unknown-none"]);
         if !features.is_empty(){cmd.args(["--features",features]);} cmd.arg("--release");
-        if binary=="app-runner" {cmd.args(["--", "-C", "strip=debuginfo", "-C", "link-arg=-Tcrates/alloyos-ferrofluid/process.ld"]);} else {cmd.args(["--", "-C", "strip=debuginfo"]);}
+        if binary=="app-runner" {cmd.args(["--", "-C", "strip=symbols", "-C", "link-arg=-Tcrates/alloyos-ferrofluid/process.ld"]);} else {cmd.args(["--", "-C", "strip=symbols"]);}
         if !cmd.status()?.success(){return Err(anyhow!("{binary} executable build failed"))}
     } Ok(())
 }

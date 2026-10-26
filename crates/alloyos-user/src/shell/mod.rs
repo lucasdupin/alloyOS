@@ -445,6 +445,23 @@ fn parse_http_url(url: &str) -> Option<(&str, u16, &str)> {
     Some((host, port, path))
 }
 
+/// Parse a simple `https://<host>[:port]<path>` URL.
+fn parse_https_url(url: &str) -> Option<(&str, u16, &str)> {
+    let rest = url.strip_prefix("https://")?;
+    let (host_port, path) = match rest.find('/') {
+        Some(idx) => (&rest[..idx], &rest[idx..]),
+        None => (rest, "/"),
+    };
+    let (host, port) = match host_port.split_once(':') {
+        Some((h, p)) => (h, p.parse::<u16>().ok()?),
+        None => (host_port, 443),
+    };
+    if host.is_empty() {
+        return None;
+    }
+    Some((host, port, path))
+}
+
 /// Builtin `net` command: probes the real guest network stack.
 ///
 /// - `net resolve <host>` performs a DNS lookup through the kernel resolver.
@@ -560,7 +577,116 @@ pub fn builtin_net(args: &[&str]) {
             }
             crate::net::tcp_close(fd);
         }
-        _ => crate::io::println("usage: net resolve <host> | net tcp <ipv4> <port> <text> | net http <url>"),
+        ["https", url] => {
+            let (host, port, path) = match parse_https_url(url) {
+                Some(res) => res,
+                None => {
+                    crate::io::println("net: usage: net https https://<host>[:port]<path>");
+                    return;
+                }
+            };
+            let ip = match crate::net::resolve_host(host) {
+                Ok(ip) => ip,
+                Err(err) => {
+                    let _ = writeln!(out, "net: resolve {} failed ({})", host, err);
+                    return;
+                }
+            };
+            let fd = match crate::net::tcp_socket() {
+                Ok(fd) => fd,
+                Err(err) => {
+                    let _ = writeln!(out, "net: socket failed ({})", err);
+                    return;
+                }
+            };
+            let addr = alloyos_proto::SocketAddrV4 { ip, port };
+            if let Err(err) = crate::net::tcp_connect(fd, &addr) {
+                let _ = writeln!(out, "net: connect failed ({})", err);
+                crate::net::tcp_close(fd);
+                return;
+            }
+            let _ = writeln!(out, "net: connected");
+            let mut session = crate::net::Tls13Session::new(host);
+            let ch_rec = session.build_client_hello_record();
+            if let Err(err) = crate::net::tcp_send(fd, &ch_rec) {
+                let _ = writeln!(out, "net: send failed ({})", err);
+                crate::net::tcp_close(fd);
+                return;
+            }
+            let start = crate::net::monotonic_ns();
+            let mut buf = [0u8; 2048];
+            let mut handshake_done = false;
+            while crate::net::monotonic_ns().saturating_sub(start) < 5_000_000_000 {
+                match crate::net::tcp_recv(fd, &mut buf) {
+                    Ok(n) if n > 0 => {
+                        match session.consume_server_handshake_bytes(&buf[..n]) {
+                            Ok(Some(client_fin)) => {
+                                if let Err(err) = crate::net::tcp_send(fd, &client_fin) {
+                                    let _ = writeln!(out, "net: fin send failed ({})", err);
+                                    crate::net::tcp_close(fd);
+                                    return;
+                                }
+                                handshake_done = true;
+                                break;
+                            }
+                            Ok(None) => {}
+                            Err(e) => {
+                                let _ = writeln!(out, "net: tls handshake failed ({})", e.as_str());
+                                crate::net::tcp_close(fd);
+                                return;
+                            }
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+                crate::process::yield_now();
+            }
+            if !handshake_done {
+                crate::io::println("net: tls handshake timeout");
+                crate::net::tcp_close(fd);
+                return;
+            }
+            let _ = writeln!(out, "net: tls handshake complete");
+            let req = alloc::format!("GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: alloyOS/0.1\r\nConnection: close\r\n\r\n", path, host);
+            let sealed = session.seal_application_data(req.as_bytes());
+            if let Err(err) = crate::net::tcp_send(fd, &sealed) {
+                let _ = writeln!(out, "net: send failed ({})", err);
+                crate::net::tcp_close(fd);
+                return;
+            }
+            let start_rx = crate::net::monotonic_ns();
+            let mut total_plain = alloc::vec::Vec::new();
+            while crate::net::monotonic_ns().saturating_sub(start_rx) < 5_000_000_000 {
+                match crate::net::tcp_recv(fd, &mut buf) {
+                    Ok(n) if n > 0 => {
+                        match session.consume_server_records(&buf[..n]) {
+                            Ok(chunks) => {
+                                for c in chunks {
+                                    total_plain.extend_from_slice(&c);
+                                }
+                                if !total_plain.is_empty() { break; }
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    Ok(_) => {
+                        if !total_plain.is_empty() { break; }
+                    }
+                    Err(_) => break,
+                }
+                crate::process::yield_now();
+            }
+            if total_plain.is_empty() {
+                crate::io::println("net: recv timeout");
+            } else {
+                let s = alloc::string::String::from_utf8_lossy(&total_plain);
+                let first_line = s.lines().next().unwrap_or("");
+                let _ = writeln!(out, "net: https response ({} bytes): {}", total_plain.len(), first_line);
+            }
+            crate::net::tcp_close(fd);
+        }
+        _ => crate::io::println("usage: net resolve <host> | net tcp <ipv4> <port> <text> | net http <url> | net https <url>"),
     }
 }
 

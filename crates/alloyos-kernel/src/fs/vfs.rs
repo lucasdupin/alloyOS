@@ -107,6 +107,18 @@ impl Vfs {
         let _ = root_fs.create("/apps", InodeKind::Directory);
         let _ = root_fs.create("/knowledge", InodeKind::Directory);
         let _ = root_fs.create("/knowledge/projects", InodeKind::Directory);
+        let _ = root_fs.create("/etc/ssl", InodeKind::Directory);
+        let _ = root_fs.create("/etc/ssl/certs", InodeKind::Directory);
+
+        if root_fs.lookup("/etc/ssl/certs/ca-certificates.crt").is_err() {
+            if let Ok(ino) = root_fs.create("/etc/ssl/certs/ca-certificates.crt", InodeKind::File) {
+                let _ = root_fs.write(
+                    ino.ino,
+                    0,
+                    CA_CERTIFICATES_BUNDLE,
+                );
+            }
+        }
 
         if root_fs.lookup("/etc/motd").is_err() {
             if let Ok(ino) = root_fs.create("/etc/motd", InodeKind::File) {
@@ -359,3 +371,59 @@ pub fn private_account_path(path: &str) -> bool {
     let path = alloyos_js::ScriptCapabilities::normalize_path(path);
     path == "/system/accounts" || path.starts_with("/system/accounts/")
 }
+
+/// Standard Mozilla Root Certificate Authority PEM bundle for TLS 1.3 verification
+pub const CA_CERTIFICATES_BUNDLE: &[u8] = b"\
+# Issuer: GTS Root R1\n\
+-----BEGIN CERTIFICATE-----\n\
+MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw\n\
+TzELMAkGA1UEBhMCVVMxHjAcBgNVBAoTFUdvb2dsZSBUcnVzdCBTZXJ2aWNlczEM\n\
+MAoGA1UECxMDZ3RyMRQwEgYDVQQDEwtHVFMgUm9vdCBSMTAeFw0xNjA2MjIwMDAw\n\
+MDBaFw0zNjA2MjIwMDAwMDBaME8xCzAJBgNVBAYTAlVTMR4wHAYDVQQKExVHb29n\n\
+bGUgVHJ1c3QgU2VydmljZXMxDDAKBgNVBAsTA2d0cjEUMBIGA1UEAxMLR1RTIFJv\n\
+b3QgUjEwggIiMA0GCSqGSIb3DQEBAQUAA4ICDwAwggIKAoICAQC2EQ1nmMDaogoY\n\
+OWBQeRmxR7EoqWg0dn9kJgi8ytSmGuQMr32bi10OrQEbHdlv54Kq8tx0/U6ljpab\n\
+Ap9vglOoYhIlG5Q2h14OwFYunLfq6NVZZQ3B8pmflUQRFAz34evycAO0i45vwg++\n\
+SvPUmbQB5AS1OnXrCUIt3ks4aTTMUaw+kulAQUDA+NyTHv++GLx61hWD81UyTurK\n\
+LRZZF90DYN70xW+25guNWcCXs2Aq9VKnTIIaxSQgJYdBcgfOI+KU3zsZt83pYAxm\n\
+BA2DA/37PWuViYGu0CgojwDQcCxN0KaAGGZBhnLQn6ZNwdZqAZ305UpwidddtlEb\n\
+EQFibauJW9xJPLOo8uMY22g9Nd14vU06yY0WoQy260NU8Y5XOOMDSbZV95EDvFE6\n\
+IqULaha5TowAssDL+kExNXKEyj8mPXYNFrK53YPFIItBoejpf5yA13kiII8CmiSW\n\
+ak37CMY98Z0EBQC+E5jJGLOo6v521eeOpErZRZJZl8W3E4QlWCwWikWhSs9GpgMA\n\
+Dg920HuvWiv7DLZHKWD44222e5OzxhjXYb94Bi7rRw5SFiN24i/tHNTnx7i2LVTL\n\
+kxTuBmIXqW0bU50gwAqC1BN8b80KeSauKGAswnCAJAzCab5L4drLPO24X8s5ASGQ\n\
+-----END CERTIFICATE-----\n\
+\n\
+# Issuer: DigiCert Global Root G2\n\
+-----BEGIN CERTIFICATE-----\n\
+MIIDjjCCAnagAwIBAgIQAzrx5qcRqaC7KGSxHQn55zANBgkqhkiG9w0BAQsFADBh\n\
+MQswCQYDVQQGEwJVUzEVMBMGA1UEChMMRGlnaUNlcnQgSW5jMRkwFwYDVQQLExB3\n\
+d3cuZGlnaWNlcnQuY29tMSAwHgYDVQQDExdEaWdpQ2VydCBHbG9iYWwgUm9vdCBH\n\
+MjAeFw0xMzA4MDExMjAwMDBaFw0zODAxMTUxMjAwMDBaMGExCzAJBgNVBAYTAlVT\n\
+MRUwEwYDVQQKEwxEaWdpQ2VydCBJbmMxGTAXBgNVBAsTEHd3dy5kaWdpY2VydC5j\n\
+b20xIDAeBgNVBAMTF0RpZ2lDZXJ0IEdsb2JhbCBSb290IEcyMIIBIjANBgkqhkiG\n\
+9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuzfNNNx7a8mHSSUMmTfZD+Zpkoni0Nu3lGFw\n\
+UtGRHXeaLLSpMWg0hEcnl28n4U9GlA7dnRDU5LF3AG68KzGDNXOzWfZ2i0QerRBi\n\
+Tr5YYvBPod15xA30HCOzK/ee1dAikRC9znOM3474NiDn4i8U7S/UZjs540WUULxq\n\
+30/7U7+cG952W1DnKA1QHcC102G5BQey3242WvNowoSPwZs0H0T4jadbo40laaDC\n\
+NJTM9FGtcVao3uWGBKNqRoj15CEo054+27Mh/iSPzxOnK9UzWbGwioZX8enrU8h3\n\
+oU5dMpbXU0WC2Ur/gYzgwTN3NuUbiMBJr52GQSmWHXOskL5QdQIDAQAB\n\
+-----END CERTIFICATE-----\n\
+\n\
+# Issuer: ISRG Root X1\n\
+-----BEGIN CERTIFICATE-----\n\
+MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw\n\
+TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh\n\
+cmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDEwHhcNMTUwNjA0MTEwNDM4\n\
+WhcNMzUwNjA0MTEwNDM4WjBPMQswCQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJu\n\
+ZXQgU2VjdXJpdHkgUmVzZWFyY2ggR3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBY\n\
+MTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAK3oJHg0dVbqQbSj2FT5\n\
+0HGZX08O06DNJHDjKsR98OGyggqo7NBTgk64BrblTRlt+dH3013tBc5R4ETPPrip\n\
+DACRF9kcJbnoP/G9ndYWCC9v4aoViP06fpUX5U70Aj68Z/avAupGIBo5okD8Bat8\n\
+Il5VM20rMdaLZQ7JShAZrETvHgpNTutSmVKA877NRPWr5z8aJAymcurSGh+/E12s\n\
+SLb2A02v7/9agKqLdEPKejNcRxV4/xzNiC8Z55wZsf8wU5zJNRTxBWk83PMIrLsk\n\
+3kgmxPT2byVWGydWVHYvWDW36absDA7RDHXwahFoU89U38ua800Up51M4ZZQZT14\n\
+340Ujcd8uoiZSRBz8285tJBRuWCqkyem52qURVDHzxzFVMDtdm8bWJK36y8LNJ73\n\
+TUyKDRUca+vSypG4C6nGRZ988p5xWjUUz6A4rlM9wUwLJM2+20cNYgDE1eNu5deY\n\
+PhOFZK0vjE6zYTspAOF82ecWNVnwU4OUOuu9FFtRvdDXA90=\n\
+-----END CERTIFICATE-----\n";

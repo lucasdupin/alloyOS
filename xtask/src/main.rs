@@ -89,6 +89,8 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
+    /// Internal TLS 1.3 test relay for guestfwd E2E network tests
+    TlsRelay,
 }
 
 /// Harness for controlling and testing a headless QEMU virtual machine (`qemu-system-aarch64`).
@@ -103,8 +105,8 @@ pub struct QemuHarness {
 impl QemuHarness {
     /// Spawns a `qemu-system-aarch64` instance on `-M virt` with stdio connected to PL011 UART0.
     pub fn new(kernel_image: &Path, cobalt_image: &Path) -> Result<Self> {
-        let mut child = Command::new("qemu-system-aarch64")
-            .arg("-M")
+        let mut cmd = Command::new("qemu-system-aarch64");
+        cmd.arg("-M")
             .arg("virt")
             .arg("-accel")
             .arg("hvf")
@@ -125,9 +127,22 @@ impl QemuHarness {
             .arg("virtio-keyboard-device")
         .arg("-device").arg("virtio-rng-device")
             .arg("-device")
-            .arg("virtio-tablet-device")
+            .arg("virtio-tablet-device");
+
+        let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("cargo"));
+        let tls_cmd = if current_exe.file_name().and_then(|s| s.to_str()) == Some("xtask") {
+            format!("{} tls-relay", current_exe.display())
+        } else {
+            "cargo xtask tls-relay".to_string()
+        };
+        let netdev_arg = format!(
+            "user,id=net0,guestfwd=tcp:10.0.2.100:7-cmd:cat,guestfwd=tcp:10.0.2.100:443-cmd:{}",
+            tls_cmd
+        );
+
+        let mut child = cmd
             .arg("-netdev")
-            .arg("user,id=net0,guestfwd=tcp:10.0.2.100:7-cmd:cat")
+            .arg(&netdev_arg)
             .arg("-device")
             .arg("virtio-net-device,netdev=net0")
             .args(
@@ -536,9 +551,20 @@ fn run_qemu(release: bool, debug_shell: bool, model_image: Option<PathBuf>, memo
         .arg("virtio-keyboard-device")
         .arg("-device").arg("virtio-rng-device")
         .arg("-device")
-        .arg("virtio-tablet-device")
-        .arg("-netdev")
-        .arg("user,id=net0")
+        .arg("virtio-tablet-device");
+
+    let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("cargo"));
+    let tls_cmd = if current_exe.file_name().and_then(|s| s.to_str()) == Some("xtask") {
+        format!("{} tls-relay", current_exe.display())
+    } else {
+        "cargo xtask tls-relay".to_string()
+    };
+    let netdev_arg = format!(
+        "user,id=net0,guestfwd=tcp:10.0.2.100:7-cmd:cat,guestfwd=tcp:10.0.2.100:443-cmd:{}",
+        tls_cmd
+    );
+    qemu.arg("-netdev")
+        .arg(&netdev_arg)
         .arg("-device")
         .arg("virtio-net-device,netdev=net0")
         .arg("-serial")
@@ -602,13 +628,13 @@ fn run_e2e_tests(kernel_image: &Path, overall_timeout: Duration) -> Result<()> {
     let mut harness = QemuHarness::new(kernel_image, &cobalt_image)?;
     harness.deadline = Some(started + overall_timeout);
 
-    println!("[xtask] [TEST 1/13] e2e_boot_banner...");
+    println!("[xtask] [TEST 1/14] e2e_boot_banner...");
     harness
         .expect_output("alloyOS v0.1.0 booting...", Duration::from_secs(10))
         .context("e2e_boot_banner failed")?;
     println!("[xtask] [PASS] e2e_boot_banner");
 
-    println!("[xtask] [TEST 2/13] e2e_memory_init...");
+    println!("[xtask] [TEST 2/14] e2e_memory_init...");
     harness
         .expect_output(
             "[mm] Frame allocator and 256 MiB kernel heap online.",
@@ -656,13 +682,13 @@ fn run_e2e_tests(kernel_image: &Path, overall_timeout: Duration) -> Result<()> {
         .context("e2e_ai_init failed")?;
     println!("[xtask] [PASS] e2e_memory_init + CobaltFS + Splash + Net + Ferrofluid + JS + MCP + AI");
 
-    println!("[xtask] [TEST 3/13] e2e_shell_prompt...");
+    println!("[xtask] [TEST 3/14] e2e_shell_prompt...");
     harness
         .expect_output("alloyos:/$", Duration::from_secs(10))
         .context("e2e_shell_prompt failed")?;
     println!("[xtask] [PASS] e2e_shell_prompt");
 
-    println!("[xtask] [TEST 4/13] e2e_uname...");
+    println!("[xtask] [TEST 4/14] e2e_uname...");
     harness.send_command("uname -a");
     harness
         .expect_output("alloyOS alloyos 0.1.0", Duration::from_secs(5))
@@ -672,7 +698,7 @@ fn run_e2e_tests(kernel_image: &Path, overall_timeout: Duration) -> Result<()> {
         .context("e2e_uname machine failed")?;
     println!("[xtask] [PASS] e2e_uname");
 
-    println!("[xtask] [TEST 5/13] e2e_ls_and_cd...");
+    println!("[xtask] [TEST 5/14] e2e_ls_and_cd...");
     harness.send_command("ls /");
     harness
         .expect_output("dev/\nproc/", Duration::from_secs(5))
@@ -695,35 +721,35 @@ fn run_e2e_tests(kernel_image: &Path, overall_timeout: Duration) -> Result<()> {
         .context("e2e_pwd_and_cd_parent failed")?;
     println!("[xtask] [PASS] e2e_ls_and_cd");
 
-    println!("[xtask] [TEST 6/13] e2e_echo_redirect_cat...");
+    println!("[xtask] [TEST 6/14] e2e_echo_redirect_cat...");
     harness.send_command("echo e2e_file_payload > /f && cat /f");
     harness
         .expect_output("e2e_file_payload\n", Duration::from_secs(5))
         .context("e2e_echo_redirect_cat failed")?;
     println!("[xtask] [PASS] e2e_echo_redirect_cat");
 
-    println!("[xtask] [TEST 7/13] e2e_ps_shows_pid1...");
+    println!("[xtask] [TEST 7/14] e2e_ps_shows_pid1...");
     harness.send_command("ps");
     harness
         .expect_output("1 tty0     00:00:00 sh", Duration::from_secs(5))
         .context("e2e_ps_shows_pid1 failed")?;
     println!("[xtask] [PASS] e2e_ps_shows_pid1");
 
-    println!("[xtask] [TEST 8/13] e2e_mem_command...");
+    println!("[xtask] [TEST 8/14] e2e_mem_command...");
     harness.send_command("mem");
     harness
         .expect_output("MemTotal:", Duration::from_secs(5))
         .context("e2e_mem_command failed")?;
     println!("[xtask] [PASS] e2e_mem_command");
 
-    println!("[xtask] [TEST 9/13] e2e_bench_completes...");
+    println!("[xtask] [TEST 9/14] e2e_bench_completes...");
     harness.send_command("bench");
     harness
         .expect_output("VFS open/read/close", Duration::from_secs(10))
         .context("e2e_bench_completes failed")?;
     println!("[xtask] [PASS] e2e_bench_completes");
 
-    println!("[xtask] [TEST 10/13] e2e_net_tcp_echo...");
+    println!("[xtask] [TEST 10/14] e2e_net_tcp_echo...");
     harness.send_command("net tcp 10.0.2.100 7 alloyos-echo-4242");
     harness
         .expect_output("net: connected", Duration::from_secs(8))
@@ -733,14 +759,14 @@ fn run_e2e_tests(kernel_image: &Path, overall_timeout: Duration) -> Result<()> {
         .context("e2e_net_tcp_echo: echoed payload not received")?;
     println!("[xtask] [PASS] e2e_net_tcp_echo");
 
-    println!("[xtask] [TEST 11/13] e2e_net_dns...");
+    println!("[xtask] [TEST 11/14] e2e_net_dns...");
     harness.send_command("net resolve localhost");
     harness
         .expect_output("net: localhost -> 127.0.0.1", Duration::from_secs(8))
         .context("e2e_net_dns failed")?;
     println!("[xtask] [PASS] e2e_net_dns");
 
-    println!("[xtask] [TEST 12/13] e2e_net_http_get...");
+    println!("[xtask] [TEST 12/14] e2e_net_http_get...");
     harness.send_command("net http http://10.0.2.100:7/alloyos-status");
     harness
         .expect_output("net: http response", Duration::from_secs(8))
@@ -750,7 +776,23 @@ fn run_e2e_tests(kernel_image: &Path, overall_timeout: Duration) -> Result<()> {
         .context("e2e_net_http_get: request line mismatch")?;
     println!("[xtask] [PASS] e2e_net_http_get");
 
-    println!("[xtask] [TEST 13/13] e2e_shutdown...");
+    println!("[xtask] [TEST 13/14] e2e_net_https_get...");
+    harness.send_command("net https https://10.0.2.100:443/alloyos-status");
+    harness
+        .expect_output("net: connected", Duration::from_secs(8))
+        .context("e2e_net_https_get: connection failed")?;
+    harness
+        .expect_output("net: tls handshake complete", Duration::from_secs(8))
+        .context("e2e_net_https_get: TLS 1.3 handshake failed")?;
+    harness
+        .expect_output("net: https response", Duration::from_secs(8))
+        .context("e2e_net_https_get: HTTPS response not received")?;
+    harness
+        .expect_output("HTTP/1.1 200 OK", Duration::from_secs(8))
+        .context("e2e_net_https_get: response status mismatch")?;
+    println!("[xtask] [PASS] e2e_net_https_get");
+
+    println!("[xtask] [TEST 14/14] e2e_shutdown...");
     harness.send_command("shutdown");
     let exit_code = harness
         .wait_for_exit(Duration::from_secs(5))
@@ -760,7 +802,7 @@ fn run_e2e_tests(kernel_image: &Path, overall_timeout: Duration) -> Result<()> {
     }
     println!("[xtask] [PASS] e2e_shutdown");
 
-    println!("[xtask] All 13 E2E tests PASSED in {:.2}s!", started.elapsed().as_secs_f64());
+    println!("[xtask] All 14 E2E tests PASSED in {:.2}s!", started.elapsed().as_secs_f64());
     Ok(())
 }
 
@@ -1142,7 +1184,64 @@ fn main() -> Result<()> {
             alloyos_dev_harness::serve(bind, guest).map_err(|e| anyhow!(e))
         },
         Commands::Ci => run_ci(),
+        Commands::TlsRelay => run_tls_relay(),
     }
+}
+
+fn run_tls_relay() -> Result<()> {
+    use std::io::{Read, Write};
+    use liballoy::tls::{Tls13ServerConfig, Tls13ServerConnection};
+
+    let mut stdin = std::io::stdin().lock();
+    let mut stdout = std::io::stdout().lock();
+
+    // 1. Read ClientHello record
+    let mut ch_hdr = [0u8; 5];
+    stdin.read_exact(&mut ch_hdr).context("reading ClientHello header")?;
+    let ch_len = u16::from_be_bytes([ch_hdr[3], ch_hdr[4]]) as usize;
+    let mut ch_record = vec![0u8; 5 + ch_len];
+    ch_record[..5].copy_from_slice(&ch_hdr);
+    stdin.read_exact(&mut ch_record[5..]).context("reading ClientHello body")?;
+
+    // 2. Accept ClientHello and generate server flight
+    let config = Tls13ServerConfig::trusted_for_host("10.0.2.100");
+    let (mut server, server_flight) = Tls13ServerConnection::accept_client_hello(config, &ch_record)
+        .map_err(|e| anyhow!("accept_client_hello failed: {}", e.as_str()))?;
+
+    // Send server flight
+    stdout.write_all(&server_flight).context("writing server flight")?;
+    stdout.flush().context("flushing server flight")?;
+
+    // 3. Read ClientFinished record
+    let mut fin_hdr = [0u8; 5];
+    stdin.read_exact(&mut fin_hdr).context("reading ClientFinished header")?;
+    let fin_len = u16::from_be_bytes([fin_hdr[3], fin_hdr[4]]) as usize;
+    let mut fin_record = vec![0u8; 5 + fin_len];
+    fin_record[..5].copy_from_slice(&fin_hdr);
+    stdin.read_exact(&mut fin_record[5..]).context("reading ClientFinished body")?;
+
+    let _ = server.receive_client_record(&fin_record)
+        .map_err(|e| anyhow!("receive ClientFinished failed: {}", e.as_str()))?;
+
+    // 4. Read Client Encrypted Request
+    let mut req_hdr = [0u8; 5];
+    stdin.read_exact(&mut req_hdr).context("reading Request header")?;
+    let req_len = u16::from_be_bytes([req_hdr[3], req_hdr[4]]) as usize;
+    let mut req_record = vec![0u8; 5 + req_len];
+    req_record[..5].copy_from_slice(&req_hdr);
+    stdin.read_exact(&mut req_record[5..]).context("reading Request body")?;
+
+    let _client_req = server.receive_client_record(&req_record)
+        .map_err(|e| anyhow!("decrypt client request failed: {}", e.as_str()))?
+        .context("no application data in request")?;
+
+    // 5. Build and send Encrypted Response
+    let response_body = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nalloyos-https-status-verified\n";
+    let sealed_response = server.seal_server_data(response_body);
+    stdout.write_all(&sealed_response).context("writing sealed response")?;
+    stdout.flush().context("flushing sealed response")?;
+
+    Ok(())
 }
 
 #[cfg(test)]

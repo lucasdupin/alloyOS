@@ -9,6 +9,7 @@
 #endif
 
 #include "wpe_bridge.h"
+#include "alloyos_tls_backend.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -177,6 +178,7 @@ struct BridgeInstance {
             }
         }
 
+        alloyos_tls_backend_register();
         display = wpe_display_headless_new();
         config = WKPageConfigurationCreate();
         WKPreferencesRef prefs = WKPageConfigurationGetPreferences(config);

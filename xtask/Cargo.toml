@@ -13,6 +13,7 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 alloyos-dev-harness = { path = "../crates/alloyos-dev-harness" }
 alloyos-fs = { path = "../crates/alloyos-fs" }
+alloyos-user = { path = "../crates/alloyos-user" }
 
 [dev-dependencies]
 alloyos-mcp = { path = "../crates/alloyos-mcp" }

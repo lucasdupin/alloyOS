@@ -4,6 +4,7 @@
 //! Powers native HTTPS & SSE streaming to Gemini (`generativelanguage.googleapis.com`),
 //! Claude (`api.anthropic.com`), and OpenAI (`api.openai.com`).
 
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use alloyos_proto::{SocketAddrV4, SyscallNo, AF_INET, SOCK_STREAM};
@@ -908,6 +909,139 @@ impl Tls13Session {
     }
 }
 
+// ============================================================================
+// C FFI Bindings for GIO / libsoup TLS Backend (`liballoy::tls`)
+// ============================================================================
+
+#[no_mangle]
+pub unsafe extern "C" fn alloyos_tls_create(server_name: *const core::ffi::c_char) -> *mut Tls13Session {
+    if server_name.is_null() {
+        return core::ptr::null_mut();
+    }
+    let c_str = core::ffi::CStr::from_ptr(server_name);
+    let Ok(name_str) = c_str.to_str() else {
+        return core::ptr::null_mut();
+    };
+    let session = Box::new(Tls13Session::new(name_str));
+    Box::into_raw(session)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn alloyos_tls_client_hello(
+    session: *mut Tls13Session,
+    out_buf: *mut u8,
+    max_len: usize,
+) -> i32 {
+    if session.is_null() || out_buf.is_null() {
+        return -1;
+    }
+    let s = &mut *session;
+    let ch = s.build_client_hello_record();
+    if ch.len() > max_len {
+        return -2;
+    }
+    core::ptr::copy_nonoverlapping(ch.as_ptr(), out_buf, ch.len());
+    ch.len() as i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn alloyos_tls_consume_server(
+    session: *mut Tls13Session,
+    in_buf: *const u8,
+    in_len: usize,
+    out_finished: *mut u8,
+    max_finished_len: usize,
+) -> i32 {
+    if session.is_null() || in_buf.is_null() {
+        return -1;
+    }
+    let s = &mut *session;
+    let input = core::slice::from_raw_parts(in_buf, in_len);
+    match s.consume_server_handshake_bytes(input) {
+        Ok(Some(fin)) => {
+            if fin.len() > max_finished_len && !out_finished.is_null() {
+                return -2;
+            }
+            if !out_finished.is_null() && !fin.is_empty() {
+                core::ptr::copy_nonoverlapping(fin.as_ptr(), out_finished, fin.len());
+            }
+            fin.len() as i32
+        }
+        Ok(None) => 0,
+        Err(_) => -3,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn alloyos_tls_is_ready(session: *const Tls13Session) -> i32 {
+    if session.is_null() {
+        return 0;
+    }
+    if (*session).is_handshake_complete() {
+        1
+    } else {
+        0
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn alloyos_tls_seal(
+    session: *mut Tls13Session,
+    plaintext: *const u8,
+    plaintext_len: usize,
+    out_buf: *mut u8,
+    max_len: usize,
+) -> i32 {
+    if session.is_null() || plaintext.is_null() || out_buf.is_null() {
+        return -1;
+    }
+    let s = &mut *session;
+    let pt = core::slice::from_raw_parts(plaintext, plaintext_len);
+    let sealed = s.seal_application_data(pt);
+    if sealed.len() > max_len {
+        return -2;
+    }
+    core::ptr::copy_nonoverlapping(sealed.as_ptr(), out_buf, sealed.len());
+    sealed.len() as i32
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn alloyos_tls_open(
+    session: *mut Tls13Session,
+    in_buf: *const u8,
+    in_len: usize,
+    out_buf: *mut u8,
+    max_len: usize,
+) -> i32 {
+    if session.is_null() || in_buf.is_null() || out_buf.is_null() {
+        return -1;
+    }
+    let s = &mut *session;
+    let recs = core::slice::from_raw_parts(in_buf, in_len);
+    match s.consume_server_records(recs) {
+        Ok(chunks) => {
+            let total_len: usize = chunks.iter().map(|c| c.len()).sum();
+            if total_len > max_len {
+                return -2;
+            }
+            let mut offset = 0;
+            for c in chunks {
+                core::ptr::copy_nonoverlapping(c.as_ptr(), out_buf.add(offset), c.len());
+                offset += c.len();
+            }
+            total_len as i32
+        }
+        Err(_) => -3,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn alloyos_tls_destroy(session: *mut Tls13Session) {
+    if !session.is_null() {
+        drop(Box::from_raw(session));
+    }
+}
+
 
 // ============================================================================
 // HTTP/1.1 Request Builder, Chunked Decoder & Server-Sent Events (SSE) Parser
@@ -1468,5 +1602,77 @@ mod tests {
 
         assert!(events[2].is_done);
         assert_eq!(events[2].data, "[DONE]");
+    }
+
+    #[test]
+    fn test_tls13_c_ffi_roundtrip() {
+        let host = "10.0.2.100";
+        let c_host = alloc::ffi::CString::new(host).unwrap();
+        unsafe {
+            let session = alloyos_tls_create(c_host.as_ptr());
+            assert!(!session.is_null());
+            assert_eq!(alloyos_tls_is_ready(session), 0);
+
+            let mut ch_buf = [0u8; 1024];
+            let ch_len = alloyos_tls_client_hello(session, ch_buf.as_mut_ptr(), ch_buf.len());
+            assert!(ch_len > 0);
+
+            let server_cfg = Tls13ServerConfig::trusted_for_host(host);
+            let (mut server, server_flight) =
+                Tls13ServerConnection::accept_client_hello(server_cfg, &ch_buf[..ch_len as usize])
+                    .expect("server accepts client hello");
+
+            let mut fin_buf = [0u8; 512];
+            let fin_len = alloyos_tls_consume_server(
+                session,
+                server_flight.as_ptr(),
+                server_flight.len(),
+                fin_buf.as_mut_ptr(),
+                fin_buf.len(),
+            );
+            assert!(fin_len > 0);
+            assert_eq!(alloyos_tls_is_ready(session), 1);
+
+            server
+                .receive_client_record(&fin_buf[..fin_len as usize])
+                .unwrap();
+            assert!(server.client_finished_verified);
+
+            // Client seals request
+            let msg = b"GET /alloyos-status HTTP/1.1\r\nHost: 10.0.2.100\r\n\r\n";
+            let mut sealed_req = [0u8; 1024];
+            let sealed_len = alloyos_tls_seal(
+                session,
+                msg.as_ptr(),
+                msg.len(),
+                sealed_req.as_mut_ptr(),
+                sealed_req.len(),
+            );
+            assert!(sealed_len > 0);
+
+            let server_got = server
+                .receive_client_record(&sealed_req[..sealed_len as usize])
+                .unwrap()
+                .unwrap();
+            assert_eq!(server_got.as_slice(), msg);
+
+            // Server seals response
+            let resp = b"HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\nHello from TLS!";
+            let server_wire = server.seal_server_data(resp);
+
+            // Client opens response via C FFI
+            let mut plain_out = [0u8; 1024];
+            let plain_len = alloyos_tls_open(
+                session,
+                server_wire.as_ptr(),
+                server_wire.len(),
+                plain_out.as_mut_ptr(),
+                plain_out.len(),
+            );
+            assert_eq!(plain_len, resp.len() as i32);
+            assert_eq!(&plain_out[..plain_len as usize], resp);
+
+            alloyos_tls_destroy(session);
+        }
     }
 }

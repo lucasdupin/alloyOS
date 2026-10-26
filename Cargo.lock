@@ -4984,6 +4984,7 @@ dependencies = [
  "alloyos-fs",
  "alloyos-mcp",
  "alloyos-proto",
+ "alloyos-user",
  "anyhow",
  "clap",
 ]

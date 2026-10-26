@@ -24,12 +24,15 @@ fn main() {
 
         println!("cargo:rerun-if-changed=src/webview/wpe_bridge.cpp");
         println!("cargo:rerun-if-changed=src/webview/wpe_bridge.h");
+        println!("cargo:rerun-if-changed=src/webview/alloyos_tls_backend.cpp");
+        println!("cargo:rerun-if-changed=src/webview/alloyos_tls_backend.h");
 
         cc::Build::new()
             .compiler("clang++")
             .archiver(&llvm_ar)
             .cpp(true)
             .file("src/webview/wpe_bridge.cpp")
+            .file("src/webview/alloyos_tls_backend.cpp")
             .flag("-std=c++20")
             .flag("-ffreestanding")
             .flag("-fno-exceptions")

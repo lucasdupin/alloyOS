@@ -504,7 +504,7 @@ impl WebViewController {
         }
     }
 
-    fn refresh_rendered_frame(&mut self) {
+    pub fn refresh_rendered_frame(&mut self) {
         if let Some(page) = &mut self.page {
             let pixels = page.render(self.width, self.height);
             self.committed_frame = Some(CommittedFrame {

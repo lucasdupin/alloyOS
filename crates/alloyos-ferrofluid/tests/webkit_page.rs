@@ -187,7 +187,7 @@ fn scrolling_shifts_viewport_content() {
 
 fn loads_real_live_website_over_network() {
     let url = "https://g1.globo.com";
-    let ctrl = WebViewController::for_url(10, url, "fallback title")
+    let mut ctrl = WebViewController::for_url(10, url, "fallback title")
         .expect("should load real website over network");
 
     assert_eq!(ctrl.committed_url(), Some(url));
@@ -200,22 +200,31 @@ fn loads_real_live_website_over_network() {
         "Title should be parsed from real HTML <title> tag, got: {title}"
     );
 
-    // Frame must be rendered with real page content
-    let frame = ctrl.committed_frame().expect("must have committed frame");
-    assert_eq!(frame.width, 576);
-    assert_eq!(frame.height, 380);
+    // Frame must be rendered with real page content.
+    // Over real WAN, wait for layout and subresource rasterization if needed.
+    let mut non_bg = 0;
+    for _ in 0..5 {
+        let frame = ctrl.committed_frame().expect("must have committed frame");
+        assert_eq!(frame.width, 576);
+        assert_eq!(frame.height, 380);
 
-    // Non-background pixels must be rendered from the real page
-    let non_bg = frame
-        .pixels
-        .chunks_exact(4)
-        .filter(|px| {
-            let b = px[0];
-            let g = px[1];
-            let r = px[2];
-            !((r == 16 && g == 20 && b == 24) || (r == 255 && g == 255 && b == 255))
-        })
-        .count();
+        non_bg = frame
+            .pixels
+            .chunks_exact(4)
+            .filter(|px| {
+                let b = px[0];
+                let g = px[1];
+                let r = px[2];
+                !((r == 16 && g == 20 && b == 24) || (r == 255 && g == 255 && b == 255))
+            })
+            .count();
+        if non_bg > 500 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        ctrl.refresh_rendered_frame();
+    }
+
     assert!(
         non_bg > 500,
         "Frame must render real page elements (found {non_bg} non-bg pixels)"

@@ -428,6 +428,23 @@ fn parse_ipv4(text: &str) -> Option<[u8; 4]> {
     (count == 4).then_some(octets)
 }
 
+/// Parse a simple `http://<host>[:port]<path>` URL.
+fn parse_http_url(url: &str) -> Option<(&str, u16, &str)> {
+    let rest = url.strip_prefix("http://")?;
+    let (host_port, path) = match rest.find('/') {
+        Some(idx) => (&rest[..idx], &rest[idx..]),
+        None => (rest, "/"),
+    };
+    let (host, port) = match host_port.split_once(':') {
+        Some((h, p)) => (h, p.parse::<u16>().ok()?),
+        None => (host_port, 80),
+    };
+    if host.is_empty() {
+        return None;
+    }
+    Some((host, port, path))
+}
+
 /// Builtin `net` command: probes the real guest network stack.
 ///
 /// - `net resolve <host>` performs a DNS lookup through the kernel resolver.
@@ -484,7 +501,66 @@ pub fn builtin_net(args: &[&str]) {
             }
             crate::net::tcp_close(fd);
         }
-        _ => crate::io::println("usage: net resolve <host> | net tcp <ipv4> <port> <text>"),
+        ["http", url] => {
+            let (host, port, path) = match parse_http_url(url) {
+                Some(res) => res,
+                None => {
+                    crate::io::println("net: usage: net http http://<host>[:port]<path>");
+                    return;
+                }
+            };
+            let ip = match crate::net::resolve_host(host) {
+                Ok(ip) => ip,
+                Err(err) => {
+                    let _ = writeln!(out, "net: resolve {} failed ({})", host, err);
+                    return;
+                }
+            };
+            let fd = match crate::net::tcp_socket() {
+                Ok(fd) => fd,
+                Err(err) => {
+                    let _ = writeln!(out, "net: socket failed ({})", err);
+                    return;
+                }
+            };
+            let addr = alloyos_proto::SocketAddrV4 { ip, port };
+            if let Err(err) = crate::net::tcp_connect(fd, &addr) {
+                let _ = writeln!(out, "net: connect failed ({})", err);
+                crate::net::tcp_close(fd);
+                return;
+            }
+            let req = alloc::format!("GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: alloyOS/0.1\r\nConnection: close\r\n\r\n", path, host);
+            if let Err(err) = crate::net::tcp_send(fd, req.as_bytes()) {
+                let _ = writeln!(out, "net: send failed ({})", err);
+                crate::net::tcp_close(fd);
+                return;
+            }
+            let start = crate::net::monotonic_ns();
+            let mut buf = [0u8; 1024];
+            let mut total = alloc::vec::Vec::new();
+            while crate::net::monotonic_ns().saturating_sub(start) < 4_000_000_000 {
+                match crate::net::tcp_recv(fd, &mut buf) {
+                    Ok(n) if n > 0 => {
+                        total.extend_from_slice(&buf[..n]);
+                        if total.len() > 8192 { break; }
+                    }
+                    Ok(_) => {
+                        if !total.is_empty() { break; }
+                    }
+                    Err(_) => break,
+                }
+                crate::process::yield_now();
+            }
+            if total.is_empty() {
+                crate::io::println("net: recv timeout");
+            } else {
+                let s = alloc::string::String::from_utf8_lossy(&total);
+                let first_line = s.lines().next().unwrap_or("");
+                let _ = writeln!(out, "net: http response ({} bytes): {}", total.len(), first_line);
+            }
+            crate::net::tcp_close(fd);
+        }
+        _ => crate::io::println("usage: net resolve <host> | net tcp <ipv4> <port> <text> | net http <url>"),
     }
 }
 

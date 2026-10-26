@@ -414,6 +414,80 @@ pub fn clear() -> &'static str {
     CLEAR_ANSI
 }
 
+/// Parse a dotted-quad IPv4 literal.
+fn parse_ipv4(text: &str) -> Option<[u8; 4]> {
+    let mut octets = [0u8; 4];
+    let mut count = 0;
+    for part in text.split('.') {
+        if count == 4 || part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        octets[count] = part.parse::<u8>().ok()?;
+        count += 1;
+    }
+    (count == 4).then_some(octets)
+}
+
+/// Builtin `net` command: probes the real guest network stack.
+///
+/// - `net resolve <host>` performs a DNS lookup through the kernel resolver.
+/// - `net tcp <ipv4> <port> <text>` connects, sends `text`, and prints what the peer returns.
+pub fn builtin_net(args: &[&str]) {
+    let mut out = crate::io::Stdout;
+    match args {
+        ["resolve", host] => match crate::net::resolve_host(host) {
+            Ok(ip) => {
+                let _ = writeln!(out, "net: {} -> {}.{}.{}.{}", host, ip[0], ip[1], ip[2], ip[3]);
+            }
+            Err(err) => {
+                let _ = writeln!(out, "net: resolve {} failed ({})", host, err);
+            }
+        },
+        ["tcp", ip, port, text] => {
+            let (Some(ip), Ok(port)) = (parse_ipv4(ip), port.parse::<u16>()) else {
+                crate::io::println("net: usage: net tcp <ipv4> <port> <text>");
+                return;
+            };
+            let fd = match crate::net::tcp_socket() {
+                Ok(fd) => fd,
+                Err(err) => {
+                    let _ = writeln!(out, "net: socket failed ({})", err);
+                    return;
+                }
+            };
+            let addr = alloyos_proto::SocketAddrV4 { ip, port };
+            if let Err(err) = crate::net::tcp_connect(fd, &addr) {
+                let _ = writeln!(out, "net: connect failed ({})", err);
+                crate::net::tcp_close(fd);
+                return;
+            }
+            crate::io::println("net: connected");
+            if let Err(err) = crate::net::tcp_send(fd, text.as_bytes()) {
+                let _ = writeln!(out, "net: send failed ({})", err);
+                crate::net::tcp_close(fd);
+                return;
+            }
+            let start = crate::net::monotonic_ns();
+            let mut buf = [0u8; 256];
+            let mut received = 0usize;
+            while received == 0 && crate::net::monotonic_ns().saturating_sub(start) < 3_000_000_000 {
+                match crate::net::tcp_recv(fd, &mut buf) {
+                    Ok(n) => received = n,
+                    Err(_) => break,
+                }
+                crate::process::yield_now();
+            }
+            if received == 0 {
+                crate::io::println("net: recv timeout");
+            } else {
+                let _ = writeln!(out, "net: recv {}", alloc::string::String::from_utf8_lossy(&buf[..received]));
+            }
+            crate::net::tcp_close(fd);
+        }
+        _ => crate::io::println("usage: net resolve <host> | net tcp <ipv4> <port> <text>"),
+    }
+}
+
 /// Builtin `uname` command returning formatted system identification.
 pub fn builtin_uname(all: bool) -> TextBuffer {
     let uts = crate::process::uname();
@@ -996,6 +1070,7 @@ pub fn execute_command(cmd: &Command<'_>) {
                 }
             }
         }
+        "net" => builtin_net(cmd.args.as_slice()),
         "ps" => {
             let pid = crate::process::getpid();
             crate::io::println("  PID TTY          TIME CMD");

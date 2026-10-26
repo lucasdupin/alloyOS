@@ -28,6 +28,7 @@
         [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
         
         WKWebViewConfiguration *config = [[WKWebViewConfiguration alloc] init];
+        config.websiteDataStore = [WKWebsiteDataStore nonPersistentDataStore];
         [config.preferences setValue:@YES forKey:@"allowFileAccessFromFileURLs"];
         
         NSRect frame = NSMakeRect(0, 0, width, height);
@@ -356,7 +357,7 @@ bool webkit_bridge_render_frame(void* handle, uint8_t* out_bgra, uint32_t width,
             done = YES;
         }];
         
-        [page drainRunLoopUntil:4.0 condition:^{ return done; }];
+        [page drainRunLoopUntil:8.0 condition:^{ return done; }];
         
         if (captured) {
             CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();

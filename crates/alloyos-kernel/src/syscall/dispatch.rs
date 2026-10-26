@@ -27,6 +27,7 @@ pub fn dispatch_syscall(
         SyscallNo::Connect => sys_connect(arg1, arg2, arg3),
         SyscallNo::Send => sys_send(arg1, arg2, arg3),
         SyscallNo::Recv => sys_recv(arg1, arg2, arg3),
+        SyscallNo::ResolveHost => sys_resolve_host(arg1, arg2, arg3),
         SyscallNo::Uname => sys_uname(arg1),
         SyscallNo::ClockGettime => sys_clock_gettime(arg1, arg2),
         SyscallNo::GetRandom => sys_getrandom(arg1, arg2, arg3),

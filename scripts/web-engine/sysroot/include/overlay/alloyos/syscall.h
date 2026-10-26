@@ -25,6 +25,7 @@ extern "C" {
 #define ALLOYOS_SYS_GETRANDOM        318ULL
 /* Fallback Linux-AArch64 number only used if 318 returns -ENOSYS in a mock */
 #define ALLOYOS_SYS_GETRANDOM_ALT    278ULL
+#define ALLOYOS_SYS_RESOLVE_HOST     430ULL
 
 /* Protected process ABI calls (400..413) */
 #define ALLOYOS_SYS_IPC_SEND         400ULL

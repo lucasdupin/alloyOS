@@ -755,7 +755,7 @@ impl RuntimeCapabilityGuard {
                     capability: AppCapability::ShellExecution,
                 })
             }
-            SyscallNo::Socket | SyscallNo::Connect => {
+            SyscallNo::Socket | SyscallNo::Connect | SyscallNo::ResolveHost => {
                 self.enforce_capability(&AppCapability::ScopedNetwork)
             }
             _ => Ok(()),

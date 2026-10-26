@@ -89,10 +89,12 @@ pub enum SyscallNo {
     Uname = 63,
     ClockGettime = 228,
     GetRandom = 318,
+    /// Resolve a hostname to IPv4 (kernel DNS). Capability-gated: EL0 processes get EPERM.
+    ResolveHost = 430,
 }
 
 impl SyscallNo {
-    pub const ALL: [SyscallNo; 28] = [
+    pub const ALL: [SyscallNo; 29] = [
         SyscallNo::Read,
         SyscallNo::Write,
         SyscallNo::Open,
@@ -121,6 +123,7 @@ impl SyscallNo {
         SyscallNo::Uname,
         SyscallNo::ClockGettime,
         SyscallNo::GetRandom,
+        SyscallNo::ResolveHost,
     ];
 
     pub const fn as_u64(self) -> u64 {
@@ -157,6 +160,7 @@ impl SyscallNo {
             63 => Ok(Self::Uname),
             228 => Ok(Self::ClockGettime),
             318 => Ok(Self::GetRandom),
+            430 => Ok(Self::ResolveHost),
             other => Err(other),
         }
     }

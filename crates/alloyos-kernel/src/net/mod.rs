@@ -477,6 +477,20 @@ impl DnsResolver {
         None
     }
 
+    /// Parse a strict dotted-quad IPv4 literal.
+    pub fn parse_dotted_quad(text: &str) -> Option<[u8; 4]> {
+        let mut octets = [0u8; 4];
+        let mut count = 0;
+        for part in text.split('.') {
+            if count == 4 || part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            octets[count] = part.parse::<u8>().ok()?;
+            count += 1;
+        }
+        (count == 4).then_some(octets)
+    }
+
     /// Resolve a hostname using built-in cloud LLM endpoints and ARP/DNS cache.
     pub fn resolve_hostname(hostname: &str) -> [u8; 4] {
         match hostname.trim() {
@@ -579,6 +593,15 @@ pub enum TcpState {
 pub enum SocketKind {
     Stream,
     Datagram,
+}
+
+/// ACK a hardware TCP socket owes its peer after `process_tcp_segment`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TcpAckReply {
+    pub local_port: u16,
+    pub remote: SocketAddrV4,
+    pub seq: u32,
+    pub ack: u32,
 }
 
 pub struct KernelSocket {
@@ -689,8 +712,15 @@ impl NetworkStack {
     }
 
     /// Demultiplex pending Ethernet/ARP/IPv4/UDP/TCP frames from `VIRTIO_NET` into socket buffers.
+    ///
+    /// On real hardware this also completes TCP handshakes (SYN-ACK), acknowledges received data,
+    /// and honours RST. The loopback path used by host tests keeps its simulated behaviour.
     pub fn poll_rx(&mut self) {
-        while let Some(frame) = VIRTIO_NET.lock().poll_receive() {
+        let hardware = VIRTIO_NET.lock().is_hardware();
+        loop {
+            // The guard must be released before replying, so bind the frame first.
+            let next = VIRTIO_NET.lock().poll_receive();
+            let Some(frame) = next else { break };
             let Some((eth, eth_payload)) = EthernetHeader::parse(&frame) else {
                 continue;
             };
@@ -698,6 +728,25 @@ impl NetworkStack {
                 ETHERTYPE_ARP => {
                     if let Some(arp) = ArpPacket::parse(eth_payload) {
                         self.arp_cache.insert(arp.spa, arp.sha);
+                        if arp.oper == ArpPacket::OP_REQUEST && arp.tpa == self.dhcp.lease.client_ip {
+                            let my_mac = VIRTIO_NET.lock().mac;
+                            let reply = ArpPacket {
+                                oper: ArpPacket::OP_REPLY,
+                                sha: my_mac,
+                                spa: self.dhcp.lease.client_ip,
+                                tha: arp.sha,
+                                tpa: arp.spa,
+                            };
+                            let eth_reply = EthernetHeader {
+                                dst_mac: arp.sha,
+                                src_mac: my_mac,
+                                ethertype: ETHERTYPE_ARP,
+                            };
+                            let mut frame = Vec::with_capacity(14 + 28);
+                            frame.extend_from_slice(&eth_reply.to_bytes());
+                            frame.extend_from_slice(&reply.to_bytes());
+                            let _ = VIRTIO_NET.lock().transmit_frame(&frame);
+                        }
                     }
                 }
                 ETHERTYPE_IPV4 => {
@@ -709,22 +758,15 @@ impl NetworkStack {
                             let Some(tcp) = TcpSegment::parse(ip_payload) else {
                                 continue;
                             };
-                            for sock in self.sockets.values_mut() {
-                                if sock.kind == SocketKind::Stream
-                                    && sock.local_port == tcp.dst_port
-                                    && sock.remote.is_some_and(|r| {
-                                        r.ip == ip.src_ip && r.port == tcp.src_port
-                                    })
-                                {
-                                    if !tcp.payload.is_empty() {
-                                        sock.ack_num =
-                                            tcp.seq_num.wrapping_add(tcp.payload.len() as u32);
-                                        for &b in &tcp.payload {
-                                            sock.rx_buf.push_back(b);
-                                        }
-                                    }
-                                    break;
-                                }
+                            if let Some(reply) = self.process_tcp_segment(ip.src_ip, &tcp, hardware) {
+                                self.send_tcp_segment(
+                                    reply.local_port,
+                                    reply.remote,
+                                    reply.seq,
+                                    reply.ack,
+                                    TCP_FLAG_ACK,
+                                    &[],
+                                );
                             }
                         }
                         IPPROTO_UDP => {
@@ -748,6 +790,214 @@ impl NetworkStack {
                 _ => {}
             }
         }
+    }
+
+    /// Apply one received TCP segment to the matching socket. Returns the ACK the caller must
+    /// transmit (hardware only), so the state machine stays free of I/O and unit-testable.
+    pub(crate) fn process_tcp_segment(
+        &mut self,
+        src_ip: [u8; 4],
+        tcp: &TcpSegment,
+        hardware: bool,
+    ) -> Option<TcpAckReply> {
+        let sock = self.sockets.values_mut().find(|sock| {
+            sock.kind == SocketKind::Stream
+                && sock.local_port == tcp.dst_port
+                && sock
+                    .remote
+                    .is_some_and(|r| r.ip == src_ip && r.port == tcp.src_port)
+        })?;
+        let remote = sock.remote?;
+
+        if hardware && (tcp.flags & TCP_FLAG_RST) != 0 {
+            sock.state = TcpState::Closed;
+            return None;
+        }
+
+        if hardware
+            && sock.state == TcpState::SynSent
+            && (tcp.flags & (TCP_FLAG_SYN | TCP_FLAG_ACK)) == (TCP_FLAG_SYN | TCP_FLAG_ACK)
+            && tcp.ack_num == sock.seq_num.wrapping_add(1)
+        {
+            sock.seq_num = sock.seq_num.wrapping_add(1);
+            sock.ack_num = tcp.seq_num.wrapping_add(1);
+            sock.state = TcpState::Established;
+            return Some(TcpAckReply {
+                local_port: sock.local_port,
+                remote,
+                seq: sock.seq_num,
+                ack: sock.ack_num,
+            });
+        }
+
+        if !tcp.payload.is_empty() {
+            sock.ack_num = tcp.seq_num.wrapping_add(tcp.payload.len() as u32);
+            for &b in &tcp.payload {
+                sock.rx_buf.push_back(b);
+            }
+            if hardware {
+                return Some(TcpAckReply {
+                    local_port: sock.local_port,
+                    remote,
+                    seq: sock.seq_num,
+                    ack: sock.ack_num,
+                });
+            }
+        }
+        None
+    }
+
+    /// Frame and transmit one TCP segment toward `remote` via the gateway.
+    fn send_tcp_segment(
+        &self,
+        local_port: u16,
+        remote: SocketAddrV4,
+        seq: u32,
+        ack: u32,
+        flags: u8,
+        payload: &[u8],
+    ) {
+        let client_ip = self.dhcp.lease.client_ip;
+        let dst_mac = self
+            .arp_cache
+            .get(&remote.ip)
+            .copied()
+            .or_else(|| self.arp_cache.get(&self.dhcp.lease.gateway_ip).copied())
+            .unwrap_or([0x52, 0x55, 0x0a, 0x00, 0x02, 0x02]);
+        let src_mac = VIRTIO_NET.lock().mac;
+        let seg = TcpSegment {
+            src_port: local_port,
+            dst_port: remote.port,
+            seq_num: seq,
+            ack_num: ack,
+            flags,
+            window: 65535,
+            payload: payload.to_vec(),
+        };
+        let tcp_bytes = seg.to_bytes(client_ip, remote.ip);
+        let ip_hdr = Ipv4Header::new(client_ip, remote.ip, IPPROTO_TCP, tcp_bytes.len());
+        let eth_hdr = EthernetHeader {
+            dst_mac,
+            src_mac,
+            ethertype: ETHERTYPE_IPV4,
+        };
+        let mut frame = Vec::with_capacity(14 + 20 + tcp_bytes.len());
+        frame.extend_from_slice(&eth_hdr.to_bytes());
+        frame.extend_from_slice(&ip_hdr.to_bytes());
+        frame.extend_from_slice(&tcp_bytes);
+        let _ = VIRTIO_NET.lock().transmit_frame(&frame);
+    }
+
+    /// Broadcast a gratuitous ARP announcement so peers (e.g. SLIRP / gateways) populate their ARP caches.
+    pub fn announce_arp(&self) {
+        let my_mac = VIRTIO_NET.lock().mac;
+        let client_ip = self.dhcp.lease.client_ip;
+        let arp = ArpPacket {
+            oper: ArpPacket::OP_REQUEST,
+            sha: my_mac,
+            spa: client_ip,
+            tha: [0; 6],
+            tpa: client_ip,
+        };
+        let eth = EthernetHeader {
+            dst_mac: [0xff; 6],
+            src_mac: my_mac,
+            ethertype: ETHERTYPE_ARP,
+        };
+        let mut frame = Vec::with_capacity(14 + 28);
+        frame.extend_from_slice(&eth.to_bytes());
+        frame.extend_from_slice(&arp.to_bytes());
+        let _ = VIRTIO_NET.lock().transmit_frame(&frame);
+    }
+
+    /// Real three-way handshake: SYN, wait for SYN-ACK (retransmitting), then ACK.
+    fn connect_socket_hardware(&mut self, fd: usize, remote: SocketAddrV4) -> Result<(), i64> {
+        const TIMEOUT_NS: u64 = 5_000_000_000;
+        const RETRANSMIT_NS: u64 = 1_000_000_000;
+        self.announce_arp();
+        let (local_port, isn) = {
+            let sock = self.sockets.get_mut(&fd).ok_or(-9i64)?;
+            sock.remote = Some(remote);
+            sock.state = TcpState::SynSent;
+            (sock.local_port, sock.seq_num)
+        };
+        let start = rng::monotonic_time_ns();
+        let mut last_tx = None::<u64>;
+        loop {
+            let now = rng::monotonic_time_ns();
+            if now.saturating_sub(start) > TIMEOUT_NS {
+                if let Some(sock) = self.sockets.get_mut(&fd) {
+                    sock.state = TcpState::Closed;
+                }
+                return Err(-110); // ETIMEDOUT
+            }
+            if last_tx.is_none_or(|t| now.saturating_sub(t) >= RETRANSMIT_NS) {
+                self.send_tcp_segment(local_port, remote, isn, 0, TCP_FLAG_SYN, &[]);
+                last_tx = Some(now);
+            }
+            self.poll_rx();
+            match self.sockets.get(&fd).map(|s| s.state) {
+                Some(TcpState::Established) => return Ok(()),
+                Some(TcpState::Closed) => return Err(-111), // ECONNREFUSED
+                None => return Err(-9),
+                _ => core::hint::spin_loop(),
+            }
+        }
+    }
+
+    /// Resolve `hostname` to IPv4. On hardware this performs a real UDP/53 query against the
+    /// DHCP-provided resolver; in loopback mode it keeps the deterministic table for host tests.
+    pub fn resolve_host(&mut self, hostname: &str) -> Result<[u8; 4], i64> {
+        if !VIRTIO_NET.lock().is_hardware() {
+            return Ok(DnsResolver::resolve_hostname(hostname));
+        }
+        let name = hostname.trim();
+        if name.is_empty() || name.len() > 253 {
+            return Err(-22);
+        }
+        if let Some(ip) = DnsResolver::parse_dotted_quad(name) {
+            return Ok(ip);
+        }
+        let dns = SocketAddrV4 { ip: self.dhcp.lease.dns_ip, port: 53 };
+        let fd = self.create_socket(AF_INET, SOCK_DGRAM)?;
+        let result = self.dns_exchange(fd, dns, name);
+        self.close_socket(fd);
+        result
+    }
+
+    fn dns_exchange(&mut self, fd: usize, dns: SocketAddrV4, name: &str) -> Result<[u8; 4], i64> {
+        const ATTEMPTS: u32 = 3;
+        const PER_ATTEMPT_NS: u64 = 1_000_000_000;
+        self.connect_socket(fd, dns)?;
+        let tx_id = rng::next_u64() as u16;
+        let query = DnsResolver::build_a_query(tx_id, name);
+        for _ in 0..ATTEMPTS {
+            self.send_socket(fd, &query)?;
+            let start = rng::monotonic_time_ns();
+            while rng::monotonic_time_ns().saturating_sub(start) < PER_ATTEMPT_NS {
+                self.poll_rx();
+                let mut buf = [0u8; 512];
+                let n = {
+                    let sock = self.sockets.get_mut(&fd).ok_or(-9i64)?;
+                    let mut n = 0;
+                    while n < buf.len() {
+                        match sock.rx_buf.pop_front() {
+                            Some(b) => {
+                                buf[n] = b;
+                                n += 1;
+                            }
+                            None => break,
+                        }
+                    }
+                    n
+                };
+                if n >= 12 && u16::from_be_bytes([buf[0], buf[1]]) == tx_id {
+                    return DnsResolver::parse_a_response(&buf[..n]).ok_or(-2); // ENOENT
+                }
+                core::hint::spin_loop();
+            }
+        }
+        Err(-110)
     }
 
     pub fn create_socket(&mut self, domain: u64, sock_type: u64) -> Result<usize, i64> {
@@ -786,6 +1036,14 @@ impl NetworkStack {
     }
 
     pub fn connect_socket(&mut self, fd: usize, remote: SocketAddrV4) -> Result<(), i64> {
+        if VIRTIO_NET.lock().is_hardware()
+            && self
+                .sockets
+                .get(&fd)
+                .is_some_and(|s| s.kind == SocketKind::Stream)
+        {
+            return self.connect_socket_hardware(fd, remote);
+        }
         let client_ip = self.dhcp.lease.client_ip;
         let gateway_mac = *self
             .arp_cache
@@ -834,10 +1092,6 @@ impl NetworkStack {
 
     pub fn send_socket(&mut self, fd: usize, data: &[u8]) -> Result<usize, i64> {
         let client_ip = self.dhcp.lease.client_ip;
-        let gateway_mac = *self
-            .arp_cache
-            .get(&self.dhcp.lease.gateway_ip)
-            .unwrap_or(&[0xff; 6]);
         let src_mac = VIRTIO_NET.lock().mac;
 
         let (local_port, remote, ack_for_server) = {
@@ -873,13 +1127,20 @@ impl NetworkStack {
                 }
             };
 
-            let ip_hdr =
-                Ipv4Header::new(client_ip, remote.ip, transport_bytes.0, transport_bytes.1.len());
+            let dst_mac = self
+                .arp_cache
+                .get(&remote.ip)
+                .copied()
+                .or_else(|| self.arp_cache.get(&self.dhcp.lease.gateway_ip).copied())
+                .unwrap_or([0x52, 0x55, 0x0a, 0x00, 0x02, 0x02]);
             let eth_hdr = EthernetHeader {
-                dst_mac: gateway_mac,
+                dst_mac,
                 src_mac,
                 ethertype: ETHERTYPE_IPV4,
             };
+
+            let ip_hdr =
+                Ipv4Header::new(client_ip, remote.ip, transport_bytes.0, transport_bytes.1.len());
 
             let mut frame = Vec::with_capacity(14 + 20 + transport_bytes.1.len());
             frame.extend_from_slice(&eth_hdr.to_bytes());
@@ -1050,4 +1311,91 @@ where
         *guard = Some(NetworkStack::new());
     }
     f(guard.as_mut().unwrap())
+}
+
+#[cfg(test)]
+mod tcp_state_tests {
+    use super::*;
+
+    fn stack_with_syn_sent() -> (NetworkStack, usize, SocketAddrV4) {
+        let mut net = NetworkStack::new();
+        let fd = net.create_socket(AF_INET, SOCK_STREAM).unwrap();
+        let remote = SocketAddrV4 { ip: [93, 184, 216, 34], port: 443 };
+        let sock = net.sockets.get_mut(&fd).unwrap();
+        sock.remote = Some(remote);
+        sock.state = TcpState::SynSent;
+        (net, fd, remote)
+    }
+
+    fn segment(net: &NetworkStack, fd: usize, remote: SocketAddrV4, flags: u8, seq: u32, ack: u32, payload: &[u8]) -> TcpSegment {
+        TcpSegment {
+            src_port: remote.port,
+            dst_port: net.sockets[&fd].local_port,
+            seq_num: seq,
+            ack_num: ack,
+            flags,
+            window: 65535,
+            payload: payload.to_vec(),
+        }
+    }
+
+    #[test]
+    fn syn_ack_completes_handshake_and_requests_ack() {
+        let (mut net, fd, remote) = stack_with_syn_sent();
+        let isn = net.sockets[&fd].seq_num;
+        let synack = segment(&net, fd, remote, TCP_FLAG_SYN | TCP_FLAG_ACK, 7000, isn.wrapping_add(1), &[]);
+        let reply = net.process_tcp_segment(remote.ip, &synack, true).expect("ACK owed");
+        assert_eq!(reply.ack, 7001);
+        assert_eq!(reply.seq, isn.wrapping_add(1));
+        assert_eq!(net.sockets[&fd].state, TcpState::Established);
+    }
+
+    #[test]
+    fn syn_ack_with_wrong_ack_number_is_ignored() {
+        let (mut net, fd, remote) = stack_with_syn_sent();
+        let isn = net.sockets[&fd].seq_num;
+        let bad = segment(&net, fd, remote, TCP_FLAG_SYN | TCP_FLAG_ACK, 7000, isn.wrapping_add(99), &[]);
+        assert!(net.process_tcp_segment(remote.ip, &bad, true).is_none());
+        assert_eq!(net.sockets[&fd].state, TcpState::SynSent);
+    }
+
+    #[test]
+    fn segment_from_other_peer_is_ignored() {
+        let (mut net, fd, remote) = stack_with_syn_sent();
+        let isn = net.sockets[&fd].seq_num;
+        let synack = segment(&net, fd, remote, TCP_FLAG_SYN | TCP_FLAG_ACK, 1, isn.wrapping_add(1), &[]);
+        assert!(net.process_tcp_segment([6, 6, 6, 6], &synack, true).is_none());
+        assert_eq!(net.sockets[&fd].state, TcpState::SynSent);
+    }
+
+    #[test]
+    fn rst_closes_hardware_connection() {
+        let (mut net, fd, remote) = stack_with_syn_sent();
+        let rst = segment(&net, fd, remote, TCP_FLAG_RST | TCP_FLAG_ACK, 0, 0, &[]);
+        assert!(net.process_tcp_segment(remote.ip, &rst, true).is_none());
+        assert_eq!(net.sockets[&fd].state, TcpState::Closed);
+    }
+
+    #[test]
+    fn data_is_buffered_and_acknowledged_only_on_hardware() {
+        let (mut net, fd, remote) = stack_with_syn_sent();
+        net.sockets.get_mut(&fd).unwrap().state = TcpState::Established;
+        let data = segment(&net, fd, remote, TCP_FLAG_PSH | TCP_FLAG_ACK, 100, 0, b"hello");
+        let reply = net.process_tcp_segment(remote.ip, &data, true).expect("ACK owed");
+        assert_eq!(reply.ack, 105);
+        assert_eq!(net.sockets[&fd].rx_buf.len(), 5);
+        // Loopback keeps buffering without emitting an ACK (frames would echo back).
+        assert!(net.process_tcp_segment(remote.ip, &data, false).is_none());
+    }
+
+    #[test]
+    fn dotted_quad_parser_is_strict() {
+        assert_eq!(DnsResolver::parse_dotted_quad("10.0.2.2"), Some([10, 0, 2, 2]));
+        assert_eq!(DnsResolver::parse_dotted_quad("example.com"), None);
+        assert_eq!(DnsResolver::parse_dotted_quad("1.2.3"), None);
+        assert_eq!(DnsResolver::parse_dotted_quad("1.2.3.4.5"), None);
+        assert_eq!(DnsResolver::parse_dotted_quad("256.1.1.1"), None);
+        assert_eq!(DnsResolver::parse_dotted_quad("1..3.4"), None);
+        assert_eq!(DnsResolver::parse_dotted_quad("+1.2.3.4"), None);
+    }
 }

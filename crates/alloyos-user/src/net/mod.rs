@@ -83,6 +83,41 @@ pub fn tcp_recv(fd: usize, buf: &mut [u8]) -> Result<usize, i64> {
     }
 }
 
+/// Close a socket descriptor via `SYS_CLOSE`.
+pub fn tcp_close(fd: usize) {
+    let _ = unsafe { syscall3(SyscallNo::Close as u64, fd as u64, 0, 0) };
+}
+
+/// Resolve `name` to an IPv4 address via the kernel resolver (`SYS_RESOLVE_HOST`).
+pub fn resolve_host(name: &str) -> Result<[u8; 4], i64> {
+    let mut out = [0u8; 4];
+    let ret = unsafe {
+        syscall3(
+            SyscallNo::ResolveHost as u64,
+            name.as_ptr() as u64,
+            name.len() as u64,
+            out.as_mut_ptr() as u64,
+        )
+    };
+    if ret < 0 {
+        Err(ret)
+    } else {
+        Ok(out)
+    }
+}
+
+/// Monotonic clock in nanoseconds via `SYS_CLOCK_GETTIME`.
+pub fn monotonic_ns() -> u64 {
+    let mut ts = [0i64; 2];
+    let ret = unsafe {
+        syscall3(SyscallNo::ClockGettime as u64, 1, ts.as_mut_ptr() as u64, 0)
+    };
+    if ret < 0 {
+        return 0;
+    }
+    (ts[0] as u64).saturating_mul(1_000_000_000).saturating_add(ts[1] as u64)
+}
+
 /// Fill `buf` with cryptographically secure random bytes via `SYS_GETRANDOM`.
 pub fn getrandom(buf: &mut [u8]) -> Result<usize, i64> {
     let ret = unsafe {

@@ -292,6 +292,27 @@ pub fn sys_recv(fd: u64, buf_ptr: u64, len: u64) -> i64 {
     })
 }
 
+/// `ResolveHost(name_ptr, name_len, out_ptr)`: write the 4-byte IPv4 address for `name`.
+pub fn sys_resolve_host(name_ptr: u64, name_len: u64, out_ptr: u64) -> i64 {
+    if name_ptr == 0 || out_ptr == 0 {
+        return EFAULT;
+    }
+    if name_len == 0 || name_len > 253 {
+        return EINVAL;
+    }
+    let bytes = unsafe { slice::from_raw_parts(name_ptr as *const u8, name_len as usize) };
+    let Ok(name) = core::str::from_utf8(bytes) else {
+        return EINVAL;
+    };
+    with_net_stack(|net| match net.resolve_host(name) {
+        Ok(ip) => {
+            unsafe { core::ptr::copy_nonoverlapping(ip.as_ptr(), out_ptr as *mut u8, 4) };
+            0
+        }
+        Err(err) => err,
+    })
+}
+
 pub fn sys_clock_gettime(_clk_id: u64, tp_ptr: u64) -> i64 {
     if tp_ptr == 0 {
         return EFAULT;

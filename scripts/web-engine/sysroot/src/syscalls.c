@@ -1191,21 +1191,20 @@ __attribute__((weak)) int getaddrinfo(const char* node, const char* service, con
         }
     }
 
-    uint8_t ip[4] = {10, 0, 2, 2}; // Default to QEMU gateway / host
+    uint8_t ip[4] = {0};
     if (node) {
-        if (strcmp(node, "localhost") == 0 || strcmp(node, "127.0.0.1") == 0) {
-            ip[0] = 127; ip[1] = 0; ip[2] = 0; ip[3] = 1;
-        } else if (strcmp(node, "generativelanguage.googleapis.com") == 0) {
-            ip[0] = 142; ip[1] = 250; ip[2] = 190; ip[3] = 74;
-        } else if (strcmp(node, "api.anthropic.com") == 0) {
-            ip[0] = 160; ip[1] = 79; ip[2] = 104; ip[3] = 10;
-        } else if (strcmp(node, "api.openai.com") == 0) {
-            ip[0] = 162; ip[1] = 159; ip[2] = 140; ip[3] = 245;
-        } else if (inet_aton(node, (struct in_addr*)ip)) {
-            // Parsed successfully into ip
+        if (inet_aton(node, (struct in_addr*)ip)) {
+            // Numeric IPv4 parsed successfully into ip
         } else {
-            ip[0] = 10; ip[1] = 0; ip[2] = 2; ip[3] = 2;
+            // Perform authentic DNS resolution through the kernel resolver via SYS_RESOLVE_HOST (430)
+            size_t node_len = strlen(node);
+            int64_t ret = alloyos_syscall3(ALLOYOS_SYS_RESOLVE_HOST, (uint64_t)(uintptr_t)node, (uint64_t)node_len, (uint64_t)(uintptr_t)ip);
+            if (ret < 0) {
+                return EAI_NONAME;
+            }
         }
+    } else {
+        ip[0] = 127; ip[1] = 0; ip[2] = 0; ip[3] = 1;
     }
 
     struct addrinfo* ai = (struct addrinfo*)calloc(1, sizeof(struct addrinfo));

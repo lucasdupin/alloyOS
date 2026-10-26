@@ -127,9 +127,14 @@ impl QemuHarness {
             .arg("-device")
             .arg("virtio-tablet-device")
             .arg("-netdev")
-            .arg("user,id=net0")
+            .arg("user,id=net0,guestfwd=tcp:10.0.2.100:7-cmd:cat")
             .arg("-device")
             .arg("virtio-net-device,netdev=net0")
+            .args(
+                std::env::var("ALLOYOS_NET_PCAP")
+                    .map(|path| vec!["-object".to_string(), format!("filter-dump,id=f0,netdev=net0,file={path}")])
+                    .unwrap_or_default(),
+            )
             .arg("-serial")
             .arg("stdio")
             .arg("-display")
@@ -597,13 +602,13 @@ fn run_e2e_tests(kernel_image: &Path, overall_timeout: Duration) -> Result<()> {
     let mut harness = QemuHarness::new(kernel_image, &cobalt_image)?;
     harness.deadline = Some(started + overall_timeout);
 
-    println!("[xtask] [TEST 1/10] e2e_boot_banner...");
+    println!("[xtask] [TEST 1/12] e2e_boot_banner...");
     harness
         .expect_output("alloyOS v0.1.0 booting...", Duration::from_secs(10))
         .context("e2e_boot_banner failed")?;
     println!("[xtask] [PASS] e2e_boot_banner");
 
-    println!("[xtask] [TEST 2/10] e2e_memory_init...");
+    println!("[xtask] [TEST 2/12] e2e_memory_init...");
     harness
         .expect_output(
             "[mm] Frame allocator and 256 MiB kernel heap online.",
@@ -651,13 +656,13 @@ fn run_e2e_tests(kernel_image: &Path, overall_timeout: Duration) -> Result<()> {
         .context("e2e_ai_init failed")?;
     println!("[xtask] [PASS] e2e_memory_init + CobaltFS + Splash + Net + Ferrofluid + JS + MCP + AI");
 
-    println!("[xtask] [TEST 3/10] e2e_shell_prompt...");
+    println!("[xtask] [TEST 3/12] e2e_shell_prompt...");
     harness
         .expect_output("alloyos:/$", Duration::from_secs(10))
         .context("e2e_shell_prompt failed")?;
     println!("[xtask] [PASS] e2e_shell_prompt");
 
-    println!("[xtask] [TEST 4/10] e2e_uname...");
+    println!("[xtask] [TEST 4/12] e2e_uname...");
     harness.send_command("uname -a");
     harness
         .expect_output("alloyOS alloyos 0.1.0", Duration::from_secs(5))
@@ -667,7 +672,7 @@ fn run_e2e_tests(kernel_image: &Path, overall_timeout: Duration) -> Result<()> {
         .context("e2e_uname machine failed")?;
     println!("[xtask] [PASS] e2e_uname");
 
-    println!("[xtask] [TEST 5/10] e2e_ls_and_cd...");
+    println!("[xtask] [TEST 5/12] e2e_ls_and_cd...");
     harness.send_command("ls /");
     harness
         .expect_output("dev/\nproc/", Duration::from_secs(5))
@@ -690,35 +695,52 @@ fn run_e2e_tests(kernel_image: &Path, overall_timeout: Duration) -> Result<()> {
         .context("e2e_pwd_and_cd_parent failed")?;
     println!("[xtask] [PASS] e2e_ls_and_cd");
 
-    println!("[xtask] [TEST 6/10] e2e_echo_redirect_cat...");
+    println!("[xtask] [TEST 6/12] e2e_echo_redirect_cat...");
     harness.send_command("echo e2e_file_payload > /f && cat /f");
     harness
         .expect_output("e2e_file_payload\n", Duration::from_secs(5))
         .context("e2e_echo_redirect_cat failed")?;
     println!("[xtask] [PASS] e2e_echo_redirect_cat");
 
-    println!("[xtask] [TEST 7/10] e2e_ps_shows_pid1...");
+    println!("[xtask] [TEST 7/12] e2e_ps_shows_pid1...");
     harness.send_command("ps");
     harness
         .expect_output("1 tty0     00:00:00 sh", Duration::from_secs(5))
         .context("e2e_ps_shows_pid1 failed")?;
     println!("[xtask] [PASS] e2e_ps_shows_pid1");
 
-    println!("[xtask] [TEST 8/10] e2e_mem_command...");
+    println!("[xtask] [TEST 8/12] e2e_mem_command...");
     harness.send_command("mem");
     harness
         .expect_output("MemTotal:", Duration::from_secs(5))
         .context("e2e_mem_command failed")?;
     println!("[xtask] [PASS] e2e_mem_command");
 
-    println!("[xtask] [TEST 9/10] e2e_bench_completes...");
+    println!("[xtask] [TEST 9/12] e2e_bench_completes...");
     harness.send_command("bench");
     harness
         .expect_output("VFS open/read/close", Duration::from_secs(10))
         .context("e2e_bench_completes failed")?;
     println!("[xtask] [PASS] e2e_bench_completes");
 
-    println!("[xtask] [TEST 10/10] e2e_shutdown...");
+    println!("[xtask] [TEST 10/12] e2e_net_tcp_echo...");
+    harness.send_command("net tcp 10.0.2.100 7 alloyos-echo-4242");
+    harness
+        .expect_output("net: connected", Duration::from_secs(8))
+        .context("e2e_net_tcp_echo: real TCP handshake did not complete")?;
+    harness
+        .expect_output("net: recv alloyos-echo-4242", Duration::from_secs(8))
+        .context("e2e_net_tcp_echo: echoed payload not received")?;
+    println!("[xtask] [PASS] e2e_net_tcp_echo");
+
+    println!("[xtask] [TEST 11/12] e2e_net_dns...");
+    harness.send_command("net resolve localhost");
+    harness
+        .expect_output("net: localhost -> 127.0.0.1", Duration::from_secs(8))
+        .context("e2e_net_dns failed")?;
+    println!("[xtask] [PASS] e2e_net_dns");
+
+    println!("[xtask] [TEST 12/12] e2e_shutdown...");
     harness.send_command("shutdown");
     let exit_code = harness
         .wait_for_exit(Duration::from_secs(5))
@@ -728,7 +750,7 @@ fn run_e2e_tests(kernel_image: &Path, overall_timeout: Duration) -> Result<()> {
     }
     println!("[xtask] [PASS] e2e_shutdown");
 
-    println!("[xtask] All 10 E2E tests PASSED in {:.2}s!", started.elapsed().as_secs_f64());
+    println!("[xtask] All 12 E2E tests PASSED in {:.2}s!", started.elapsed().as_secs_f64());
     Ok(())
 }
 
